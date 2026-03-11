@@ -1,0 +1,55 @@
+# Dockerfile para API Vault
+# Imagen base minimalista con Node.js para máxima seguridad
+
+FROM node:20-alpine AS builder
+
+# Instalar dependencias de compilación
+RUN apk add --no-cache python3 make g++ gcc
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Copiar package.json y install dependencies
+COPY package*.json ./
+RUN npm ci --only=production --ignore-scripts
+
+# Copiar código fuente
+COPY src/ ./src/
+COPY tests/ ./tests/
+
+# Compilar TypeScript
+RUN npm run build
+
+# Etapa de runtime minimalista
+FROM node:20-alpine AS runtime
+
+# Crear usuario no-root para seguridad
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Copiar artefactos compilados
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
+
+# Instalar solo dependencias de runtime
+RUN npm ci --only=production --ignore-scripts && \
+    npm cache clean --force
+
+# Variables de entorno
+ENV NODE_ENV=production
+ENV PORT=3000
+
+# Exponer puerto
+EXPOSE 3000
+
+# Ejecutar como usuario no-root
+USER nodejs
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+
+CMD ["node", "dist/infrastructure/api/server.js"]

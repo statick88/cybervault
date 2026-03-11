@@ -1,0 +1,32 @@
+# Dockerfile para IPFS Node
+# Imagen base oficial de IPFS con configuración de seguridad
+
+FROM ipfs/go-ipfs:v0.13.0 AS base
+
+# Directorio de configuración
+WORKDIR /data/ipfs
+
+# Inicializar IPFS con configuración de seguridad
+RUN ipfs init --profile server && \
+    ipfs config Addresses.API /ip4/0.0.0.0/tcp/5001 && \
+    ipfs config Addresses.Gateway /ip4/0.0.0.0/tcp/8080 && \
+    ipfs config --json Swarm.EnableRelay true && \
+    ipfs config --json Swarm.EnableAutoRelay true
+
+# Configurar CORS para desarrollo local
+RUN ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["*"]' && \
+    ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["GET", "POST", "PUT"]' && \
+    ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'
+
+# Exponer puertos
+EXPOSE 4001  # P2P
+EXPOSE 5001  # API
+EXPOSE 8080  # Gateway
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:5001/api/v0/version || exit 1
+
+# Ejecutar IPFS
+ENTRYPOINT ["/usr/local/bin/ipfs"]
+CMD ["daemon", "--migrate=true"]

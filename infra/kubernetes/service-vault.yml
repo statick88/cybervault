@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-api
+  namespace: cyber-vault-dev
+  labels:
+    app: vault-api
+spec:
+  type: ClusterIP
+  selector:
+    app: vault-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP
+  sessionAffinity: ClientIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-api-lb
+  namespace: cyber-vault-dev
+  labels:
+    app: vault-api
+spec:
+  type: LoadBalancer
+  selector:
+    app: vault-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP

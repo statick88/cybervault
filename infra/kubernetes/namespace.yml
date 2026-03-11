@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cyber-vault-dev
+  labels:
+    name: cyber-vault-dev
+    environment: development
+    security-level: high

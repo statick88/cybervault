@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: cyber-vault-dev
+data:
+  # Configuración de la aplicación
+  NODE_ENV: "development"
+  PORT: "3000"
+  LOG_LEVEL: "info"
+  # Configuración criptográfica
+  CRYPTO_ALGORITHM: "AES-GCM-256"
+  PBKDF2_ITERATIONS: "600000"
+  # Configuración de IPFS
+  IPFS_HOST: "ipfs-node"
+  IPFS_PORT: "5001"
+  # Configuración de base de datos
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "cyber_vault"
+  DB_USER: "cyberuser"
+  # Configuración de auditoría
+  AUDITOR_INTERVAL: "3600" # segundos
+  AUDITOR_BATCH_SIZE: "100"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipfs-config
+  namespace: cyber-vault-dev
+data:
+  # Configuración de IPFS
+  IPFS_PROFILE: "server"
+  IPFS_SWARM ConnMgr: "lowwater:2000,highwater:4000,grace:30s"
+  IPFS Routing: "recordkeys"

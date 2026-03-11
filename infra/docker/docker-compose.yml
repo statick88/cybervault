@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # API Vault Service
+  vault-api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: cyber-vault-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - IPFS_HOST=ipfs-node:5001
+      - DATABASE_URL=postgres://cyberuser:cyberpass@postgres:5432/cyber_vault
+    depends_on:
+      - postgres
+      - ipfs-node
+    networks:
+      - cyber-vault-net
+    volumes:
+      - ./data/vault:/app/data:rw
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+  # IPFS Node Service
+  ipfs-node:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.ipfs
+    container_name: cyber-vault-ipfs
+    ports:
+      - "4001:4001"
+      - "5001:5001"
+      - "8080:8080"
+    environment:
+      - IPFS_PROFILE=server
+    volumes:
+      - ./data/ipfs:/data/ipfs:rw
+    networks:
+      - cyber-vault-net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # PostgreSQL para metadata
+  postgres:
+    image: postgres:15-alpine
+    container_name: cyber-vault-db
+    environment:
+      - POSTGRES_DB=cyber_vault
+      - POSTGRES_USER=cyberuser
+      - POSTGRES_PASSWORD=cyberpass
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data:rw
+    ports:
+      - "5432:5432"
+    networks:
+      - cyber-vault-net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command: >
+      postgres 
+      -c ssl=on 
+      -c ssl_cert_file=/etc/ssl/certs/server.crt 
+      -c ssl_key_file=/etc/ssl/certs/server.key
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberuser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Auditor Service (Background)
+  auditor:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: cyber-vault-auditor
+    environment:
+      - NODE_ENV=development
+      - AUDITOR_MODE=background
+      - IPFS_HOST=ipfs-node:5001
+    depends_on:
+      - ipfs-node
+      - postgres
+    networks:
+      - cyber-vault-net
+    volumes:
+      - ./data/auditor:/app/data:rw
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  cyber-vault-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+
+volumes:
+  vault-data:
+  ipfs-data:
+  postgres-data:
+  auditor-data:

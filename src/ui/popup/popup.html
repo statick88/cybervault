@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CyberVault</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- Header -->
+      <header class="header">
+        <div class="logo">
+          <span class="logo-icon">🔐</span>
+          <h1>CyberVault</h1>
+        </div>
+        <div class="header-actions">
+          <button id="btn-settings" class="icon-btn" title="Configuración">
+            ⚙️
+          </button>
+        </div>
+      </header>
+
+      <!-- Status Bar -->
+      <div class="status-bar">
+        <div class="status-item" id="vault-status">
+          <span class="status-icon">🔒</span>
+          <span class="status-text">Bóveda bloqueada</span>
+        </div>
+        <div class="status-item" id="sync-status">
+          <span class="status-icon">☁️</span>
+          <span class="status-text">Sincronizado</span>
+        </div>
+      </div>
+
+      <!-- Search -->
+      <div class="search-container">
+        <input
+          type="text"
+          id="search-input"
+          placeholder="Buscar credenciales..."
+          class="search-input"
+        />
+      </div>
+
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab active" data-tab="all">Todas</button>
+        <button class="tab" data-tab="favorites">⭐ Favoritas</button>
+        <button class="tab" data-tab="recent">🕐 Recientes</button>
+      </div>
+
+      <!-- Credentials List -->
+      <div class="credentials-list" id="credentials-list">
+        <!-- Loading state -->
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <p>Cargando...</p>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="quick-actions">
+        <button id="btn-add" class="action-btn primary">
+          <span>➕</span> Nueva Credencial
+        </button>
+        <button id="btn-audit" class="action-btn"><span>🔍</span> Audit</button>
+      </div>
+
+      <!-- Password Generator -->
+      <div class="password-generator" id="password-generator">
+        <h3>Generador de Contraseñas</h3>
+        <div class="generator-output">
+          <input
+            type="text"
+            id="generated-password"
+            readonly
+            placeholder="Click en generar"
+          />
+          <button id="btn-copy" class="icon-btn-small" title="Copiar">
+            📋
+          </button>
+        </div>
+        <div class="generator-options">
+          <label>
+            <input
+              type="range"
+              id="password-length"
+              min="8"
+              max="64"
+              value="16"
+            />
+            <span id="length-display">16</span> caracteres
+          </label>
+          <div class="checkboxes">
+            <label
+              ><input type="checkbox" id="opt-uppercase" checked /> A-Z</label
+            >
+            <label
+              ><input type="checkbox" id="opt-lowercase" checked /> a-z</label
+            >
+            <label
+              ><input type="checkbox" id="opt-numbers" checked /> 0-9</label
+            >
+            <label
+              ><input type="checkbox" id="opt-symbols" checked /> !@#$</label
+            >
+          </div>
+        </div>
+        <button id="btn-generate" class="action-btn secondary">Generar</button>
+      </div>
+    </div>
+
+    <!-- Modals -->
+    <div class="modal" id="modal-add-credential" hidden>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Nueva Credencial</h2>
+          <button class="modal-close" data-modal="modal-add-credential">
+            ×
+          </button>
+        </div>
+        <form id="form-add-credential" class="modal-body">
+          <div class="form-group">
+            <label for="cred-title">Título</label>
+            <input
+              type="text"
+              id="cred-title"
+              required
+              placeholder="ej: Gmail personal"
+            />
+          </div>
+          <div class="form-group">
+            <label for="cred-url">URL</label>
+            <input type="url" id="cred-url" placeholder="https://..." />
+          </div>
+          <div class="form-group">
+            <label for="cred-username">Usuario / Email</label>
+            <input type="text" id="cred-username" required />
+          </div>
+          <div class="form-group">
+            <label for="cred-password">Contraseña</label>
+            <div class="password-input-group">
+              <input type="password" id="cred-password" required />
+              <button
+                type="button"
+                class="toggle-password"
+                data-target="cred-password"
+              >
+                👁️
+              </button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="cred-notes">Notas</label>
+            <textarea id="cred-notes" rows="3"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="cred-tags">Etiquetas (separadas por coma)</label>
+            <input
+              type="text"
+              id="cred-tags"
+              placeholder="trabajo, personal, importante"
+            />
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="cred-favorite" />
+              ⭐ Marcar como favorita
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button
+              type="button"
+              class="btn-secondary"
+              data-modal="modal-add-credential"
+            >
+              Cancelar
+            </button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CyberVault - Configuración</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- Header -->
+      <header class="header">
+        <div class="logo">
+          <span class="logo-icon">🔐</span>
+          <h1>CyberVault - Configuración</h1>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- General Settings -->
+        <section class="settings-section">
+          <h2>⚙️ Configuración General</h2>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Extensión habilitada</label>
+              <p class="setting-description">
+                Activar o desactivar la extensión
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-enabled" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Auto-llenado de credenciales</label>
+              <p class="setting-description">
+                Rellenar automáticamente用户名 y contraseña
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-autofill" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Generador de contraseñas</label>
+              <p class="setting-description">
+                Mostrar botón para generar contraseñas seguras
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-password-generator" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Security Settings -->
+        <section class="settings-section">
+          <h2>🛡️ Configuración de Seguridad</h2>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Verificación de breaches</label>
+              <p class="setting-description">
+                Verificar si las contraseñas han sido filtradas
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-breach-check" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Bloqueo de trackers</label>
+              <p class="setting-description">
+                Bloquear scripts de seguimiento conhecidos
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-block-trackers" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Notificaciones de seguridad</label>
+              <p class="setting-description">
+                Mostrar alertas cuando se detecten amenazas
+              </p>
+            </div>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                id="setting-security-notifications"
+                checked
+              />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Audit automático</label>
+              <p class="setting-description">
+                Ejecutar escaneo de seguridad periódicamente
+              </p>
+            </div>
+            <select id="setting-audit-frequency" class="select">
+              <option value="6">Cada 6 horas</option>
+              <option value="12">Cada 12 horas</option>
+              <option value="24" selected>Diario</option>
+              <option value="168">Semanal</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Privacy Settings -->
+        <section class="settings-section">
+          <h2>🔒 Privacidad</h2>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Sincronización con IPFS</label>
+              <p class="setting-description">
+                Sincronizar bóveda cifrada via IPFS
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-ipfs-sync" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item" id="ipfs-settings" style="display: none">
+            <div class="setting-info">
+              <label>Gateway IPFS</label>
+              <p class="setting-description">URL del gateway IPFS a utilizar</p>
+            </div>
+            <input
+              type="text"
+              id="setting-ipfs-gateway"
+              class="input"
+              placeholder="https://ipfs.io"
+              value="https://ipfs.io"
+            />
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Modo seguro</label>
+              <p class="setting-description">
+                Bloquear extensiones desconocidas
+              </p>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setting-secure-mode" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Appearance Settings -->
+        <section class="settings-section">
+          <h2>🎨 Apariencia</h2>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Tema</label>
+              <p class="setting-description">Color de la interfaz</p>
+            </div>
+            <select id="setting-theme" class="select">
+              <option value="system" selected>Sistema</option>
+              <option value="light">Claro</option>
+              <option value="dark">Oscuro</option>
+            </select>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Icono en toolbar</label>
+              <p class="setting-description">
+                Icono shown en la barra del navegador
+              </p>
+            </div>
+            <select id="setting-icon" class="select">
+              <option value="default" selected>🔐 Predeterminado</option>
+              <option value="minimal">⚫ Minimal</option>
+              <option value="color">🎨 Color</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Data Management -->
+        <section class="settings-section">
+          <h2>💾 Gestión de Datos</h2>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Exportar datos</label>
+              <p class="setting-description">
+                Descargar todas las credenciales (cifrado)
+              </p>
+            </div>
+            <button id="btn-export" class="btn btn-secondary">Exportar</button>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <label>Importar datos</label>
+              <p class="setting-description">
+                Importar desde archivo de respaldo
+              </p>
+            </div>
+            <button id="btn-import" class="btn btn-secondary">Importar</button>
+          </div>
+
+          <div class="setting-item danger">
+            <div class="setting-info">
+              <label>Eliminar todos los datos</label>
+              <p class="setting-description">
+                Borrar todas las credenciales y configuración
+              </p>
+            </div>
+            <button id="btn-clear" class="btn btn-danger">Eliminar Todo</button>
+          </div>
+        </section>
+
+        <!-- About -->
+        <section class="settings-section">
+          <h2>ℹ️ Acerca de</h2>
+
+          <div class="about-info">
+            <p><strong>CyberVault</strong></p>
+            <p>Versión: 0.1.0 (Pre-Alfa)</p>
+            <p class="about-description">
+              Gestor de credenciales Zero-Knowledge con 8 capas de encriptación
+              y almacenamiento descentralizado IPFS.
+            </p>
+            <p class="about-links">
+              <a href="#" id="link-privacy">Política de Privacidad</a> |
+              <a href="#" id="link-terms">Términos de Uso</a> |
+              <a href="#" id="link-github">GitHub</a>
+            </p>
+          </div>
+        </section>
+      </main>
+
+      <!-- Footer -->
+      <footer class="footer">
+        <button id="btn-save" class="btn btn-primary">
+          Guardar Configuración
+        </button>
+        <button id="btn-reset" class="btn btn-secondary">Restablecer</button>
+      </footer>
+    </div>
+
+    <input type="file" id="import-file" accept=".json" hidden />
+
+    <script src="options.js" type="module"></script>
+  </body>
+</html>

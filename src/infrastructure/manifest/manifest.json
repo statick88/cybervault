@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "CyberVault - Zero-Knowledge Credential Manager",
+  "version": "1.0.0",
+  "description": "Gestor de credenciales Zero-Knowledge con 4 capas de encriptación y monitoreo de vulnerabilidades",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "ui/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "options_page": "ui/options/options.html",
+  "background": {
+    "service_worker": "background/auditor.js"
+  },
+  "permissions": ["storage", "alarms", "notifications", "tabs"],
+  "host_permissions": [
+    "https://api.pwnedpasswords.com/*",
+    "https://otx.alienvault.com/*",
+    "https://api.github.com/*",
+    "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["ui/content-scripts/inject.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*", "ui/popup/*", "ui/options/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.pwnedpasswords.com https://otx.alienvault.com https://api.github.com https://*; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
+  }
+}

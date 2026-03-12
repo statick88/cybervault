@@ -80,6 +80,7 @@ class IPFSAdapter implements IIPFSService {
   }
 }
 
+export { IPFSAdapter };
 export const ipfsAdapter = new IPFSAdapter({
   host: "ipfs.io",
   port: 443,

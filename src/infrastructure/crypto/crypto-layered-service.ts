@@ -6,6 +6,7 @@
 import { ICryptoService } from "../../domain/services";
 import { CryptoHash } from "../../domain/value-objects/ids";
 import { SecureBuffer, secureZero } from "./secure-memory";
+import { randomBytes } from "@noble/hashes/utils";
 
 // ============================================================================
 // Layer 1: Basic Cryptography - AES-256-GCM
@@ -337,6 +338,67 @@ export class CryptoLayeredService implements ICryptoService {
 
   async checkBreach(password: string): Promise<boolean> {
     return await this.layer4.checkBreach(password);
+  }
+
+  // Additional methods for advanced crypto
+  async generateKeyPair(): Promise<{ publicKey: string; privateKey: string }> {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    
+    const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
+    const privateKey = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
+    
+    return {
+      publicKey: Buffer.from(publicKey).toString('base64'),
+      privateKey: Buffer.from(privateKey).toString('base64'),
+    };
+  }
+
+  generateSalt(): Uint8Array {
+    return crypto.getRandomValues(new Uint8Array(32));
+  }
+
+  async sign(data: string, privateKey: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const keyData = Buffer.from(privateKey, 'base64');
+    
+    const key = await crypto.subtle.importKey(
+      'pkcs8',
+      keyData,
+      { name: 'RSA-OAEP', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    
+    const signature = await crypto.subtle.sign('RSA-OAEP', key, encoder.encode(data));
+    return Buffer.from(signature).toString('base64');
+  }
+
+  async verify(data: string, signature: string, publicKey: string): Promise<boolean> {
+    try {
+      const encoder = new TextEncoder();
+      const keyData = Buffer.from(publicKey, 'base64');
+      
+      const key = await crypto.subtle.importKey(
+        'spki',
+        keyData,
+        { name: 'RSA-OAEP', hash: 'SHA-256' },
+        false,
+        ['verify']
+      );
+      
+      return await crypto.subtle.verify(
+        'RSA-OAEP',
+        key,
+        encoder.encode(data),
+        Buffer.from(signature, 'base64')
+      );
+    } catch {
+      return false;
+    }
   }
 }
 

@@ -183,6 +183,88 @@
       </div>
     </div>
 
+    <!-- Modal: Edit Credential -->
+    <div class="modal" id="modal-edit-credential" hidden>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Editar Credencial</h2>
+          <button class="modal-close" data-modal="modal-edit-credential">×</button>
+        </div>
+        <form id="form-edit-credential" class="modal-body">
+          <input type="hidden" id="edit-cred-id" />
+          <div class="form-group">
+            <label for="edit-cred-title">Título</label>
+            <input type="text" id="edit-cred-title" required placeholder="ej: Gmail personal" />
+          </div>
+          <div class="form-group">
+            <label for="edit-cred-url">URL</label>
+            <input type="url" id="edit-cred-url" placeholder="https://..." />
+          </div>
+          <div class="form-group">
+            <label for="edit-cred-username">Usuario / Email</label>
+            <input type="text" id="edit-cred-username" required />
+          </div>
+          <div class="form-group">
+            <label for="edit-cred-password">Contraseña</label>
+            <div class="password-input-group">
+              <input type="password" id="edit-cred-password" />
+              <button type="button" class="toggle-password" data-target="edit-cred-password">👁️</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="edit-cred-notes">Notas</label>
+            <textarea id="edit-cred-notes" rows="3"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="edit-cred-tags">Etiquetas</label>
+            <input type="text" id="edit-cred-tags" placeholder="trabajo, personal" />
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="edit-cred-favorite" />⭐ Favorita
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" data-modal="modal-edit-credential">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Delete Confirmation -->
+    <div class="modal" id="modal-delete-confirm" hidden>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Eliminar Credencial</h2>
+          <button class="modal-close" data-modal="modal-delete-confirm">×</button>
+        </div>
+        <div class="modal-body">
+          <p>¿Estás seguro de eliminar esta credencial?</p>
+          <p id="delete-cred-title" class="delete-warning"></p>
+          <input type="hidden" id="delete-cred-id" />
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" data-modal="modal-delete-confirm">Cancelar</button>
+            <button type="button" id="btn-confirm-delete" class="btn-danger">Eliminar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: View Credential -->
+    <div class="modal" id="modal-view-credential" hidden>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Detalles</h2>
+          <button class="modal-close" data-modal="modal-view-credential">×</button>
+        </div>
+        <div class="modal-body" id="view-credential-content"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" data-modal="modal-view-credential">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
     <script src="popup.js" type="module"></script>
   </body>
 </html>

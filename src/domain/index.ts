@@ -10,9 +10,16 @@ export type {
   SeverityLevel,
   VulnerabilityStatus,
 } from "./entities/vulnerability";
+export { Credential } from "./entities/credential";
+export type { CredentialProps } from "./entities/credential";
 
 // Value Objects
-export { VaultId, VulnerabilityId, CryptoHash } from "./value-objects/ids";
+export {
+  VaultId,
+  VulnerabilityId,
+  CredentialId,
+  CryptoHash,
+} from "./value-objects/ids";
 
 // Repositorios
 export type {

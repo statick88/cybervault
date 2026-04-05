@@ -1,10 +1,10 @@
 /**
  * Master Key Manager - Zero Knowledge Architecture
- * 
+ *
  * SECURITY: This module handles the master key for Zero Knowledge encryption.
  * The master key is NEVER stored - only a verification hash is stored.
  * All encryption/decryption happens in memory during the session.
- * 
+ *
  * Flow:
  * 1. First time: User creates master key → store only verification hash
  * 2. Each session: User unlocks with master key → verify hash → derive session key
@@ -12,13 +12,16 @@
  */
 
 import { CryptoService } from "./crypto-service";
+import { binaryToBase64, base64ToBinary } from "@/shared/utils";
 
 const STORAGE_KEYS = {
-  MASTER_KEY_VERIFY: "master_key_verify",  // Hash for verification only
-  SALT: "master_salt",                     // Salt for key derivation
-  VAULT_INITIALIZED: "vault_initialized",   // Whether vault is set up
-  SESSION_KEY: "session_key",               // In-memory session key (not persisted)
+  MASTER_KEY_VERIFY: "master_key_verify", // Hash for verification only
+  SALT: "master_salt", // Salt for key derivation
+  VAULT_INITIALIZED: "vault_initialized", // Whether vault is set up
+  SESSION_KEY: "session_key", // In-memory session key (not persisted)
 } as const;
+
+const SESSION_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
  * Result of master key verification
@@ -53,26 +56,13 @@ function generateSalt(): Uint8Array {
 }
 
 /**
- * Convert Uint8Array to base64
- */
-function toBase64(array: Uint8Array): string {
-  return btoa(String.fromCharCode(...array));
-}
-
-/**
- * Convert base64 to Uint8Array
- */
-function fromBase64(base64: string): Uint8Array {
-  return new Uint8Array(
-    atob(base64).split("").map(c => c.charCodeAt(0))
-  );
-}
-
-/**
  * Hash the master key for verification (NOT the key itself)
  * Uses PBKDF2 with high iterations
  */
-async function hashMasterKey(masterKey: string, salt: Uint8Array): Promise<string> {
+async function hashMasterKey(
+  masterKey: string,
+  salt: Uint8Array,
+): Promise<string> {
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
@@ -85,7 +75,7 @@ async function hashMasterKey(masterKey: string, salt: Uint8Array): Promise<strin
   const derivedBits = await crypto.subtle.deriveBits(
     {
       name: "PBKDF2",
-      salt: salt,
+      salt: salt as BufferSource,
       iterations: 600000, // NIST recommended
       hash: "SHA-512",
     },
@@ -93,18 +83,21 @@ async function hashMasterKey(masterKey: string, salt: Uint8Array): Promise<strin
     512, // 512 bits
   );
 
-  return toBase64(new Uint8Array(derivedBits));
+  return binaryToBase64(new Uint8Array(derivedBits));
 }
 
 /**
  * Generate a session key from master key
  * This is used for actual encryption/decryption
  */
-async function deriveSessionKey(masterKey: string, salt: Uint8Array): Promise<string> {
+async function deriveSessionKey(
+  masterKey: string,
+  salt: Uint8Array,
+): Promise<string> {
   const encoder = new TextEncoder();
   // Use different info for session key vs verification
   const sessionInfo = encoder.encode("cybervault_session_key_v1");
-  
+
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
     encoder.encode(masterKey),
@@ -116,9 +109,9 @@ async function deriveSessionKey(masterKey: string, salt: Uint8Array): Promise<st
   const sessionKey = await crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt: salt,
-      iterations: 100000, // Less iterations for session key (faster)
-      hash: "SHA-256",
+      salt: salt as BufferSource,
+      iterations: 600000, // Consistent with NIST recommendation
+      hash: "SHA-512",
       info: sessionInfo,
     },
     keyMaterial,
@@ -129,7 +122,7 @@ async function deriveSessionKey(masterKey: string, salt: Uint8Array): Promise<st
 
   // Export for use (will be kept in memory only)
   const exported = await crypto.subtle.exportKey("raw", sessionKey);
-  return toBase64(new Uint8Array(exported));
+  return binaryToBase64(new Uint8Array(exported));
 }
 
 /**
@@ -137,7 +130,9 @@ async function deriveSessionKey(masterKey: string, salt: Uint8Array): Promise<st
  */
 export async function isVaultInitialized(): Promise<boolean> {
   try {
-    const result = await chrome.storage.local.get(STORAGE_KEYS.VAULT_INITIALIZED);
+    const result = await chrome.storage.local.get(
+      STORAGE_KEYS.VAULT_INITIALIZED,
+    );
     return result[STORAGE_KEYS.VAULT_INITIALIZED] === true;
   } catch {
     return false;
@@ -148,16 +143,21 @@ export async function isVaultInitialized(): Promise<boolean> {
  * Initialize vault with new master key
  * SECURITY: Only stores verification hash, never the actual key
  */
-export async function initializeVault(masterKey: string): Promise<MasterKeyVerifyResult> {
+export async function initializeVault(
+  masterKey: string,
+): Promise<MasterKeyVerifyResult> {
   try {
     // Validate master key strength
     if (masterKey.length < 12) {
-      return { success: false, error: "La clave maestra debe tener al menos 12 caracteres" };
+      return {
+        success: false,
+        error: "La clave maestra debe tener al menos 12 caracteres",
+      };
     }
 
     // Generate unique salt for this vault
     const salt = generateSalt();
-    const saltBase64 = toBase64(salt);
+    const saltBase64 = binaryToBase64(salt);
 
     // Create verification hash (for authentication)
     const verifyHash = await hashMasterKey(masterKey, salt);
@@ -188,8 +188,21 @@ export async function initializeVault(masterKey: string): Promise<MasterKeyVerif
  * Unlock vault with master key
  * SECURITY: Verifies hash, then derives session key into memory
  */
-export async function unlockVault(masterKey: string): Promise<MasterKeyVerifyResult> {
+export async function unlockVault(
+  masterKey: string,
+): Promise<MasterKeyVerifyResult> {
   try {
+    // Check if already unlocked with valid session
+    if (sessionState.isUnlocked && isSessionValid()) {
+      refreshSession();
+      return { success: true };
+    }
+
+    // If unlocked but expired, lock first
+    if (sessionState.isUnlocked && !isSessionValid()) {
+      lockVault();
+    }
+
     // Get stored verification data
     const stored = await chrome.storage.local.get([
       STORAGE_KEYS.MASTER_KEY_VERIFY,
@@ -203,7 +216,7 @@ export async function unlockVault(masterKey: string): Promise<MasterKeyVerifyRes
       return { success: false, error: "Bóveda no inicializada" };
     }
 
-    const salt = fromBase64(storedSalt);
+    const salt = base64ToBinary(storedSalt);
 
     // Verify master key
     const verifyHash = await hashMasterKey(masterKey, salt);
@@ -243,19 +256,49 @@ export function isVaultUnlocked(): boolean {
 }
 
 /**
- * Get session key (only if unlocked)
+ * Check if current session is still valid (not expired)
+ */
+export function isSessionValid(): boolean {
+  if (!sessionState.unlockTime) return false;
+  return Date.now() - sessionState.unlockTime < SESSION_DURATION_MS;
+}
+
+/**
+ * Refresh session timer (call on each operation)
+ */
+export function refreshSession(): void {
+  if (sessionState.isUnlocked) {
+    sessionState.unlockTime = Date.now();
+  }
+}
+
+/**
+ * Get session key (only if unlocked and session valid)
+ * Throws error if session expired
  */
 export function getSessionKey(): string | null {
-  if (!sessionState.isUnlocked || !sessionState.sessionKey) {
+  if (!sessionState.isUnlocked) {
     return null;
   }
+
+  if (!isSessionValid()) {
+    // Session expired, lock immediately
+    lockVault();
+    return null;
+  }
+
+  // Refresh session timer on access
+  refreshSession();
+
   return sessionState.sessionKey;
 }
 
 /**
  * Encrypt data using session key
  */
-export async function encryptWithSessionKey(data: string): Promise<string | null> {
+export async function encryptWithSessionKey(
+  data: string,
+): Promise<string | null> {
   const sessionKey = getSessionKey();
   if (!sessionKey) {
     return null;
@@ -268,7 +311,9 @@ export async function encryptWithSessionKey(data: string): Promise<string | null
 /**
  * Decrypt data using session key
  */
-export async function decryptWithSessionKey(encryptedData: string): Promise<string | null> {
+export async function decryptWithSessionKey(
+  encryptedData: string,
+): Promise<string | null> {
   const sessionKey = getSessionKey();
   if (!sessionKey) {
     return null;

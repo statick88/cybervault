@@ -17,13 +17,13 @@ global.chrome = {
 } as any;
 
 // Import after mocking
-import { CryptoLayeredService } from "../../src/infrastructure/crypto/crypto-layered-service";
+import { CryptoService } from "../../src/infrastructure/crypto/crypto-service";
 
-describe("CryptoLayeredService", () => {
-  let cryptoService: CryptoLayeredService;
+describe("CryptoService", () => {
+  let cryptoService: CryptoService;
 
   beforeEach(() => {
-    cryptoService = new CryptoLayeredService();
+    cryptoService = new CryptoService();
   });
 
   describe("Layer 1: Basic Cryptography", () => {
@@ -140,10 +140,10 @@ describe("CryptoLayeredService", () => {
 });
 
 describe("Integration: Full Encryption Flow", () => {
-  let cryptoService: CryptoLayeredService;
+  let cryptoService: CryptoService;
 
   beforeEach(() => {
-    cryptoService = new CryptoLayeredService();
+    cryptoService = new CryptoService();
   });
 
   it("should handle complete credential storage flow", async () => {

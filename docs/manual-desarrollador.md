@@ -20,14 +20,14 @@ Este documento está dirigido a desarrolladores que desean contribuir o extender
 
 ### Tecnologías Usadas
 
-| Tecnología | Uso |
-|------------|-----|
-| **TypeScript 5.3** | Lenguaje principal |
-| **Chrome Extensions** | Plataforma destino |
-| **Node.js Crypto** | Criptografía nativa |
-| **esbuild** | Bundling |
-| **Jest** | Testing |
-| **IPFS** | Almacenamiento distribuido |
+| Tecnología            | Uso                        |
+| --------------------- | -------------------------- |
+| **TypeScript 5.3**    | Lenguaje principal         |
+| **Chrome Extensions** | Plataforma destino         |
+| **Node.js Crypto**    | Criptografía nativa        |
+| **esbuild**           | Bundling                   |
+| **Jest**              | Testing                    |
+| **IPFS**              | Almacenamiento distribuido |
 
 ### Requisitos Previos
 
@@ -83,6 +83,7 @@ NODE_ENV=development
 ### IDE Recomendado
 
 **VS Code** con extensiones:
+
 - ESLint
 - Prettier
 - TypeScript Hero
@@ -113,7 +114,7 @@ cybervault/
 │   │   ├── api/           # API server
 │   │   ├── crypto/        # Servicios criptográficos
 │   │   │   ├── crypto-service.ts
-│   │   │   ├── crypto-layered-service.ts
+│   │   │   ├── crypto-service.ts
 │   │   │   ├── secure-memory.ts
 │   │   │   └── layers/    # Capas de encriptación
 │   │   └── ipfs/          # Adaptador IPFS
@@ -217,14 +218,14 @@ export class CredentialService {
     // Guardar
     // Retornar credencial
   }
-  
+
   async update(id: string, data: UpdateCredentialDTO): Promise<Credential> {
     // Buscar credencial
     // Validar permisos
     // Actualizar
     // Retornar
   }
-  
+
   async delete(id: string): Promise<void> {
     // Buscar
     // Eliminar
@@ -238,14 +239,14 @@ export class CredentialService {
 // src/ui/popup/popup.ts
 async function handleAddCredential(e: Event): Promise<void> {
   e.preventDefault();
-  
+
   const credential = {
-    title: getValue('cred-title'),
-    username: getValue('cred-username'),
-    password: getValue('cred-password'),
+    title: getValue("cred-title"),
+    username: getValue("cred-username"),
+    password: getValue("cred-password"),
     // ...
   };
-  
+
   await credentialService.create(credential);
 }
 ```
@@ -255,12 +256,12 @@ async function handleAddCredential(e: Event): Promise<void> {
 ```typescript
 // Popup → Background
 chrome.runtime.sendMessage({
-  action: 'run_audit'
+  action: "run_audit",
 });
 
 // Background → Popup
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.action === 'audit_complete') {
+  if (message.action === "audit_complete") {
     // Actualizar UI
   }
 });
@@ -290,25 +291,25 @@ npm test -- --testPathPattern=credential
 
 ```typescript
 // tests/unit/credential-service.test.ts
-import { CredentialService } from '../../src/domain/services';
+import { CredentialService } from "../../src/domain/services";
 
-describe('CredentialService', () => {
+describe("CredentialService", () => {
   let service: CredentialService;
-  
+
   beforeEach(() => {
     service = new CredentialService();
   });
-  
-  describe('create', () => {
-    it('should create a credential', async () => {
+
+  describe("create", () => {
+    it("should create a credential", async () => {
       const credential = await service.create({
-        title: 'Test',
-        username: 'test@test.com',
-        password: 'password123'
+        title: "Test",
+        username: "test@test.com",
+        password: "password123",
       });
-      
+
       expect(credential.id).toBeDefined();
-      expect(credential.title).toBe('Test');
+      expect(credential.title).toBe("Test");
     });
   });
 });
@@ -388,9 +389,9 @@ cd dist && zip -r ../cybervault-v1.0.0.zip ./
 
 ```typescript
 // Usar siempre las capas de encriptación
-import { CryptoLayeredService } from '../infrastructure/crypto';
+import { CryptoService } from "../infrastructure/crypto";
 
-const crypto = new CryptoLayeredService();
+const crypto = new CryptoService();
 
 // Encriptar
 const encrypted = await crypto.encrypt(plaintext, masterKey);
@@ -426,14 +427,14 @@ npm run security
 
 ### Ramas
 
-| Prefijo | Uso |
-|---------|-----|
-| `feature/*` | Nuevas funcionalidades |
-| `bugfix/*` | Corrección de bugs |
-| `security/*` | Fixes de seguridad |
-| `hotfix/*` | Fixes urgentes |
-| `refactor/*` | Refactorización |
-| `docs/*` | Documentación |
+| Prefijo      | Uso                    |
+| ------------ | ---------------------- |
+| `feature/*`  | Nuevas funcionalidades |
+| `bugfix/*`   | Corrección de bugs     |
+| `security/*` | Fixes de seguridad     |
+| `hotfix/*`   | Fixes urgentes         |
+| `refactor/*` | Refactorización        |
+| `docs/*`     | Documentación          |
 
 ### Commits Convencionales
 
@@ -463,40 +464,40 @@ test: agregar tests para credential-service
 ```typescript
 class CredentialService {
   // Crear credencial
-  create(data: CreateCredentialDTO): Promise<Credential>
-  
+  create(data: CreateCredentialDTO): Promise<Credential>;
+
   // Obtener todas
-  findAll(): Promise<Credential[]>
-  
+  findAll(): Promise<Credential[]>;
+
   // Buscar por ID
-  findById(id: string): Promise<Credential | null>
-  
+  findById(id: string): Promise<Credential | null>;
+
   // Actualizar
-  update(id: string, data: UpdateCredentialDTO): Promise<Credential>
-  
+  update(id: string, data: UpdateCredentialDTO): Promise<Credential>;
+
   // Eliminar
-  delete(id: string): Promise<void>
-  
+  delete(id: string): Promise<void>;
+
   // Buscar
-  search(query: string): Promise<Credential[]>
+  search(query: string): Promise<Credential[]>;
 }
 ```
 
 ### CryptoService
 
 ```typescript
-class CryptoLayeredService {
+class CryptoService {
   // Encriptar (4 capas)
-  encrypt(plaintext: string, key: string): Promise<EncryptedData>
-  
+  encrypt(plaintext: string, key: string): Promise<EncryptedData>;
+
   // Desencriptar
-  decrypt(data: EncryptedData, key: string): Promise<string>
-  
+  decrypt(data: EncryptedData, key: string): Promise<string>;
+
   // Derivar clave
-  deriveKey(password: string, salt: Uint8Array): Promise<string>
-  
+  deriveKey(password: string, salt: Uint8Array): Promise<string>;
+
   // Generar salt
-  generateSalt(): Uint8Array
+  generateSalt(): Uint8Array;
 }
 ```
 
@@ -511,5 +512,5 @@ class CryptoLayeredService {
 
 ---
 
-*Última actualización: Marzo 2026*
-*Versión: 1.0.0*
+_Última actualización: Marzo 2026_
+_Versión: 1.0.0_

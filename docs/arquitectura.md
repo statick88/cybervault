@@ -26,12 +26,12 @@ CyberVault es un gestor de contraseñas **Zero-Knowledge** diseñado para ofrece
 
 ### Objetivos de Arquitectura
 
-| Objetivo | Descripción |
-|----------|-------------|
-| **Seguridad** | Zero-Knowledge, nunca exponer passwords |
-| **Rendimiento** | UI responsiva, crypto optimizado |
-| **Mantenibilidad** | Clean Architecture, código testeable |
-| **Extensibilidad** | Modular, fácil agregar features |
+| Objetivo           | Descripción                             |
+| ------------------ | --------------------------------------- |
+| **Seguridad**      | Zero-Knowledge, nunca exponer passwords |
+| **Rendimiento**    | UI responsiva, crypto optimizado        |
+| **Mantenibilidad** | Clean Architecture, código testeable    |
+| **Extensibilidad** | Modular, fácil agregar features         |
 
 ---
 
@@ -63,13 +63,13 @@ CyberVault es un gestor de contraseñas **Zero-Knowledge** diseñado para ofrece
 
 ### Principios SOLID
 
-| Principio | Aplicación |
-|----------|-----------|
-| **S**ingle Responsibility | Cada clase una responsabilidad |
-| **O**pen/Closed | Abierto para extensión, cerrado para modificación |
-| **L**iskov Substitution | Interfaces bien definidas |
-| **I**nterface Segregation | Múltiples interfaces pequeñas |
-| **D**ependency Inversion | Depender de abstracciones, no concreciones |
+| Principio                 | Aplicación                                        |
+| ------------------------- | ------------------------------------------------- |
+| **S**ingle Responsibility | Cada clase una responsabilidad                    |
+| **O**pen/Closed           | Abierto para extensión, cerrado para modificación |
+| **L**iskov Substitution   | Interfaces bien definidas                         |
+| **I**nterface Segregation | Múltiples interfaces pequeñas                     |
+| **D**ependency Inversion  | Depender de abstracciones, no concreciones        |
 
 ### Dependency Rule
 
@@ -171,13 +171,15 @@ CyberVault implementa un sistema de encriptación por capas:
 ```
 
 **Código:**
+
 ```typescript
 // Generar par de claves
-const keyPair = crypto.generateKeyPairSync('x25519');
+const keyPair = crypto.generateKeyPairSync("x25519");
 
 // Derivar clave compartida
-const sharedKey = crypto.createKeyPairSync('x25519')
-  .export({ type: 'spki', format: 'der' });
+const sharedKey = crypto
+  .createKeyPairSync("x25519")
+  .export({ type: "spki", format: "der" });
 ```
 
 #### Capa 2: Argon2id (Derivación de Clave)
@@ -313,11 +315,11 @@ class PopupController {
   private credentialsList: HTMLElement;
   private searchInput: HTMLInputElement;
   private modalAdd: HTMLElement;
-  
+
   // Servicios
   private credentialService: CredentialService;
-  private cryptoService: CryptoLayeredService;
-  
+  private cryptoService: CryptoService;
+
   // Inicialización
   async init(): Promise<void> {
     await this.loadCredentials();
@@ -333,15 +335,15 @@ class PopupController {
 class AuditorService {
   // Runs periodically to check:
   // 1. Weak passwords
-  // 2. Reused passwords  
+  // 2. Reused passwords
   // 3. Breached credentials
-  
+
   async runAudit(): Promise<AuditResult> {
     const credentials = await this.getCredentials();
     const results = await Promise.all([
       this.checkWeakPasswords(credentials),
       this.checkReusedPasswords(credentials),
-      this.checkBreaches(credentials)
+      this.checkBreaches(credentials),
     ]);
     return this.aggregateResults(results);
   }
@@ -360,34 +362,34 @@ class AuditorService {
 interface Credential {
   /** ID único (UUID v4) */
   id: string;
-  
+
   /** Título para mostrar */
   title: string;
-  
+
   /** Usuario o email */
   username: string;
-  
+
   /** Contraseña encriptada */
   encryptedPassword: EncryptedData;
-  
+
   /** URL del servicio (opcional) */
   url?: string;
-  
+
   /** Notas encriptadas (opcional) */
   encryptedNotes?: EncryptedData;
-  
+
   /** Marcar como favorita */
   favorite: boolean;
-  
+
   /** Etiquetas para organización */
   tags: string[];
-  
+
   /** Timestamp de último uso */
   lastUsed?: string;
-  
+
   /** Timestamp de creación */
   createdAt: string;
-  
+
   /** Timestamp de última modificación */
   updatedAt?: string;
 }
@@ -400,17 +402,17 @@ interface Credential {
 
 interface Vault {
   /** Estado de la bóveda */
-  status: 'locked' | 'unlocked' | 'error';
-  
+  status: "locked" | "unlocked" | "error";
+
   /** Clave maestra hasheada (no la clave real) */
   masterKeyHash: string;
-  
+
   /** Salt para derivar clave */
   keySalt: Uint8Array;
-  
+
   /** Número de credenciales */
   credentialCount: number;
-  
+
   /** Última sincronización */
   lastSync?: string;
 }
@@ -421,21 +423,25 @@ interface Vault {
 ```typescript
 // src/domain/entities/vulnerability.ts
 
-type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
+type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
 interface Vulnerability {
   /** ID de la credencial afectada */
   credentialId: string;
-  
+
   /** Tipo de vulnerabilidad */
-  type: 'WEAK_PASSWORD' | 'REUSED_PASSWORD' | 'BREACHED_PASSWORD' | 'OLD_PASSWORD';
-  
+  type:
+    | "WEAK_PASSWORD"
+    | "REUSED_PASSWORD"
+    | "BREACHED_PASSWORD"
+    | "OLD_PASSWORD";
+
   /** Severidad */
   severity: Severity;
-  
+
   /** Descripción */
   description: string;
-  
+
   /** Recomendación */
   recommendation: string;
 }
@@ -469,12 +475,12 @@ interface Vulnerability {
 
 ### Controles de Seguridad
 
-| Control | Implementación |
-|---------|---------------|
-| **CSP** | `script-src 'self'` |
-| **Input Validation** | Zod schemas |
-| **Secure Memory** | `crypto.randomBytes` |
-| **No Logging** | Secretos nunca en logs |
+| Control              | Implementación         |
+| -------------------- | ---------------------- |
+| **CSP**              | `script-src 'self'`    |
+| **Input Validation** | Zod schemas            |
+| **Secure Memory**    | `crypto.randomBytes`   |
+| **No Logging**       | Secretos nunca en logs |
 | **Content Security** | extension_pages policy |
 
 ---
@@ -483,13 +489,13 @@ interface Vulnerability {
 
 ### Decisiones Clave
 
-| Decisión | Razón | Alternativa Descartada |
-|----------|-------|------------------------|
-| **Chrome Extension** | Acceso a storage, portable | PWA standalone |
-| **4 capas crypto** | Máxima seguridad | 1 capa AES |
-| **IPFS sync** | Descentralizado, seguro | Servidor centralizado |
-| **TypeScript** | Seguridad de tipos | JavaScript plano |
-| **Clean Architecture** | Testeable, mantenible | MVC tradicional |
+| Decisión               | Razón                      | Alternativa Descartada |
+| ---------------------- | -------------------------- | ---------------------- |
+| **Chrome Extension**   | Acceso a storage, portable | PWA standalone         |
+| **4 capas crypto**     | Máxima seguridad           | 1 capa AES             |
+| **IPFS sync**          | Descentralizado, seguro    | Servidor centralizado  |
+| **TypeScript**         | Seguridad de tipos         | JavaScript plano       |
+| **Clean Architecture** | Testeable, mantenible      | MVC tradicional        |
 
 ### Trade-offs
 
@@ -525,5 +531,5 @@ interface Vulnerability {
 
 ---
 
-*Última actualización: Marzo 2026*
-*Versión del documento: 1.0.0*
+_Última actualización: Marzo 2026_
+_Versión del documento: 1.0.0_

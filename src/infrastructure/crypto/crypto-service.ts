@@ -6,6 +6,7 @@
 import { ICryptoService } from "../../domain/services";
 import { CryptoHash } from "../../domain/value-objects/ids";
 import { SecureBuffer, secureZero, generateSecureSalt } from "./secure-memory";
+import { binaryToBase64, base64ToBinary } from "@/shared/utils";
 
 /**
  * Constantes de configuración criptográfica
@@ -79,7 +80,7 @@ export class CryptoService implements ICryptoService {
   async encrypt(data: string, masterKey: string): Promise<string> {
     // SECURITY: Generate random salt for key derivation
     const salt = generateSecureSalt(CRYPTO_CONFIG.PBKDF2.SALT_LENGTH);
-    
+
     // SECURITY: Derive key from master using PBKDF2
     const keyMaterial = await crypto.subtle.importKey(
       "raw",
@@ -106,7 +107,9 @@ export class CryptoService implements ICryptoService {
     );
 
     // Clean up key material
-    secureZero(new Uint8Array(await crypto.subtle.exportKey("raw", keyMaterial)));
+    secureZero(
+      new Uint8Array(await crypto.subtle.exportKey("raw", keyMaterial)),
+    );
 
     // Generate unique IV
     const iv = new Uint8Array(CRYPTO_CONFIG.AES.IV_LENGTH);
@@ -130,12 +133,14 @@ export class CryptoService implements ICryptoService {
     secureZero(dataBuffer);
 
     // Format: salt|iv|ciphertext (no key!)
-    const combined = new Uint8Array(salt.length + iv.length + encryptedBuffer.byteLength);
+    const combined = new Uint8Array(
+      salt.length + iv.length + encryptedBuffer.byteLength,
+    );
     combined.set(salt, 0);
     combined.set(iv, salt.length);
     combined.set(new Uint8Array(encryptedBuffer), salt.length + iv.length);
 
-    return btoa(String.fromCharCode(...combined));
+    return binaryToBase64(combined);
   }
 
   /**
@@ -147,11 +152,7 @@ export class CryptoService implements ICryptoService {
    */
   async decrypt(encryptedData: string, masterKey: string): Promise<string> {
     // Decode base64
-    const combined = new Uint8Array(
-      atob(encryptedData)
-        .split("")
-        .map((c) => c.charCodeAt(0)),
-    );
+    const combined = base64ToBinary(encryptedData);
 
     // Extract components: salt|iv|ciphertext
     const saltLength = CRYPTO_CONFIG.PBKDF2.SALT_LENGTH;
@@ -247,11 +248,7 @@ export class CryptoService implements ICryptoService {
   ): Promise<string> {
     const encoder = new TextEncoder();
     const passwordBuffer = encoder.encode(password);
-    const saltBuffer = new Uint8Array(
-      atob(salt)
-        .split("")
-        .map((c) => c.charCodeAt(0)),
-    );
+    const saltBuffer = base64ToBinary(salt);
 
     try {
       const keyMaterial = await crypto.subtle.importKey(
@@ -275,7 +272,7 @@ export class CryptoService implements ICryptoService {
 
       // Convertir a base64
       const derivedArray = new Uint8Array(derivedKey);
-      return btoa(String.fromCharCode(...derivedArray));
+      return binaryToBase64(derivedArray);
     } finally {
       // Limpieza segura
       secureZero(passwordBuffer);
@@ -289,7 +286,7 @@ export class CryptoService implements ICryptoService {
    */
   async generateSalt(): Promise<string> {
     const salt = generateSecureSalt(CRYPTO_CONFIG.PBKDF2.SALT_LENGTH);
-    return btoa(String.fromCharCode(...salt));
+    return binaryToBase64(salt);
   }
 
   /**
@@ -326,7 +323,7 @@ export class CryptoService implements ICryptoService {
       );
 
       const signatureArray = new Uint8Array(signature);
-      return btoa(String.fromCharCode(...signatureArray));
+      return binaryToBase64(signatureArray);
     } finally {
       secureZero(dataBuffer);
     }
@@ -361,11 +358,7 @@ export class CryptoService implements ICryptoService {
       const encoder = new TextEncoder();
       const dataBuffer = encoder.encode(data);
 
-      const signatureBuffer = new Uint8Array(
-        atob(signature)
-          .split("")
-          .map((c) => c.charCodeAt(0)),
-      );
+      const signatureBuffer = base64ToBinary(signature);
 
       const result = await crypto.subtle.verify(
         {

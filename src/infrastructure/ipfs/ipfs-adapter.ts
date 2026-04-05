@@ -3,7 +3,7 @@
  */
 
 import { IIPFSService } from "../../domain/services";
-import { CryptoLayeredService } from "../crypto/crypto-layered-service";
+import { CryptoService } from "../crypto/crypto-service";
 
 export interface IPFSConfig {
   host: string;
@@ -13,11 +13,11 @@ export interface IPFSConfig {
 }
 
 class IPFSAdapter implements IIPFSService {
-  private cryptoService: CryptoLayeredService;
+  private cryptoService: CryptoService;
   private gatewayUrl: string;
 
-  constructor(config: IPFSConfig, cryptoService?: CryptoLayeredService) {
-    this.cryptoService = cryptoService || new CryptoLayeredService();
+  constructor(config: IPFSConfig, cryptoService?: CryptoService) {
+    this.cryptoService = cryptoService || new CryptoService();
     this.gatewayUrl = `${config.protocol}://${config.host}:${config.port}`;
   }
 

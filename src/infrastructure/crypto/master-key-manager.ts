@@ -116,7 +116,7 @@ async function deriveSessionKey(
     },
     keyMaterial,
     { name: "AES-GCM", length: 256 },
-    false, // Not extractable
+    true, // Extractable to allow export for in-memory use
     ["encrypt", "decrypt"],
   );
 
@@ -152,6 +152,15 @@ export async function initializeVault(
       return {
         success: false,
         error: "La clave maestra debe tener al menos 12 caracteres",
+      };
+    }
+
+    // Check if vault already initialized
+    const alreadyInitialized = await isVaultInitialized();
+    if (alreadyInitialized) {
+      return {
+        success: false,
+        error: "La bóveda ya ha sido inicializada",
       };
     }
 

@@ -196,13 +196,20 @@
       <div class="modal-content">
         <div class="modal-header">
           <h2>Editar Credencial</h2>
-          <button class="modal-close" data-modal="modal-edit-credential">×</button>
+          <button class="modal-close" data-modal="modal-edit-credential">
+            ×
+          </button>
         </div>
         <form id="form-edit-credential" class="modal-body">
           <input type="hidden" id="edit-cred-id" />
           <div class="form-group">
             <label for="edit-cred-title">Título</label>
-            <input type="text" id="edit-cred-title" required placeholder="ej: Gmail personal" />
+            <input
+              type="text"
+              id="edit-cred-title"
+              required
+              placeholder="ej: Gmail personal"
+            />
           </div>
           <div class="form-group">
             <label for="edit-cred-url">URL</label>
@@ -216,7 +223,13 @@
             <label for="edit-cred-password">Contraseña</label>
             <div class="password-input-group">
               <input type="password" id="edit-cred-password" />
-              <button type="button" class="toggle-password" data-target="edit-cred-password">👁️</button>
+              <button
+                type="button"
+                class="toggle-password"
+                data-target="edit-cred-password"
+              >
+                👁️
+              </button>
             </div>
           </div>
           <div class="form-group">
@@ -225,7 +238,11 @@
           </div>
           <div class="form-group">
             <label for="edit-cred-tags">Etiquetas</label>
-            <input type="text" id="edit-cred-tags" placeholder="trabajo, personal" />
+            <input
+              type="text"
+              id="edit-cred-tags"
+              placeholder="trabajo, personal"
+            />
           </div>
           <div class="form-group">
             <label class="checkbox-label">
@@ -233,7 +250,13 @@
             </label>
           </div>
           <div class="modal-actions">
-            <button type="button" class="btn-secondary" data-modal="modal-edit-credential">Cancelar</button>
+            <button
+              type="button"
+              class="btn-secondary"
+              data-modal="modal-edit-credential"
+            >
+              Cancelar
+            </button>
             <button type="submit" class="btn-primary">Guardar</button>
           </div>
         </form>
@@ -245,15 +268,25 @@
       <div class="modal-content">
         <div class="modal-header">
           <h2>Eliminar Credencial</h2>
-          <button class="modal-close" data-modal="modal-delete-confirm">×</button>
+          <button class="modal-close" data-modal="modal-delete-confirm">
+            ×
+          </button>
         </div>
         <div class="modal-body">
           <p>¿Estás seguro de eliminar esta credencial?</p>
           <p id="delete-cred-title" class="delete-warning"></p>
           <input type="hidden" id="delete-cred-id" />
           <div class="modal-actions">
-            <button type="button" class="btn-secondary" data-modal="modal-delete-confirm">Cancelar</button>
-            <button type="button" id="btn-confirm-delete" class="btn-danger">Eliminar</button>
+            <button
+              type="button"
+              class="btn-secondary"
+              data-modal="modal-delete-confirm"
+            >
+              Cancelar
+            </button>
+            <button type="button" id="btn-confirm-delete" class="btn-danger">
+              Eliminar
+            </button>
           </div>
         </div>
       </div>
@@ -264,11 +297,19 @@
       <div class="modal-content">
         <div class="modal-header">
           <h2>Detalles</h2>
-          <button class="modal-close" data-modal="modal-view-credential">×</button>
+          <button class="modal-close" data-modal="modal-view-credential">
+            ×
+          </button>
         </div>
         <div class="modal-body" id="view-credential-content"></div>
         <div class="modal-actions">
-          <button type="button" class="btn-secondary" data-modal="modal-view-credential">Cerrar</button>
+          <button
+            type="button"
+            class="btn-secondary"
+            data-modal="modal-view-credential"
+          >
+            Cerrar
+          </button>
         </div>
       </div>
     </div>
@@ -281,38 +322,54 @@
         </div>
         <div class="modal-body">
           <p class="setup-description">
-            Bienvenido a CyberVault. Crea una clave maestra para proteger tus credenciales.
+            Bienvenido a CyberVault. Crea una clave maestra para proteger tus
+            credenciales.
           </p>
           <div class="security-notice">
             <span class="warning-icon">⚠️</span>
-            <p><strong>Importante:</strong> Tu clave maestra NO se puede recuperar. 
-            Si la olvidas, perderás acceso a todas tus credenciales.</p>
+            <p>
+              <strong>Importante:</strong> Tu clave maestra NO se puede
+              recuperar. Si la olvidas, perderás acceso a todas tus
+              credenciales.
+            </p>
           </div>
           <form id="form-setup-master-key">
             <div class="form-group">
               <label for="master-key">Clave Maestra</label>
               <div class="password-input-group">
-                <input 
-                  type="password" 
-                  id="master-key" 
-                  required 
+                <input
+                  type="password"
+                  id="master-key"
+                  required
                   minlength="12"
                   placeholder="Mínimo 12 caracteres"
                 />
-                <button type="button" class="toggle-password" data-target="master-key">👁️</button>
+                <button
+                  type="button"
+                  class="toggle-password"
+                  data-target="master-key"
+                >
+                  👁️
+                </button>
               </div>
             </div>
             <div class="form-group">
               <label for="master-key-confirm">Confirmar Clave Maestra</label>
               <div class="password-input-group">
-                <input 
-                  type="password" 
-                  id="master-key-confirm" 
-                  required 
+                <input
+                  type="password"
+                  id="master-key-confirm"
+                  required
                   minlength="12"
                   placeholder="Repite la clave"
                 />
-                <button type="button" class="toggle-password" data-target="master-key-confirm">👁️</button>
+                <button
+                  type="button"
+                  class="toggle-password"
+                  data-target="master-key-confirm"
+                >
+                  👁️
+                </button>
               </div>
             </div>
             <div class="form-group">
@@ -343,13 +400,19 @@
             <div class="form-group">
               <label for="unlock-key">Clave Maestra</label>
               <div class="password-input-group">
-                <input 
-                  type="password" 
-                  id="unlock-key" 
-                  required 
+                <input
+                  type="password"
+                  id="unlock-key"
+                  required
                   placeholder="Tu clave maestra"
                 />
-                <button type="button" class="toggle-password" data-target="unlock-key">👁️</button>
+                <button
+                  type="button"
+                  class="toggle-password"
+                  data-target="unlock-key"
+                >
+                  👁️
+                </button>
               </div>
             </div>
             <div class="modal-actions">
@@ -364,6 +427,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Notification Container -->
+    <div id="notification-container"></div>
 
     <script src="popup.js"></script>
   </body>

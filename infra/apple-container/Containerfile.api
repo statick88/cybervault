@@ -1,5 +1,5 @@
-# Dockerfile para API Vault
-# Imagen base minimalista con Node.js para máxima seguridad
+# Containerfile para API CyberVault (Apple Container compatible)
+# Optimizado para Apple Silicon y runtime nativo de Apple
 
 FROM node:20-alpine AS builder
 
@@ -11,11 +11,10 @@ WORKDIR /app
 
 # Copiar package.json y install dependencies
 COPY package*.json ./
-RUN npm ci  
+RUN npm ci
 
 # Copiar código fuente
 COPY tsconfig.json ./
-
 COPY src/ ./src/
 COPY tests/ ./tests/
 

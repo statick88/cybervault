@@ -19,16 +19,15 @@
   "background": {
     "service_worker": "background/auditor.js"
   },
-  "permissions": ["storage", "alarms", "notifications", "tabs"],
+  "permissions": ["storage", "alarms", "tabs"],
   "host_permissions": [
     "https://api.pwnedpasswords.com/*",
     "https://otx.alienvault.com/*",
-    "https://api.github.com/*",
-    "https://*/*"
+    "https://api.github.com/*"
   ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["ui/content-scripts/inject.js"],
       "run_at": "document_idle"
     }
@@ -36,10 +35,10 @@
   "web_accessible_resources": [
     {
       "resources": ["icons/*", "ui/popup/*", "ui/options/*"],
-      "matches": ["<all_urls>"]
+      "matches": []
     }
   ],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.pwnedpasswords.com https://otx.alienvault.com https://api.github.com https://*; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self' https://api.pwnedpasswords.com https://otx.alienvault.com https://api.github.com; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
   }
 }

@@ -76,21 +76,25 @@ export class BackgroundAuditor {
    * Inicializa el auditor - llamado desde Service Worker
    */
   async initialize(): Promise<void> {
-    console.log("[BackgroundAuditor] Inicializando...");
+    try {
+      console.log("[BackgroundAuditor] Inicializando...");
 
-    // Cargar configuración
-    await this.loadConfig();
+      // Cargar configuración
+      await this.loadConfig();
 
-    // Configurar alarm para scans periódicos
-    await this.setupScheduledScans();
+      // Configurar alarm para scans periódicos
+      await this.setupScheduledScans();
 
-    // Registrar event listeners
-    this.registerEventListeners();
+      // Registrar event listeners
+      this.registerEventListeners();
 
-    // Ejecutar scan inicial
-    await this.runFullAudit();
+      // Ejecutar scan inicial
+      await this.runFullAudit();
 
-    console.log("[BackgroundAuditor] Inicialización completa");
+      console.log("[BackgroundAuditor] Inicialización completa");
+    } catch (error) {
+      console.error("[BackgroundAuditor] Error en inicialización:", error);
+    }
   }
 
   /**
@@ -159,7 +163,11 @@ export class BackgroundAuditor {
 
     // Messages desde popup/options
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      this.handleMessage(message, sender).then(sendResponse);
+      console.log("[BackgroundAuditor] Message received:", message);
+      this.handleMessage(message, sender).then((response) => {
+        console.log("[BackgroundAuditor] Sending response:", response);
+        sendResponse(response);
+      });
       return true; // Async response
     });
   }
@@ -217,6 +225,9 @@ export class BackgroundAuditor {
     _sender: chrome.runtime.MessageSender,
   ): Promise<unknown> {
     switch (message.action) {
+      case "ping":
+        return { status: "alive", timestamp: Date.now() };
+
       case "run_audit":
         return await this.runFullAudit();
 
@@ -333,14 +344,26 @@ export class BackgroundAuditor {
     message: string;
     severity: string;
   }): Promise<void> {
-    // Usar chrome.notifications para alertas nativas
-    await chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icons/icon-128.png",
-      title: params.title,
-      message: params.message,
-      priority: params.severity === "CRITICAL" ? 2 : 1,
-    });
+    // Notificaciones deshabilitadas temporalmente para evitar errores
+    console.log("[CyberVault] Notification:", params.title, params.message);
+    return;
+    
+    /* // Código original - deshabilitado temporalmente
+    try {
+      if (!params.title || !params.message) {
+        console.warn("[BackgroundAuditor] Notification skipped: missing params");
+        return;
+      }
+      await chrome.notifications.create({
+        type: "basic",
+        title: params.title,
+        message: params.message,
+        priority: params.severity === "CRITICAL" ? 2 : 1,
+      });
+    } catch (error) {
+      console.warn("[BackgroundAuditor] Notification error:", error);
+    }
+    */
   }
 
   /**
@@ -450,21 +473,42 @@ export class BackgroundAuditor {
 
 let auditor: BackgroundAuditor;
 
-// Inicializar cuando el Service Worker arranca
-chrome.runtime.onInstalled.addListener(async () => {
-  auditor = new BackgroundAuditor();
-  await auditor.initialize();
-});
-
-// Manejar startup
-chrome.runtime.onStartup.addListener(async () => {
-  auditor = new BackgroundAuditor();
-  await auditor.initialize();
-});
-
-// Cleanup al detener Service Worker
-chrome.runtime.onSuspend.addListener(async () => {
-  if (auditor) {
-    await auditor.cleanup();
+// Función de inicialización
+async function initAuditor() {
+  try {
+    auditor = new BackgroundAuditor();
+    await auditor.initialize();
+    console.log("[BackgroundAuditor] Ready and initialized");
+  } catch (err) {
+    console.error("[BackgroundAuditor] Init failed:", err);
   }
-});
+}
+
+// Inicializar después de un pequeño delay para asegurar que el SW esté listo
+// Usamos un approach más robusto para el service worker
+function setupServiceWorker() {
+  // Verificar que estamos en el contexto correcto de Chrome
+  if (typeof chrome === 'undefined' || !chrome.runtime) {
+    console.warn("[BackgroundAuditor] Chrome runtime not available, skipping setup");
+    return;
+  }
+
+  // Escuchar el evento de instalación
+  if (chrome.runtime.onInstalled) {
+    chrome.runtime.onInstalled.addListener(() => {
+      console.log("[BackgroundAuditor] Installed/Updated");
+      initAuditor();
+    });
+  }
+
+  // También intentar inicializar ahora (puede ser un reinicio del SW)
+  initAuditor();
+}
+
+// Ejecutar setup cuando el script se carga
+// Usamos requestIdleCallback o un fallback con setTimeout
+if (typeof requestIdleCallback !== 'undefined') {
+  requestIdleCallback(() => setupServiceWorker(), { timeout: 1000 });
+} else {
+  setTimeout(() => setupServiceWorker(), 100);
+}

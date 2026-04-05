@@ -40,14 +40,14 @@ await esbuild.build({
 
 console.log("✓ Background script bundled");
 
-// 2. Build popup with esbuild (needs to be module for imports)
+// 2. Build popup with esbuild (IIFE format for browser)
 await esbuild.build({
   entryPoints: [join(srcDir, "ui/popup/popup.ts")],
   bundle: true,
   outfile: join(distDir, "ui/popup/popup.js"),
   platform: "browser",
   target: "chrome120",
-  format: "esm",
+  format: "iife",
   minify: false,
   sourcemap: true,
   define: {

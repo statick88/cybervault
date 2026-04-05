@@ -149,6 +149,14 @@
               >
                 👁️
               </button>
+              <button
+                type="button"
+                class="btn-generate-inline"
+                data-target="cred-password"
+                title="Generar contraseña"
+              >
+                🎲
+              </button>
             </div>
           </div>
           <div class="form-group">
@@ -265,6 +273,98 @@
       </div>
     </div>
 
-    <script src="popup.js" type="module"></script>
+    <!-- Modal: Setup Master Key (First Time) -->
+    <div class="modal" id="modal-setup-master-key" hidden>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>🔐 Configurar Bóveda</h2>
+        </div>
+        <div class="modal-body">
+          <p class="setup-description">
+            Bienvenido a CyberVault. Crea una clave maestra para proteger tus credenciales.
+          </p>
+          <div class="security-notice">
+            <span class="warning-icon">⚠️</span>
+            <p><strong>Importante:</strong> Tu clave maestra NO se puede recuperar. 
+            Si la olvidas, perderás acceso a todas tus credenciales.</p>
+          </div>
+          <form id="form-setup-master-key">
+            <div class="form-group">
+              <label for="master-key">Clave Maestra</label>
+              <div class="password-input-group">
+                <input 
+                  type="password" 
+                  id="master-key" 
+                  required 
+                  minlength="12"
+                  placeholder="Mínimo 12 caracteres"
+                />
+                <button type="button" class="toggle-password" data-target="master-key">👁️</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="master-key-confirm">Confirmar Clave Maestra</label>
+              <div class="password-input-group">
+                <input 
+                  type="password" 
+                  id="master-key-confirm" 
+                  required 
+                  minlength="12"
+                  placeholder="Repite la clave"
+                />
+                <button type="button" class="toggle-password" data-target="master-key-confirm">👁️</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="master-key-understood" required />
+                Entiendo que no puedo recuperar mi clave maestra
+              </label>
+            </div>
+            <div class="modal-actions">
+              <button type="submit" class="btn-primary">Crear Bóveda</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Unlock Vault -->
+    <div class="modal" id="modal-unlock-vault" hidden>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>🔓 Desbloquear Bóveda</h2>
+        </div>
+        <div class="modal-body">
+          <p class="unlock-description">
+            Ingresa tu clave maestra para acceder a tus credenciales.
+          </p>
+          <form id="form-unlock-vault">
+            <div class="form-group">
+              <label for="unlock-key">Clave Maestra</label>
+              <div class="password-input-group">
+                <input 
+                  type="password" 
+                  id="unlock-key" 
+                  required 
+                  placeholder="Tu clave maestra"
+                />
+                <button type="button" class="toggle-password" data-target="unlock-key">👁️</button>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button type="submit" class="btn-primary">Desbloquear</button>
+            </div>
+          </form>
+          <div class="danger-zone">
+            <button type="button" id="btn-reset-vault" class="btn-danger-small">
+              ⚠️ Restablecer Bóveda
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
   </body>
 </html>

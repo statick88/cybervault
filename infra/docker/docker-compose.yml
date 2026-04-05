@@ -9,11 +9,14 @@ services:
     container_name: cyber-vault-api
     ports:
       - "3000:3000"
-    environment:
-      - NODE_ENV=development
-      - PORT=3000
-      - IPFS_HOST=ipfs-node:5001
-      - DATABASE_URL=postgres://cyberuser:cyberpass@postgres:5432/cyber_vault
+     environment:
+       - NODE_ENV=${NODE_ENV:-development}
+       - PORT=3000
+       - IPFS_HOST=ipfs-node:5001
+       - DATABASE_URL=postgres://cyberuser:${POSTGRES_PASSWORD}@postgres:5432/cyber_vault
+       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
+       - VAULT_ENCRYPTION_SALT=${VAULT_ENCRYPTION_SALT}
+       - JWT_SECRET=${JWT_SECRET}
     depends_on:
       - postgres
       - ipfs-node
@@ -58,7 +61,7 @@ services:
     environment:
       - POSTGRES_DB=cyber_vault
       - POSTGRES_USER=cyberuser
-      - POSTGRES_PASSWORD=cyberpass
+       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-cyberpass}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data:rw
     ports:
@@ -68,11 +71,6 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
-    command: >
-      postgres 
-      -c ssl=on 
-      -c ssl_cert_file=/etc/ssl/certs/server.crt 
-      -c ssl_key_file=/etc/ssl/certs/server.key
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cyberuser"]
       interval: 10s

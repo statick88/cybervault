@@ -3,6 +3,8 @@
  * Detecta formularios de login y facilita el autofill de credenciales
  */
 
+import { escapeHtml, escapeAttribute } from "../utils";
+
 console.log("[CyberVault] Content script cargado");
 
 // ============================================================================
@@ -249,20 +251,20 @@ function createPageCredentialSelector(credentials: PageCredential[]): void {
       <div class="cybervault-dropdown-header">
         Credenciales guardadas
       </div>
-      ${
-        credentials.length === 0
-          ? '<div class="cybervault-empty">No hay credenciales para este sitio</div>'
-          : credentials
-              .map(
-                (cred) => `
-          <div class="cybervault-credential-item" data-username="${cred.username}" data-password="${cred.password || ""}">
-            <div class="cybervault-credential-title">${escapeHtml(cred.title)}</div>
-            <div class="cybervault-credential-username">${escapeHtml(cred.username)}</div>
-          </div>
-        `,
-              )
-              .join("")
-      }
+       ${
+         credentials.length === 0
+           ? '<div class="cybervault-empty">No hay credenciales para este sitio</div>'
+           : credentials
+               .map(
+                 (cred) => `
+           <div class="cybervault-credential-item" data-username="${escapeAttribute(cred.username)}" data-password="${escapeAttribute(cred.password || "")}">
+             <div class="cybervault-credential-title">${escapeHtml(cred.title)}</div>
+             <div class="cybervault-credential-username">${escapeHtml(cred.username)}</div>
+           </div>
+         `,
+               )
+               .join("")
+       }
     </div>
   `;
 
@@ -485,10 +487,3 @@ new MutationObserver(() => {
     init();
   }
 }).observe(document.body, { childList: true, subtree: true });
-
-// Utils
-function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}

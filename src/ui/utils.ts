@@ -13,6 +13,46 @@ export function escapeHtml(text: string): string {
 }
 
 /**
+ * Escapa caracteres para usar en atributos HTML
+ * Previene inyección de atributos mediante comillas y caracteres especiales
+ */
+export function escapeAttribute(value: string): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;")
+    .replace(/`/g, "&#x60;");
+}
+
+/**
+ * Sanitiza URLs previniendo protocolos peligrosos (javascript:, data:, etc.)
+ * Solo permite http: y https:
+ */
+export function sanitizeUrl(url: string): string {
+  if (!url || typeof url !== "string") return "#";
+
+  const trimmed = url.trim();
+
+  // Validar protocolo explícitamente
+  if (!/^https?:/.test(trimmed)) {
+    return "#";
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "#";
+    }
+    return parsed.href;
+  } catch {
+    return "#";
+  }
+}
+
+/**
  * Genera una letra para el favicon basada en el título
  */
 export function getFaviconLetter(title: string): string {

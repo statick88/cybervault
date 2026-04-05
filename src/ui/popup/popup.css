@@ -346,8 +346,9 @@ body {
   z-index: 100;
 }
 
+/* Modal - active state must override hidden attribute */
 .modal.active {
-  display: flex;
+  display: flex !important;
 }
 
 .modal[hidden] {
@@ -503,6 +504,28 @@ body {
   }
 }
 
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
+  }
+}
+
 /* Empty State */
 .empty-state {
   display: flex;
@@ -630,4 +653,66 @@ body {
   font-size: 11px;
   margin-right: 4px;
   margin-bottom: 4px;
+}
+
+/* Master Key Setup Modal */
+.setup-description,
+.unlock-description {
+  text-align: center;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.security-notice {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.security-notice .warning-icon {
+  font-size: 18px;
+}
+
+.security-notice p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.security-notice strong {
+  color: var(--text-primary);
+}
+
+.danger-zone {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.btn-danger-small {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.btn-danger-small:hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* Locked State */
+.app-container.locked {
+  filter: blur(4px);
+  pointer-events: none;
+  user-select: none;
 }

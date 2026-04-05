@@ -1,0 +1,305 @@
+# =============================================================================
+# CyberVault CI/CD Pipeline - DevSecOps
+# =============================================================================
+# Pipeline de seguridad integrado en el desarrollo
+# Filosofía: "Security is not optional" - cada commit se verifica
+# =============================================================================
+
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'security/**']
+  pull_request:
+    branches: [main, develop]
+
+# =============================================================================
+# PERMISOS
+# =============================================================================
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+# =============================================================================
+# JOBS DEL PIPELINE
+# =============================================================================
+
+jobs:
+  # -----------------------------------------------------------------------------
+  # JOB 1: LINT - Calidad de código
+  # -----------------------------------------------------------------------------
+  lint:
+    name: ESLint + TypeScript Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint -- --max-warnings=0
+
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+
+  # -----------------------------------------------------------------------------
+  # JOB 2: TEST - Ejecutar pruebas
+  # -----------------------------------------------------------------------------
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --coverage --coverageThreshold='{"global":{"branches":70,"functions":70,"lines":70,"statements":70}'
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: ./coverage/lcov.info
+
+  # -----------------------------------------------------------------------------
+  # JOB 3: SECURITY - Análisis de seguridad estático
+  # -----------------------------------------------------------------------------
+  security:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # -------------------------
+      # npm audit - Vulnerabilidades en dependencias
+      # -------------------------
+      - name: npm Audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      # -------------------------
+      # Trivy - Escaneo de vulnerabilidades en container/images
+      # -------------------------
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      # -------------------------
+      # Sobelow - Seguridad en Elixir/ Phoenix (si aplica)
+      # -------------------------
+      - name: Check secrets in code
+        run: |
+          echo "=== Searching for potential secrets ==="
+          grep -r "password\s*=" --include="*.ts" src/ || true
+          grep -r "apiKey\s*=" --include="*.ts" src/ || true
+          grep -r "secret\s*=" --include="*.ts" src/ || true
+          echo "=== Secret search complete ==="
+
+      # -------------------------
+      # Dependency Review - Revisión de dependencias
+      # -------------------------
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+
+  # -----------------------------------------------------------------------------
+  # JOB 4: BUILD - Compilación
+  # -----------------------------------------------------------------------------
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+    needs: security
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Build extension package
+        run: npm run build:ext
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybervault-dist
+          path: dist/
+          retention-days: 7
+
+  # -----------------------------------------------------------------------------
+  # JOB 5: CHROME EXTENSION VALIDATION
+  # -----------------------------------------------------------------------------
+  validate-extension:
+    name: Validate Chrome Extension
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cybervault-dist
+          path: dist/
+
+      - name: Validate manifest.json
+        run: |
+          echo "=== Validating Chrome Extension Manifest ==="
+          # Check manifest exists
+          if [ ! -f "dist/manifest.json" ]; then
+            echo "ERROR: manifest.json not found"
+            exit 1
+          fi
+          
+          # Validate JSON syntax
+          if ! python3 -c "import json; json.load(open('dist/manifest.json'))" 2>/dev/null; then
+            echo "ERROR: Invalid manifest.json"
+            exit 1
+          fi
+          
+          # Check required fields
+          echo "Manifest fields:"
+          cat dist/manifest.json | python3 -m json.tool
+          
+          echo "=== Manifest validation complete ==="
+
+      - name: Check required files
+        run: |
+          echo "=== Checking required files ==="
+          
+          required_files=(
+            "dist/manifest.json"
+            "dist/ui/popup/popup.html"
+            "dist/ui/popup/popup.js"
+            "dist/ui/popup/popup.css"
+          )
+          
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Missing required file: $file"
+              exit 1
+            fi
+          done
+          
+          echo "=== All required files present ==="
+
+  # -----------------------------------------------------------------------------
+  # JOB 6: DEPLOY - Deploy automático (solo en main)
+  # -----------------------------------------------------------------------------
+  deploy:
+    name: Deploy to GitHub Releases
+    runs-on: ubuntu-latest
+    needs: [build, validate-extension]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cybervault-dist
+          path: dist/
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Create ZIP
+        run: |
+          cd dist
+          zip -r ../cybervault-v${{ steps.version.outputs.version }}.zip .
+          cd ..
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          release_name: CyberVault v${{ steps.version.outputs.version }}
+          draft: true
+          prerelease: false
+          body: |
+            ## 🔐 CyberVault - Zero-Knowledge Credential Manager
+            
+            ### Security Features
+            - 4-Layer Encryption (X25519, Argon2id, AES-256, ChaCha20)
+            - Zero-Knowledge Architecture
+            - Secure Memory Management
+            
+            ### What's New
+            See CHANGELOG.md for details.
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: cybervault-v${{ steps.version.outputs.version }}.zip
+          asset_content_type: application/zip
+
+# =============================================================================
+# NOTIFICACIONES
+# =============================================================================
+# Puedes agregar notificaciones a Slack, Discord, etc.
+# =============================================================================

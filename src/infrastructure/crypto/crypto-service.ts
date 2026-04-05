@@ -33,6 +33,7 @@ const CRYPTO_CONFIG = {
 export class CryptoService implements ICryptoService {
   /**
    * Genera par de claves asimétricas (ECDSA P-256)
+   * SECURITY: Keys are NOT extractable for security
    * @returns Par de claves en formato JWK
    */
   async generateKeyPair(): Promise<{
@@ -44,7 +45,7 @@ export class CryptoService implements ICryptoService {
         name: CRYPTO_CONFIG.ECDSA.ALGORITHM,
         namedCurve: CRYPTO_CONFIG.ECDSA.NAMED_CURVE,
       },
-      true, // extractable
+      false, // SECURITY: Keys are NOT extractable
       ["sign", "verify"],
     );
 
@@ -70,29 +71,48 @@ export class CryptoService implements ICryptoService {
 
   /**
    * Encripta datos usando AES-GCM-256
+   * SECURITY: Uses proper key derivation - master key derives the encryption key
    * @param data Datos a encriptar
-   * @param publicKey Clave pública (no usada para AES, mantenida por compatibilidad)
-   * @returns Datos encriptados en formato: iv|ciphertext|tag (base64)
+   * @param masterKey Clave maestra (usada para derivar clave de encriptación)
+   * @returns Datos encriptados en formato: salt|iv|ciphertext (base64)
    */
-  async encrypt(data: string, publicKey: string): Promise<string> {
-    // Generar clave AES aleatoria de 256 bits
-    const keyMaterial = await crypto.subtle.generateKey(
+  async encrypt(data: string, masterKey: string): Promise<string> {
+    // SECURITY: Generate random salt for key derivation
+    const salt = generateSecureSalt(CRYPTO_CONFIG.PBKDF2.SALT_LENGTH);
+    
+    // SECURITY: Derive key from master using PBKDF2
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(masterKey),
+      "PBKDF2",
+      false,
+      ["deriveKey"],
+    );
+
+    const aesKey = await crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt: salt,
+        iterations: CRYPTO_CONFIG.PBKDF2.ITERATIONS,
+        hash: CRYPTO_CONFIG.PBKDF2.HASH,
+      },
+      keyMaterial,
       {
         name: CRYPTO_CONFIG.AES.ALGORITHM,
         length: CRYPTO_CONFIG.AES.KEY_LENGTH,
       },
-      true,
+      false, // SECURITY: Key is not extractable
       ["encrypt", "decrypt"],
     );
 
-    // Exportar clave para que decrypt pueda usarla
-    const rawKey = await crypto.subtle.exportKey("raw", keyMaterial);
+    // Clean up key material
+    secureZero(new Uint8Array(await crypto.subtle.exportKey("raw", keyMaterial)));
 
-    // Generar nonce único
+    // Generate unique IV
     const iv = new Uint8Array(CRYPTO_CONFIG.AES.IV_LENGTH);
     crypto.getRandomValues(iv);
 
-    // Encriptar datos
+    // Encrypt data
     const encoder = new TextEncoder();
     const dataBuffer = encoder.encode(data);
 
@@ -102,83 +122,67 @@ export class CryptoService implements ICryptoService {
         iv: iv,
         tagLength: CRYPTO_CONFIG.AES.TAG_LENGTH,
       },
-      keyMaterial,
+      aesKey,
       dataBuffer,
     );
 
-    // Extraer ciphertext y tag
-    const ciphertext = new Uint8Array(encryptedBuffer);
-    const tagLength = CRYPTO_CONFIG.AES.TAG_LENGTH / 8;
-    const ciphertextWithoutTag = ciphertext.slice(
-      0,
-      ciphertext.length - tagLength,
-    );
-    const tag = ciphertext.slice(ciphertext.length - tagLength);
-
-    // Formato: iv|ciphertext|tag|key (base64) - Incluir clave para decrypt
-    const keyArray = new Uint8Array(rawKey);
-    const combined = new Uint8Array(
-      iv.length + ciphertextWithoutTag.length + tag.length + keyArray.length,
-    );
-    combined.set(iv, 0);
-    combined.set(ciphertextWithoutTag, iv.length);
-    combined.set(tag, iv.length + ciphertextWithoutTag.length);
-    combined.set(
-      keyArray,
-      iv.length + ciphertextWithoutTag.length + tag.length,
-    );
-
-    // Limpieza segura
+    // SECURITY: Clean up sensitive data
     secureZero(dataBuffer);
-    secureZero(rawKey as ArrayBuffer);
+
+    // Format: salt|iv|ciphertext (no key!)
+    const combined = new Uint8Array(salt.length + iv.length + encryptedBuffer.byteLength);
+    combined.set(salt, 0);
+    combined.set(iv, salt.length);
+    combined.set(new Uint8Array(encryptedBuffer), salt.length + iv.length);
 
     return btoa(String.fromCharCode(...combined));
   }
 
   /**
    * Desencripta datos usando AES-GCM-256
-   * @param encryptedData Datos encriptados en formato: iv|ciphertext|tag|key (base64)
-   * @param privateKey Clave privada (no usada para AES, mantenida por compatibilidad)
+   * SECURITY: Proper key derivation from master key
+   * @param encryptedData Datos encriptados en formato: salt|iv|ciphertext (base64)
+   * @param masterKey Clave maestra para derivar clave de desencriptación
    * @returns Datos originales
    */
-  async decrypt(encryptedData: string, privateKey: string): Promise<string> {
-    // Decodificar base64
+  async decrypt(encryptedData: string, masterKey: string): Promise<string> {
+    // Decode base64
     const combined = new Uint8Array(
       atob(encryptedData)
         .split("")
         .map((c) => c.charCodeAt(0)),
     );
 
-    // Extraer components
+    // Extract components: salt|iv|ciphertext
+    const saltLength = CRYPTO_CONFIG.PBKDF2.SALT_LENGTH;
     const ivLength = CRYPTO_CONFIG.AES.IV_LENGTH;
-    const tagLength = CRYPTO_CONFIG.AES.TAG_LENGTH / 8;
-    const keyLength = CRYPTO_CONFIG.AES.KEY_LENGTH / 8;
 
-    const iv = combined.slice(0, ivLength);
-    const tag = combined.slice(
-      combined.length - tagLength - keyLength,
-      combined.length - keyLength,
-    );
-    const ciphertext = combined.slice(
-      ivLength,
-      combined.length - tagLength - keyLength,
-    );
-    const keyBytes = combined.slice(combined.length - keyLength);
+    const salt = combined.slice(0, saltLength);
+    const iv = combined.slice(saltLength, saltLength + ivLength);
+    const ciphertextWithTag = combined.slice(saltLength + ivLength);
 
-    // Reconstruir ciphertext completo (ciphertext + tag)
-    const encryptedBuffer = new Uint8Array(ciphertext.length + tag.length);
-    encryptedBuffer.set(ciphertext, 0);
-    encryptedBuffer.set(tag, ciphertext.length);
-
-    // Importar clave AES
-    const aesKey = await crypto.subtle.importKey(
+    // Derive key from master using the same salt
+    const keyMaterial = await crypto.subtle.importKey(
       "raw",
-      keyBytes,
+      new TextEncoder().encode(masterKey),
+      "PBKDF2",
+      false,
+      ["deriveKey"],
+    );
+
+    const aesKey = await crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt: salt,
+        iterations: CRYPTO_CONFIG.PBKDF2.ITERATIONS,
+        hash: CRYPTO_CONFIG.PBKDF2.HASH,
+      },
+      keyMaterial,
       {
         name: CRYPTO_CONFIG.AES.ALGORITHM,
         length: CRYPTO_CONFIG.AES.KEY_LENGTH,
       },
-      true,
+      false, // SECURITY: Key is not extractable
       ["decrypt"],
     );
 
@@ -190,18 +194,19 @@ export class CryptoService implements ICryptoService {
           tagLength: CRYPTO_CONFIG.AES.TAG_LENGTH,
         },
         aesKey,
-        encryptedBuffer,
+        ciphertextWithTag,
       );
 
       const decoder = new TextDecoder();
       return decoder.decode(decryptedBuffer);
+    } catch (error) {
+      // SECURITY: Generic error message
+      throw new Error("Decryption failed");
     } finally {
-      // Limpieza segura
+      // SECURITY: Secure cleanup
+      secureZero(salt);
       secureZero(iv);
-      secureZero(ciphertext);
-      secureZero(tag);
-      secureZero(keyBytes);
-      secureZero(encryptedBuffer);
+      secureZero(ciphertextWithTag);
     }
   }
 
@@ -379,10 +384,11 @@ export class CryptoService implements ICryptoService {
     }
   }
 
-  // Métodos privados auxiliares
+  // SECURITY: Private method for key derivation (if needed internally)
+  // SECURITY: Uses proper PBKDF2 iterations
 
   private async deriveAesKeyFromMaster(masterKey: string): Promise<CryptoKey> {
-    // Derivación simplificada (en producción, usar PBKDF2 con salt)
+    // SECURITY: Proper key derivation with correct iterations
     const encoder = new TextEncoder();
     const keyBuffer = encoder.encode(masterKey);
 
@@ -395,7 +401,7 @@ export class CryptoService implements ICryptoService {
     );
 
     const salt = generateSecureSalt(16);
-    // Clonar salt para asegurar ArrayBuffer (no SharedArrayBuffer)
+    // SECURITY: Use NIST recommended iterations
     const saltArray = new Uint8Array(salt);
     const saltBuffer = saltArray.buffer;
 
@@ -403,15 +409,15 @@ export class CryptoService implements ICryptoService {
       {
         name: "PBKDF2",
         salt: saltBuffer,
-        iterations: 1000,
-        hash: "SHA-256",
+        iterations: CRYPTO_CONFIG.PBKDF2.ITERATIONS, // SECURITY: 600k iterations
+        hash: CRYPTO_CONFIG.PBKDF2.HASH,
       },
       keyMaterial,
       {
         name: CRYPTO_CONFIG.AES.ALGORITHM,
         length: CRYPTO_CONFIG.AES.KEY_LENGTH,
       },
-      true,
+      false, // SECURITY: Key is not extractable
       ["encrypt", "decrypt"],
     );
 

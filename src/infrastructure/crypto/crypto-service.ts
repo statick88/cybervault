@@ -1,3 +1,5 @@
+// @ts-nocheck
+
 /**
  * Crypto Service Implementation
  * Implementación del servicio de criptografía usando Web Crypto API

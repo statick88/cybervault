@@ -125,7 +125,7 @@ export class CredentialMonitor {
     for (const cred of credentials) {
       // Verificar si el sitio sigue siendo seguro
       try {
-        const response = await fetch(`https://${cred.domain}`, {
+        await fetch(`https://${cred.domain}`, {
           method: "HEAD",
           mode: "no-cors",
         });

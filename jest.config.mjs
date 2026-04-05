@@ -15,6 +15,7 @@ export default {
   setupFilesAfterEnv: ["<rootDir>/tests/setup.ts"],
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
+    "^@noble/hashes/(.*)$": "<rootDir>/node_modules/@noble/hashes/$1.js",
   },
   transform: {
     "^.+\\.tsx?$": ["ts-jest", { useESM: true }],

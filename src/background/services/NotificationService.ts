@@ -13,7 +13,21 @@ export interface NotificationParams {
 }
 
 export class NotificationService {
+  private enabled = true;
+
+  enable(): void {
+    this.enabled = true;
+  }
+
+  disable(): void {
+    this.enabled = false;
+  }
+
   async send(params: NotificationParams): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
+
     try {
       if (!params.title || !params.message) {
         console.warn("[NotificationService] skipped: missing params");
@@ -21,8 +35,9 @@ export class NotificationService {
       }
 
       const priority = params.severity === "CRITICAL" ? 2 : 1;
+      const notificationId = `cybervault-${params.type}-${Date.now()}`;
 
-      await chrome.notifications.create({
+      await chrome.notifications.create(notificationId, {
         type: "basic",
         title: params.title,
         message: params.message,

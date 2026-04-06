@@ -18,8 +18,14 @@ export default {
     "^@noble/hashes/(.*)$": "<rootDir>/node_modules/@noble/hashes/$1.js",
   },
   transform: {
-    "^.+\\.tsx?$": ["ts-jest", { useESM: true }],
+    "^.+\\.tsx?$": [
+      "ts-jest",
+      { useESM: true, tsconfig: "tsconfig.test.json" },
+    ],
     "^.+\\.js$": "babel-jest",
   },
   extensionsToTreatAsEsm: [".ts"],
+  transformIgnorePatterns: [
+    "/node_modules/(?!(?:@noble/hashes|@noble/curves|@noble/post-quantum|cuid2|@paralleldrive|formidable)/)",
+  ],
 };

@@ -3,8 +3,11 @@
  * Gestiona la detección de formularios y generación de credenciales seguras
  */
 
-import { CredentialsGenerator, GeneratedCredentials } from './credentials-generator';
-import { FormDetector, DetectedForm } from './form-detector';
+import {
+  CredentialsGenerator,
+  GeneratedCredentials,
+} from "./credentials-generator";
+import { FormDetector, DetectedForm } from "./form-detector";
 
 export interface AutocompleteSuggestion {
   email: string;
@@ -27,7 +30,7 @@ export class AutocompleteService {
    * Inicia el servicio de autocompletado
    */
   start(): void {
-    console.log('🚀 Iniciando servicio de autocompletado CyberVault...');
+    console.log("🚀 Iniciando servicio de autocompletado CyberVault...");
     this.setupEventListeners();
     this.checkCurrentPage();
   }
@@ -37,8 +40,8 @@ export class AutocompleteService {
    */
   private setupEventListeners(): void {
     // Detectar formularios cuando el DOM esté listo
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => this.onDOMReady());
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => this.onDOMReady());
     } else {
       this.onDOMReady();
     }
@@ -50,11 +53,11 @@ export class AutocompleteService {
 
     observer.observe(document.body, {
       childList: true,
-      subtree: true
+      subtree: true,
     });
 
     // Detectar cuando el usuario hace clic en un campo de registro
-    document.addEventListener('focusin', (event) => {
+    document.addEventListener("focusin", (event) => {
       const target = event.target as HTMLElement;
       this.checkForRegistrationField(target);
     });
@@ -72,7 +75,7 @@ export class AutocompleteService {
    */
   private checkCurrentPage(): void {
     const forms = FormDetector.detectAllRegistrationForms();
-    
+
     if (forms.length > 0) {
       console.log(`📋 Detectados ${forms.length} formularios de registro`);
       forms.forEach((form, index) => {
@@ -88,10 +91,11 @@ export class AutocompleteService {
    */
   private async processForm(form: DetectedForm, index: number): Promise<void> {
     const domain = FormDetector.getCurrentDomain();
-    
+
     // Generar credenciales sugeridas
-    const credentials = await this.credentialsGenerator.generateCredentials(domain);
-    
+    const credentials =
+      await this.credentialsGenerator.generateCredentials(domain);
+
     // Almacenar sugerencia
     this.suggestions.set(`${domain}-${index}`, {
       email: credentials.email,
@@ -99,7 +103,7 @@ export class AutocompleteService {
       originalEmail: credentials.originalEmail,
       originalPassword: credentials.originalPassword,
       domain,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     });
 
     // Mostrar interfaz de sugerencia
@@ -112,12 +116,12 @@ export class AutocompleteService {
   private showSuggestionUI(
     form: DetectedForm,
     credentials: GeneratedCredentials,
-    index: number
+    index: number,
   ): void {
     // Crear contenedor de sugerencia
-    const suggestionContainer = document.createElement('div');
+    const suggestionContainer = document.createElement("div");
     suggestionContainer.id = `cybervault-suggestion-${index}`;
-    suggestionContainer.className = 'cybervault-suggestion-container';
+    suggestionContainer.className = "cybervault-suggestion-container";
     suggestionContainer.innerHTML = `
       <div class="cybervault-suggestion-header">
         <span class="cybervault-logo">🔐 CyberVault</span>
@@ -249,28 +253,28 @@ export class AutocompleteService {
     `;
 
     // Agregar estilos al documento
-    const styleElement = document.createElement('style');
+    const styleElement = document.createElement("style");
     styleElement.textContent = styles;
     document.head.appendChild(styleElement);
 
     // Insertar el contenedor en el formulario
     if (form.formElement) {
-      form.formElement.style.position = 'relative';
+      form.formElement.style.position = "relative";
       form.formElement.appendChild(suggestionContainer);
     } else {
       document.body.appendChild(suggestionContainer);
     }
 
     // Agregar event listeners a los botones
-    suggestionContainer.addEventListener('click', (event) => {
+    suggestionContainer.addEventListener("click", (event) => {
       const target = event.target as HTMLElement;
       const action = target.dataset.action;
-      
-      if (action === 'use') {
+
+      if (action === "use") {
         this.useGeneratedCredentials(form, credentials, index);
-      } else if (action === 'manual') {
+      } else if (action === "manual") {
         this.showManualGenerationUI(form, index);
-      } else if (action === 'dismiss') {
+      } else if (action === "dismiss") {
         this.dismissSuggestion(index);
       }
     });
@@ -282,18 +286,17 @@ export class AutocompleteService {
   private async useGeneratedCredentials(
     form: DetectedForm,
     credentials: GeneratedCredentials,
-    index: number
+    index: number,
   ): Promise<void> {
     // Buscar campos de email y password
-    const emailField = form.fields.find(f => 
-      f.type === 'email' || 
-      f.autocomplete.includes('email') ||
-      f.name.toLowerCase().includes('email')
+    const emailField = form.fields.find(
+      (f) =>
+        f.type === "email" ||
+        f.autocomplete.includes("email") ||
+        f.name.toLowerCase().includes("email"),
     );
-    
-    const passwordFields = form.fields.filter(f => 
-      f.type === 'password'
-    );
+
+    const passwordFields = form.fields.filter((f) => f.type === "password");
 
     if (emailField) {
       const input = document.getElementById(emailField.id) as HTMLInputElement;
@@ -305,35 +308,42 @@ export class AutocompleteService {
     // Usar el primer campo de password para la contraseña original
     if (passwordFields.length > 0) {
       const firstPasswordField = passwordFields[0];
-      const input = document.getElementById(firstPasswordField.id) as HTMLInputElement;
+      const input = document.getElementById(
+        firstPasswordField.id,
+      ) as HTMLInputElement;
       if (input) {
         input.value = credentials.originalPassword;
       }
     }
 
     // Guardar en almacenamiento local del dominio
-    await this.saveCredentialsForDomain(credentials, form.formElement?.action || '');
+    await this.saveCredentialsForDomain(
+      credentials,
+      form.formElement?.action || "",
+    );
 
     // Ocultar sugerencia
     this.dismissSuggestion(index);
-    
-    console.log('✅ Credenciales generadas y aplicadas');
+
+    console.log("✅ Credenciales generadas y aplicadas");
   }
 
   /**
    * Muestra interfaz para generación manual
    */
-  private showManualGenerationUI(form: DetectedForm, index: number): void {
-    alert('Funcionalidad de generación manual en desarrollo');
+  private showManualGenerationUI(_form: DetectedForm, _index: number): void {
+    alert("Funcionalidad de generación manual en desarrollo");
   }
 
   /**
    * Descarta la sugerencia
    */
   private dismissSuggestion(index: number): void {
-    const suggestion = document.getElementById(`cybervault-suggestion-${index}`);
+    const suggestion = document.getElementById(
+      `cybervault-suggestion-${index}`,
+    );
     if (suggestion) {
-      suggestion.style.display = 'none';
+      suggestion.style.display = "none";
     }
   }
 
@@ -342,10 +352,10 @@ export class AutocompleteService {
    */
   private async saveCredentialsForDomain(
     credentials: GeneratedCredentials,
-    formUrl: string
+    formUrl: string,
   ): Promise<void> {
     const domain = FormDetector.getCurrentDomain();
-    
+
     // Aquí deberías guardar en el almacenamiento del plugin
     // usando chrome.storage.local o similar
     const credentialsData = {
@@ -357,10 +367,10 @@ export class AutocompleteService {
       salt: credentials.salt,
       pepper: credentials.pepper,
       formUrl,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
-    console.log('💾 Credenciales guardadas:', credentialsData);
+    console.log("💾 Credenciales guardadas:", credentialsData);
   }
 
   /**

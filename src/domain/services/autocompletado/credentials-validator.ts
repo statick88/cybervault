@@ -6,31 +6,34 @@
 import {
   InvalidEmailFormatError,
   InvalidPasswordFormatError,
-  InvalidDomainError
-} from './credentials-errors';
-
+} from "./credentials-errors";
 /**
  * Patrones de validación mejorados
  */
 export class CredentialsPatterns {
   // Email base (sin sal): usuario@dominio.extension
   // Formato: alfanuméricos + algunos caracteres especiales permitidos en email
-  static readonly EMAIL_BASE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+  static readonly EMAIL_BASE =
+    /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 
   // Email con sal: usuario+salt@dominio.extension
   // Salt: 32 caracteres hexadecimales (128 bits de entropía)
-  static readonly EMAIL_WITH_SALT = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+\+[a-fA-F0-9]{32}@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+  static readonly EMAIL_WITH_SALT =
+    /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+\+[a-fA-F0-9]{32}@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 
   // Password base (sin pimienta): 32+ caracteres
   // Permite: alfanuméricos, caracteres especiales comunes
-  static readonly PASSWORD_BASE = /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]{32,}$/;
+  static readonly PASSWORD_BASE =
+    /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]{32,}$/;
 
   // Password con pimienta: password+pepper
   // Pepper: 32 caracteres hexadecimales (128 bits de entropía)
-  static readonly PASSWORD_WITH_PEPPER = /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]{32,}\+[a-fA-F0-9]{32}$/;
+  static readonly PASSWORD_WITH_PEPPER =
+    /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]{32,}\+[a-fA-F0-9]{32}$/;
 
   // Dominio válido
-  static readonly DOMAIN = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+  static readonly DOMAIN =
+    /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 
   // Extractor de sal (captura grupo 1)
   static readonly EXTRACT_SALT = /^[^+]+\+([^@]+)@/;
@@ -49,7 +52,7 @@ export class CredentialsValidator {
    * @returns true si el formato es válido
    */
   static isValidEmail(email: string): boolean {
-    if (!email || typeof email !== 'string') return false;
+    if (!email || typeof email !== "string") return false;
     return CredentialsPatterns.EMAIL_BASE.test(email);
   }
 
@@ -59,7 +62,7 @@ export class CredentialsValidator {
    * @returns true si el formato es válido
    */
   static isValidEmailWithSalt(email: string): boolean {
-    if (!email || typeof email !== 'string') return false;
+    if (!email || typeof email !== "string") return false;
     return CredentialsPatterns.EMAIL_WITH_SALT.test(email);
   }
 
@@ -69,7 +72,7 @@ export class CredentialsValidator {
    * @returns true si el formato es válido
    */
   static isValidPassword(password: string): boolean {
-    if (!password || typeof password !== 'string') return false;
+    if (!password || typeof password !== "string") return false;
     return CredentialsPatterns.PASSWORD_BASE.test(password);
   }
 
@@ -79,7 +82,7 @@ export class CredentialsValidator {
    * @returns true si el formato es válido
    */
   static isValidPasswordWithPepper(password: string): boolean {
-    if (!password || typeof password !== 'string') return false;
+    if (!password || typeof password !== "string") return false;
     return CredentialsPatterns.PASSWORD_WITH_PEPPER.test(password);
   }
 
@@ -89,7 +92,7 @@ export class CredentialsValidator {
    * @returns true si el dominio es válido
    */
   static isValidDomain(domain: string): boolean {
-    if (!domain || typeof domain !== 'string') return false;
+    if (!domain || typeof domain !== "string") return false;
     return CredentialsPatterns.DOMAIN.test(domain);
   }
 
@@ -100,15 +103,15 @@ export class CredentialsValidator {
    * @throws InvalidEmailFormatError si el email es inválido
    */
   static extractSalt(email: string): string {
-    if (!email || email.trim() === '') {
-      throw new InvalidEmailFormatError(email, 'Email vacío');
+    if (!email || email.trim() === "") {
+      throw new InvalidEmailFormatError(email, "Email vacío");
     }
 
     const match = email.match(CredentialsPatterns.EXTRACT_SALT);
     if (!match) {
       throw new InvalidEmailFormatError(
         email,
-        'Formato esperado: usuario+salt@dominio.extension'
+        "Formato esperado: usuario+salt@dominio.extension",
       );
     }
 
@@ -122,15 +125,15 @@ export class CredentialsValidator {
    * @throws InvalidPasswordFormatError si el password es inválido
    */
   static extractPepper(password: string): string {
-    if (!password || password.trim() === '') {
-      throw new InvalidPasswordFormatError(password, 'Password vacío');
+    if (!password || password.trim() === "") {
+      throw new InvalidPasswordFormatError(password, "Password vacío");
     }
 
     const match = password.match(CredentialsPatterns.EXTRACT_PEPPER);
     if (!match) {
       throw new InvalidPasswordFormatError(
         password,
-        'Formato esperado: password+pepper'
+        "Formato esperado: password+pepper",
       );
     }
 
@@ -149,15 +152,15 @@ export class CredentialsValidator {
     domain: string;
     fullEmail: string;
   } {
-    if (!email || email.trim() === '') {
-      throw new InvalidEmailFormatError(email, 'Email vacío');
+    if (!email || email.trim() === "") {
+      throw new InvalidEmailFormatError(email, "Email vacío");
     }
 
     const match = email.match(/^([^+]+)\+([^@]+)@(.+)$/);
     if (!match) {
       throw new InvalidEmailFormatError(
         email,
-        'Formato esperado: usuario+salt@dominio.extension'
+        "Formato esperado: usuario+salt@dominio.extension",
       );
     }
 
@@ -167,7 +170,7 @@ export class CredentialsValidator {
     if (salt.length !== 32 || !/^[a-fA-F0-9]{32}$/.test(salt)) {
       throw new InvalidEmailFormatError(
         email,
-        `Sal inválida: debe ser 32 caracteres hexadecimales (encontrados: ${salt.length})`
+        `Sal inválida: debe ser 32 caracteres hexadecimales (encontrados: ${salt.length})`,
       );
     }
 
@@ -180,7 +183,7 @@ export class CredentialsValidator {
       user,
       salt,
       domain,
-      fullEmail: email
+      fullEmail: email,
     };
   }
 
@@ -195,15 +198,15 @@ export class CredentialsValidator {
     pepper: string;
     fullPassword: string;
   } {
-    if (!password || password.trim() === '') {
-      throw new InvalidPasswordFormatError(password, 'Password vacío');
+    if (!password || password.trim() === "") {
+      throw new InvalidPasswordFormatError(password, "Password vacío");
     }
 
     const match = password.match(/^([^+]+)\+([^+]+)$/);
     if (!match) {
       throw new InvalidPasswordFormatError(
         password,
-        'Formato esperado: password+pepper'
+        "Formato esperado: password+pepper",
       );
     }
 
@@ -213,7 +216,7 @@ export class CredentialsValidator {
     if (passwordBase.length < 32) {
       throw new InvalidPasswordFormatError(
         password,
-        `Password base demasiado corto: mínimo 32 caracteres (encontrados: ${passwordBase.length})`
+        `Password base demasiado corto: mínimo 32 caracteres (encontrados: ${passwordBase.length})`,
       );
     }
 
@@ -221,14 +224,14 @@ export class CredentialsValidator {
     if (pepper.length !== 32 || !/^[a-fA-F0-9]{32}$/.test(pepper)) {
       throw new InvalidPasswordFormatError(
         password,
-        `Pimienta inválida: debe ser 32 caracteres hexadecimales (encontrados: ${pepper.length})`
+        `Pimienta inválida: debe ser 32 caracteres hexadecimales (encontrados: ${pepper.length})`,
       );
     }
 
     return {
       passwordBase,
       pepper,
-      fullPassword: password
+      fullPassword: password,
     };
   }
 
@@ -246,31 +249,31 @@ export class CredentialsValidator {
     const warnings: string[] = [];
 
     if (!email) {
-      errors.push('Email vacío');
+      errors.push("Email vacío");
       return { isValid: false, errors, warnings };
     }
 
     // Validar formato básico
     if (!CredentialsPatterns.EMAIL_BASE.test(email)) {
-      errors.push('Formato de email inválido');
+      errors.push("Formato de email inválido");
     }
 
     // Validar longitud
     if (email.length < 6) {
-      errors.push('Email demasiado corto (mínimo 6 caracteres)');
+      errors.push("Email demasiado corto (mínimo 6 caracteres)");
     } else if (email.length > 254) {
-      errors.push('Email demasiado largo (máximo 254 caracteres)');
+      errors.push("Email demasiado largo (máximo 254 caracteres)");
     }
 
     // Validar caracteres especiales repetidos
-    if (email.includes('..')) {
-      warnings.push('Email contiene puntos consecutivos');
+    if (email.includes("..")) {
+      warnings.push("Email contiene puntos consecutivos");
     }
 
     return {
       isValid: errors.length === 0,
       errors,
-      warnings
+      warnings,
     };
   }
 
@@ -288,43 +291,49 @@ export class CredentialsValidator {
     const warnings: string[] = [];
 
     if (!password) {
-      errors.push('Password vacío');
+      errors.push("Password vacío");
       return { isValid: false, errors, warnings };
     }
 
     // Validar longitud
     if (password.length < 32) {
-      errors.push(`Password demasiado corto: ${password.length} caracteres (mínimo 32)`);
+      errors.push(
+        `Password demasiado corto: ${password.length} caracteres (mínimo 32)`,
+      );
     }
 
     // Validar complejidad
     const hasUpperCase = /[A-Z]/.test(password);
     const hasLowerCase = /[a-z]/.test(password);
     const hasNumbers = /\d/.test(password);
-    const hasSpecialChars = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+    const hasSpecialChars = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(
+      password,
+    );
 
-    if (!hasUpperCase) warnings.push('Password sin mayúsculas');
-    if (!hasLowerCase) warnings.push('Password sin minúsculas');
-    if (!hasNumbers) warnings.push('Password sin números');
-    if (!hasSpecialChars) warnings.push('Password sin caracteres especiales');
+    if (!hasUpperCase) warnings.push("Password sin mayúsculas");
+    if (!hasLowerCase) warnings.push("Password sin minúsculas");
+    if (!hasNumbers) warnings.push("Password sin números");
+    if (!hasSpecialChars) warnings.push("Password sin caracteres especiales");
 
     // Calcular entropía aproximada
-    const charsetSize = 
+    const charsetSize =
       (hasUpperCase ? 26 : 0) +
       (hasLowerCase ? 26 : 0) +
       (hasNumbers ? 10 : 0) +
       (hasSpecialChars ? 32 : 0);
-    
+
     const entropy = password.length * Math.log2(charsetSize || 1);
-    
+
     if (entropy < 128) {
-      warnings.push(`Entropía baja: ${entropy.toFixed(1)} bits (recomendado: ≥128 bits)`);
+      warnings.push(
+        `Entropía baja: ${entropy.toFixed(1)} bits (recomendado: ≥128 bits)`,
+      );
     }
 
     return {
       isValid: errors.length === 0,
       errors,
-      warnings
+      warnings,
     };
   }
 }

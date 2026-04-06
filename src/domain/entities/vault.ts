@@ -1,6 +1,6 @@
 // Entidad: Vault (Bóveda de Claves)
 
-import { VaultId, CryptoHash } from '../value-objects/ids';
+import { VaultId } from "../value-objects/ids";
 
 export interface VaultProps {
   id: VaultId;

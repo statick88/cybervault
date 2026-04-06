@@ -4,10 +4,10 @@
  * Arquitectura Limpia: Use Cases y Repositorios
  */
 
-import { createServer, IncomingMessage, ServerResponse } from "http";
+import { createServer, Server, IncomingMessage, ServerResponse } from "http";
 import * as https from "https";
 import { readFileSync } from "fs";
-import { resolve } from "path";
+import { resolve as resolvePath } from "path";
 
 import { IVaultRepository } from "../../domain/repositories";
 import { CryptoService } from "../../infrastructure/crypto/crypto-service";
@@ -100,6 +100,13 @@ function cleanupRateLimits(): void {
   });
 }
 
+/**
+ * Limpia completamente el rate limit map (solo para tests)
+ */
+export function _clearRateLimitForTests(): void {
+  requestCounts.clear();
+}
+
 // Limpiar cada 5 minutos
 setInterval(cleanupRateLimits, 5 * 60 * 1000);
 
@@ -114,14 +121,11 @@ export class ApiServer {
 
   constructor(
     vaultRepository: IVaultRepository,
-    cryptoService: CryptoService,
+    _cryptoService: CryptoService,
     credentialsGenerator: CredentialsGenerator,
   ) {
     // Inicializar Use Cases
-    this.createVaultUseCase = new CreateVaultUseCase(
-      vaultRepository,
-      cryptoService,
-    );
+    this.createVaultUseCase = new CreateVaultUseCase(vaultRepository);
     this.generateCredentialsUseCase = new GenerateCredentialsUseCase(
       credentialsGenerator,
     );
@@ -461,44 +465,47 @@ export class ApiServer {
   /**
    * Inicia el servidor HTTP/HTTPS
    */
-  public start(port: number = 3000) {
-    let server: any;
+  public async start(port: number = 3000): Promise<Server> {
+    return new Promise((resolvePromise, reject) => {
+      let server: any;
 
-    if (SECURITY_CONFIG.HTTPS_ENABLED) {
-      try {
-        const options = {
-          key: readFileSync(resolve(SECURITY_CONFIG.TLS_KEY_PATH)),
-          cert: readFileSync(resolve(SECURITY_CONFIG.TLS_CERT_PATH)),
-        };
-        server = https.createServer(options, (req, res) =>
-          this.handleRequest(req, res),
-        );
-        console.log(`🔒 HTTPS Server started on port ${port}`);
-      } catch (error) {
-        console.warn("HTTPS certificates not found, falling back to HTTP");
-        server = createServer((req, res) => this.handleRequest(req, res));
-        console.log(`⚠️  HTTP Server started on port ${port} (no HTTPS)`);
-      }
-    } else {
-      server = createServer((req, res) => this.handleRequest(req, res));
-      console.log(`🌐 HTTP Server started on port ${port}`);
-    }
-
-    server.listen(port, () => {
-      console.log(`🚀 Cyber Vault API ready at http://localhost:${port}`);
-      console.log(`   Health check: http://localhost:${port}/health`);
-      console.log(`   Ready check: http://localhost:${port}/ready`);
-      if (JWT_SECRET) {
-        console.log(`   🔐 Authentication: ENABLED`);
+      if (SECURITY_CONFIG.HTTPS_ENABLED) {
+        try {
+          const options = {
+            key: readFileSync(resolvePath(SECURITY_CONFIG.TLS_KEY_PATH)),
+            cert: readFileSync(resolvePath(SECURITY_CONFIG.TLS_CERT_PATH)),
+          };
+          server = https.createServer(options, (req, res) =>
+            this.handleRequest(req, res),
+          );
+          console.log(`🔒 HTTPS Server started on port ${port}`);
+        } catch (error) {
+          console.warn("HTTPS certificates not found, falling back to HTTP");
+          server = createServer((req, res) => this.handleRequest(req, res));
+          console.log(`⚠️  HTTP Server started on port ${port} (no HTTPS)`);
+        }
       } else {
-        console.log(`   🔓 Authentication: DISABLED (development mode)`);
+        server = createServer((req, res) => this.handleRequest(req, res));
+        console.log(`🌐 HTTP Server started on port ${port}`);
       }
-      console.log(
-        `   📊 Rate limit: ${RATE_LIMIT_MAX} requests per ${RATE_LIMIT_WINDOW / 60000} minutes`,
-      );
-    });
 
-    return server;
+      server
+        .listen(port, () => {
+          console.log(`🚀 Cyber Vault API ready at http://localhost:${port}`);
+          console.log(`   Health check: http://localhost:${port}/health`);
+          console.log(`   Ready check: http://localhost:${port}/ready`);
+          if (JWT_SECRET) {
+            console.log(`   🔐 Authentication: ENABLED`);
+          } else {
+            console.log(`   🔓 Authentication: DISABLED (development mode)`);
+          }
+          console.log(
+            `   📊 Rate limit: ${RATE_LIMIT_MAX} requests per ${RATE_LIMIT_WINDOW / 60000} minutes`,
+          );
+          resolvePromise(server);
+        })
+        .on("error", reject);
+    });
   }
 }
 

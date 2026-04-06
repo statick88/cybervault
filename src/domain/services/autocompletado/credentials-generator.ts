@@ -3,31 +3,26 @@
  * Implementa el concepto de "salting" y "peppering" para mayor seguridad en credenciales almacenadas
  */
 
-import { CryptoService } from '../../../infrastructure/crypto/crypto-service';
+import { CryptoService } from "../../../infrastructure/crypto/crypto-service";
 import {
   InvalidEmailFormatError,
   InvalidPasswordFormatError,
   SaltExtractionError,
   PepperExtractionError,
-  InvalidDomainError
-} from './credentials-errors';
-import { CredentialsValidator, CredentialsPatterns } from './credentials-validator';
+  InvalidDomainError,
+} from "./credentials-errors";
+import { CredentialsValidator } from "./credentials-validator";
 
 import {
   EmailWithSalt,
-  EmailOriginal,
   PasswordWithPepper,
-  PasswordOriginal,
-  Salt,
-  Pepper,
-  ValidDomain,
-  GeneratedCredentialsStrong,
-  StoredCredentialsStrong,
   OriginalCredentials,
   CredentialsTypeFactory,
-  CredentialsTypeUtils
-} from './credentials-types';
-import { EntropyValidator, EntropyCalculator, RandomnessAnalyzer } from './entropy-validator';
+  GeneratedCredentialsStrong,
+  ValidDomain,
+  CredentialsTypeUtils,
+} from "./credentials-types";
+import { EntropyValidator, RandomnessAnalyzer } from "./entropy-validator";
 
 export interface GeneratedCredentials {
   email: string;
@@ -45,14 +40,12 @@ export interface StoredCredentials {
 }
 
 export class CredentialsGenerator {
-  private cryptoService: CryptoService;
-
   /**
    * Constructor del generador de credenciales
-   * @param cryptoService Servicio de criptografía inyectado (opcional, para testing)
+   * @param _cryptoService Servicio de criptografía inyectado (no se usa actualmente)
    */
-  constructor(cryptoService?: CryptoService) {
-    this.cryptoService = cryptoService || new CryptoService();
+  constructor(_cryptoService?: CryptoService) {
+    // No se utiliza, se inyecta solo por compatibilidad
   }
 
   /**
@@ -69,45 +62,48 @@ export class CredentialsGenerator {
 
     // Generar sal aleatoria (32 caracteres hexadecimales = 128 bits)
     const salt = await this.generateRandomString(32);
-    
+
     // Validar entropía de la sal
     EntropyValidator.validateSaltEntropy(salt);
-    
+
     // Generar pimienta aleatoria (32 caracteres hexadecimales = 128 bits)
     const pepper = await this.generateRandomString(32);
-    
+
     // Validar entropía de la pimienta
     EntropyValidator.validatePepperEntropy(pepper);
-    
+
     // Generar email base (usuario aleatorio - 16 caracteres)
     const userBase = await this.generateRandomString(16);
-    
+
     // Generar password base (32 caracteres aleatorios con entropía)
     const passwordBase = await this.generateComplexPassword(32);
-    
+
     // Validar entropía del password base
-    const passwordEntropyValidation = EntropyValidator.validatePasswordEntropy(passwordBase);
+    const passwordEntropyValidation =
+      EntropyValidator.validatePasswordEntropy(passwordBase);
     if (!passwordEntropyValidation.isValid) {
-      console.warn(`Password base con baja entropía: ${passwordEntropyValidation.details.join(', ')}`);
+      console.warn(
+        `Password base con baja entropía: ${passwordEntropyValidation.details.join(", ")}`,
+      );
     }
-    
+
     // Crear email con sal: usuario+salt@domain.extension
     const emailWithSalt = `${userBase}+${salt}@${domain}`;
-    
+
     // Crear password con pimienta: password+pepper
     const passwordWithPepper = `${passwordBase}+${pepper}`;
-    
+
     // Email y password originales (sin sal ni pimienta)
     const originalEmail = `${userBase}@${domain}`;
     const originalPassword = passwordBase;
-    
+
     return {
       email: emailWithSalt,
       password: passwordWithPepper,
       originalEmail,
       originalPassword,
       salt,
-      pepper
+      pepper,
     };
   }
 
@@ -117,18 +113,26 @@ export class CredentialsGenerator {
    * @returns Credenciales generadas con tipos fuertes
    * @throws InvalidDomainError si el dominio es inválido
    */
-  async generateCredentialsStrong(domain: ValidDomain): Promise<GeneratedCredentialsStrong> {
+  async generateCredentialsStrong(
+    domain: ValidDomain,
+  ): Promise<GeneratedCredentialsStrong> {
     // Generar credenciales normales
     const credentials = await this.generateCredentials(domain);
 
     // Convertir a tipos fuertes
     return {
       email: CredentialsTypeFactory.createEmailWithSalt(credentials.email),
-      password: CredentialsTypeFactory.createPasswordWithPepper(credentials.password),
-      originalEmail: CredentialsTypeFactory.createEmailOriginal(credentials.originalEmail),
-      originalPassword: CredentialsTypeFactory.createPasswordOriginal(credentials.originalPassword),
+      password: CredentialsTypeFactory.createPasswordWithPepper(
+        credentials.password,
+      ),
+      originalEmail: CredentialsTypeFactory.createEmailOriginal(
+        credentials.originalEmail,
+      ),
+      originalPassword: CredentialsTypeFactory.createPasswordOriginal(
+        credentials.originalPassword,
+      ),
       salt: CredentialsTypeFactory.createSalt(credentials.salt),
-      pepper: CredentialsTypeFactory.createPepper(credentials.pepper)
+      pepper: CredentialsTypeFactory.createPepper(credentials.pepper),
     };
   }
 
@@ -142,15 +146,16 @@ export class CredentialsGenerator {
    */
   async extractOriginalCredentialsStrong(
     storedEmail: EmailWithSalt,
-    storedPassword: PasswordWithPepper
+    storedPassword: PasswordWithPepper,
   ): Promise<OriginalCredentials> {
     // Extraer usando utilidades de tipos
     const originalEmail = CredentialsTypeUtils.toOriginalEmail(storedEmail);
-    const originalPassword = CredentialsTypeUtils.toOriginalPassword(storedPassword);
+    const originalPassword =
+      CredentialsTypeUtils.toOriginalPassword(storedPassword);
 
     return {
       email: originalEmail,
-      password: originalPassword
+      password: originalPassword,
     };
   }
 
@@ -164,42 +169,42 @@ export class CredentialsGenerator {
    */
   async extractOriginalCredentials(
     storedEmail: string,
-    storedPassword: string
+    storedPassword: string,
   ): Promise<{ email: string; password: string }> {
     // Validar que los inputs no estén vacíos
-    if (!storedEmail || storedEmail.trim() === '') {
-      throw new InvalidEmailFormatError(storedEmail, 'Email vacío');
+    if (!storedEmail || storedEmail.trim() === "") {
+      throw new InvalidEmailFormatError(storedEmail, "Email vacío");
     }
-    
-    if (!storedPassword || storedPassword.trim() === '') {
-      throw new InvalidPasswordFormatError(storedPassword, 'Password vacío');
+
+    if (!storedPassword || storedPassword.trim() === "") {
+      throw new InvalidPasswordFormatError(storedPassword, "Password vacío");
     }
-    
+
     // Extraer email original (quitar +salt)
     const emailMatch = storedEmail.match(/^([^+]+)\+[^@]+@(.+)$/);
     if (!emailMatch) {
       throw new InvalidEmailFormatError(
         storedEmail,
-        'Formato esperado: usuario+salt@dominio.extension'
+        "Formato esperado: usuario+salt@dominio.extension",
       );
     }
-    
+
     const originalEmail = `${emailMatch[1]}@${emailMatch[2]}`;
-    
+
     // Extraer password original (quitar +pepper)
     const passwordMatch = storedPassword.match(/^([^+]+)\+[^+]+$/);
     if (!passwordMatch) {
       throw new InvalidPasswordFormatError(
         storedPassword,
-        'Formato esperado: password+pepper'
+        "Formato esperado: password+pepper",
       );
     }
-    
+
     const originalPassword = passwordMatch[1];
-    
+
     return {
       email: originalEmail,
-      password: originalPassword
+      password: originalPassword,
     };
   }
 
@@ -211,7 +216,9 @@ export class CredentialsGenerator {
   private async generateRandomString(length: number): Promise<string> {
     const array = new Uint8Array(length / 2);
     crypto.getRandomValues(array);
-    return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+    return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
   }
 
   /**
@@ -220,10 +227,10 @@ export class CredentialsGenerator {
    * @returns Password complejo con mayúsculas, minúsculas, números y símbolos
    */
   private async generateComplexPassword(length: number): Promise<string> {
-    const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const lowercase = 'abcdefghijklmnopqrstuvwxyz';
-    const numbers = '0123456789';
-    const symbols = '!@#$%^&*()_+-=[]{}|;:,.<>?';
+    const uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lowercase = "abcdefghijklmnopqrstuvwxyz";
+    const numbers = "0123456789";
+    const symbols = "!@#$%^&*()_+-=[]{}|;:,.<>?";
     const allChars = uppercase + lowercase + numbers + symbols;
 
     // Generar array de bytes aleatorios
@@ -231,8 +238,8 @@ export class CredentialsGenerator {
     crypto.getRandomValues(array);
 
     // Construir password asegurando al menos un carácter de cada tipo
-    let password = '';
-    
+    let password = "";
+
     // Asegurar al menos un carácter de cada tipo
     password += uppercase[array[0] % uppercase.length];
     password += lowercase[array[1] % lowercase.length];
@@ -255,7 +262,7 @@ export class CredentialsGenerator {
    * @returns String mezclado
    */
   private shuffleString(str: string, randomArray: Uint8Array): string {
-    const arr = str.split('');
+    const arr = str.split("");
     let currentIndex = arr.length;
     let randomIndex: number;
 
@@ -263,11 +270,14 @@ export class CredentialsGenerator {
     while (currentIndex !== 0) {
       randomIndex = randomArray[currentIndex - 1] % currentIndex;
       currentIndex--;
-      
-      [arr[currentIndex], arr[randomIndex]] = [arr[randomIndex], arr[currentIndex]];
+
+      [arr[currentIndex], arr[randomIndex]] = [
+        arr[randomIndex],
+        arr[currentIndex],
+      ];
     }
 
-    return arr.join('');
+    return arr.join("");
   }
 
   /**
@@ -345,19 +355,27 @@ export class CredentialsGenerator {
     // Analizar sal
     const saltAnalysis = RandomnessAnalyzer.analyzeHexString(credentials.salt);
     if (!saltAnalysis.isValid) {
-      warnings.push(`Sal con problemas: ${saltAnalysis.issues.join(', ')}`);
+      warnings.push(`Sal con problemas: ${saltAnalysis.issues.join(", ")}`);
     }
 
     // Analizar pimienta
-    const pepperAnalysis = RandomnessAnalyzer.analyzeHexString(credentials.pepper);
+    const pepperAnalysis = RandomnessAnalyzer.analyzeHexString(
+      credentials.pepper,
+    );
     if (!pepperAnalysis.isValid) {
-      warnings.push(`Pimienta con problemas: ${pepperAnalysis.issues.join(', ')}`);
+      warnings.push(
+        `Pimienta con problemas: ${pepperAnalysis.issues.join(", ")}`,
+      );
     }
 
     // Calcular entropía del password base
-    const passwordEntropy = EntropyValidator.estimatePasswordEntropy(credentials.originalPassword);
+    const passwordEntropy = EntropyValidator.estimatePasswordEntropy(
+      credentials.originalPassword,
+    );
     if (passwordEntropy < EntropyValidator.MIN_PASSWORD_ENTROPY) {
-      warnings.push(`Password base con baja entropía: ${passwordEntropy.toFixed(1)} bits`);
+      warnings.push(
+        `Password base con baja entropía: ${passwordEntropy.toFixed(1)} bits`,
+      );
     }
 
     return {
@@ -365,13 +383,13 @@ export class CredentialsGenerator {
       entropyAnalysis: {
         salt: saltAnalysis.entropy,
         pepper: pepperAnalysis.entropy,
-        passwordBase: passwordEntropy
+        passwordBase: passwordEntropy,
       },
       randomnessAnalysis: {
         salt: saltAnalysis,
-        pepper: pepperAnalysis
+        pepper: pepperAnalysis,
       },
-      warnings
+      warnings,
     };
   }
 }

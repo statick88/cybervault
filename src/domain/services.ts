@@ -1,8 +1,6 @@
 // Domain Service Interfaces - Simplified for MVP
 // Contratos para servicios de infraestructura
 
-import { Vault } from "./entities/vault";
-
 /**
  * Servicio de Criptografía - MVP Version
  */

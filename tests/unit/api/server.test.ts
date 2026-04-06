@@ -68,7 +68,10 @@ jest.mock("@/domain/services/autocompletado/credentials-generator", () => {
 import { ApiServer } from "@/infrastructure/api/server";
 import { _clearRateLimitForTests } from "@/infrastructure/api/server";
 import { InMemoryVaultRepository } from "../infrastructure/repositories/in-memory-vault-repository";
-import { CryptoService } from "@/infrastructure/crypto/crypto-service";
+import { EncryptionService } from "@/infrastructure/crypto/EncryptionService";
+import { HashingService } from "@/infrastructure/crypto/HashingService";
+import { SignatureService } from "@/infrastructure/crypto/signature-service";
+import { KeyManagementService } from "@/infrastructure/crypto/KeyManagementService";
 import { CredentialsGenerator } from "@/domain/services/autocompletado/credentials-generator";
 import jwt from "jsonwebtoken";
 import { Server } from "http";
@@ -100,10 +103,24 @@ async function fetchJSON(
 describe("ApiServer", () => {
   beforeAll(async () => {
     vaultRepo = new InMemoryVaultRepository();
-    const crypto = new CryptoService();
-    const generator = new CredentialsGenerator(crypto);
-    apiServer = new ApiServer(vaultRepo, crypto, generator);
-    server = await apiServer.start(0);
+
+    // Mocks de servicios de criptografía
+    const mockEncryption = { encrypt: jest.fn(), decrypt: jest.fn() };
+    const mockHashing = { hash: jest.fn() };
+    const mockSignature = { sign: jest.fn(), verify: jest.fn() };
+    const mockKeyMgmt = { generateKeyPair: jest.fn() };
+
+    const generator = new CredentialsGenerator();
+
+    server = await startServer(
+      0,
+      vaultRepo,
+      mockEncryption as any,
+      mockHashing as any,
+      mockSignature as any,
+      mockKeyMgmt as any,
+      generator,
+    );
     port = (server.address() as any).port;
   });
 
@@ -563,15 +580,31 @@ describe("ApiServer", () => {
       try {
         const { ApiServer: ApiServerNoSecret } =
           await import("@/infrastructure/api/server");
-        const { CryptoService } =
-          await import("@/infrastructure/crypto/crypto-service");
+        const { EncryptionService } =
+          await import("@/infrastructure/crypto/EncryptionService");
+        const { HashingService } =
+          await import("@/infrastructure/crypto/HashingService");
+        const { SignatureService } =
+          await import("@/infrastructure/crypto/signature-service");
+        const { KeyManagementService } =
+          await import("@/infrastructure/crypto/KeyManagementService");
         const { CredentialsGenerator } =
           await import("@/domain/services/autocompletado/credentials-generator");
 
         const repo = new InMemoryVaultRepository();
-        const crypto = new CryptoService();
-        const generator = new CredentialsGenerator(crypto);
-        const apiServer2 = new ApiServerNoSecret(repo, crypto, generator);
+        const encryptionService = new EncryptionService();
+        const hashingService = new HashingService();
+        const signatureService = new SignatureService();
+        const keyManagementService = new KeyManagementService();
+        const generator = new CredentialsGenerator();
+        const apiServer2 = new ApiServerNoSecret(
+          repo,
+          encryptionService,
+          hashingService,
+          signatureService,
+          keyManagementService,
+          generator,
+        );
         const server2 = await apiServer2.start(0);
         const port2 = (server2.address() as any).port;
 

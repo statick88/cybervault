@@ -10,7 +10,10 @@ import { readFileSync } from "fs";
 import { resolve as resolvePath } from "path";
 
 import { IVaultRepository } from "../../domain/repositories";
-import { CryptoService } from "../../infrastructure/crypto/crypto-service";
+import { EncryptionService } from "../../infrastructure/crypto/EncryptionService";
+import { HashingService } from "../../infrastructure/crypto/HashingService";
+import { SignatureService } from "../../infrastructure/crypto/signature-service";
+import { KeyManagementService } from "../../infrastructure/crypto/KeyManagementService";
 import { CredentialsGenerator } from "../../domain/services/autocompletado/credentials-generator";
 import { authenticate } from "./auth";
 
@@ -118,12 +121,24 @@ export class ApiServer {
   private generateCredentialsUseCase: GenerateCredentialsUseCase;
   private extractCredentialsUseCase: ExtractCredentialsUseCase;
   private credentialsGenerator: CredentialsGenerator;
+  private encryptionService: EncryptionService;
+  private hashingService: HashingService;
+  private signatureService: SignatureService;
+  private keyManagementService: KeyManagementService;
 
   constructor(
     vaultRepository: IVaultRepository,
-    _cryptoService: CryptoService,
+    encryptionService: EncryptionService,
+    hashingService: HashingService,
+    signatureService: SignatureService,
+    keyManagementService: KeyManagementService,
     credentialsGenerator: CredentialsGenerator,
   ) {
+    this.encryptionService = encryptionService;
+    this.hashingService = hashingService;
+    this.signatureService = signatureService;
+    this.keyManagementService = keyManagementService;
+
     // Inicializar Use Cases
     this.createVaultUseCase = new CreateVaultUseCase(vaultRepository);
     this.generateCredentialsUseCase = new GenerateCredentialsUseCase(
@@ -511,17 +526,32 @@ export class ApiServer {
 
 /**
  * Función de conveniencia para iniciar el servidor con dependencias por defecto
+ * Puede aceptar dependencias personalizadas para testing
  */
-export async function startServer(port: number = 3000) {
+export async function startServer(
+  port: number = 3000,
+  vaultRepository?: IVaultRepository,
+  encryptionService?: EncryptionService,
+  hashingService?: HashingService,
+  signatureService?: SignatureService,
+  keyManagementService?: KeyManagementService,
+  credentialsGenerator?: CredentialsGenerator,
+) {
   // Dependencias por defecto (Composition Root)
-  const vaultRepository = new ChromeStorageVaultRepository();
-  const cryptoService = new CryptoService();
-  const credentialsGenerator = new CredentialsGenerator(cryptoService);
+  const vaultRepo = vaultRepository || new ChromeStorageVaultRepository();
+  const encryptionSvc = encryptionService || new EncryptionService();
+  const hashingSvc = hashingService || new HashingService();
+  const signatureSvc = signatureService || new SignatureService();
+  const keyMgmtSvc = keyManagementService || new KeyManagementService();
+  const credsGenerator = credentialsGenerator || new CredentialsGenerator();
 
   const apiServer = new ApiServer(
-    vaultRepository,
-    cryptoService,
-    credentialsGenerator,
+    vaultRepo,
+    encryptionSvc,
+    hashingSvc,
+    signatureSvc,
+    keyMgmtSvc,
+    credsGenerator,
   );
   return apiServer.start(port);
 }

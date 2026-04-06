@@ -3,7 +3,8 @@
  */
 
 import { IIPFSService } from "../../domain/services";
-import { CryptoService } from "../crypto/crypto-service";
+import { EncryptionService } from "../crypto/EncryptionService";
+import { HashingService } from "../crypto/HashingService";
 
 export interface IPFSConfig {
   host: string;
@@ -13,11 +14,17 @@ export interface IPFSConfig {
 }
 
 class IPFSAdapter implements IIPFSService {
-  private cryptoService: CryptoService;
+  private encryptionService: EncryptionService;
+  private hashingService: HashingService;
   private gatewayUrl: string;
 
-  constructor(config: IPFSConfig, cryptoService?: CryptoService) {
-    this.cryptoService = cryptoService || new CryptoService();
+  constructor(
+    config: IPFSConfig,
+    encryptionService?: EncryptionService,
+    hashingService?: HashingService,
+  ) {
+    this.encryptionService = encryptionService || new EncryptionService();
+    this.hashingService = hashingService || new HashingService();
     this.gatewayUrl = `${config.protocol}://${config.host}:${config.port}`;
   }
 
@@ -31,8 +38,8 @@ class IPFSAdapter implements IIPFSService {
     let processedData: string;
 
     if (encrypt) {
-      const key = await this.cryptoService.hash(Date.now().toString());
-      processedData = await this.cryptoService.encrypt(
+      const key = await this.hashingService.hash(Date.now().toString());
+      processedData = await this.encryptionService.encrypt(
         typeof data === "string" ? data : new TextDecoder().decode(data),
         key,
       );
@@ -41,7 +48,7 @@ class IPFSAdapter implements IIPFSService {
         typeof data === "string" ? data : new TextDecoder().decode(data);
     }
 
-    const cid = await this.cryptoService.hash(processedData);
+    const cid = await this.hashingService.hash(processedData);
 
     await chrome.storage.local.set({ [`ipfs:${cid}`]: processedData });
 

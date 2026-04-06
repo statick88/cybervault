@@ -11,8 +11,11 @@
  * 3. All operations use session key derived from master key
  */
 
-import { CryptoService } from "./crypto-service";
+import { encryptWithKey, decryptWithKey } from "./encryption-service";
+import { KeyDerivationService } from "./key-derivation-service";
 import { binaryToBase64, base64ToBinary } from "@/shared/utils";
+
+const keyDerivationService = new KeyDerivationService();
 
 const STORAGE_KEYS = {
   MASTER_KEY_VERIFY: "master_key_verify", // Hash for verification only
@@ -63,27 +66,7 @@ async function hashMasterKey(
   masterKey: string,
   salt: Uint8Array,
 ): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(masterKey),
-    "PBKDF2",
-    false,
-    ["deriveBits"],
-  );
-
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      salt: salt as BufferSource,
-      iterations: 600000, // NIST recommended
-      hash: "SHA-512",
-    },
-    keyMaterial,
-    512, // 512 bits
-  );
-
-  return binaryToBase64(new Uint8Array(derivedBits));
+  return await keyDerivationService.deriveVerificationHash(masterKey, salt);
 }
 
 /**
@@ -94,35 +77,7 @@ async function deriveSessionKey(
   masterKey: string,
   salt: Uint8Array,
 ): Promise<string> {
-  const encoder = new TextEncoder();
-  // Use different info for session key vs verification
-  const sessionInfo = encoder.encode("cybervault_session_key_v1");
-
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(masterKey),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-
-  const sessionKey = await crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: salt as BufferSource,
-      iterations: 600000, // Consistent with NIST recommendation
-      hash: "SHA-512",
-      info: sessionInfo,
-    },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    true, // Extractable to allow export for in-memory use
-    ["encrypt", "decrypt"],
-  );
-
-  // Export for use (will be kept in memory only)
-  const exported = await crypto.subtle.exportKey("raw", sessionKey);
-  return binaryToBase64(new Uint8Array(exported));
+  return await keyDerivationService.deriveSessionKey(masterKey, salt);
 }
 
 /**
@@ -313,8 +268,7 @@ export async function encryptWithSessionKey(
     return null;
   }
 
-  const cryptoService = new CryptoService();
-  return await cryptoService.encrypt(data, sessionKey);
+  return await encryptWithKey(data, sessionKey);
 }
 
 /**
@@ -328,9 +282,8 @@ export async function decryptWithSessionKey(
     return null;
   }
 
-  const cryptoService = new CryptoService();
   try {
-    return await cryptoService.decrypt(encryptedData, sessionKey);
+    return await decryptWithKey(encryptedData, sessionKey);
   } catch {
     return null;
   }

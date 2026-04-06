@@ -1,16 +1,33 @@
 /**
  * API Server para Cyber Vault
  * Servidor HTTP/HTTPS con seguridad mejorada
+ * Arquitectura Limpia: Use Cases y Repositorios
  */
 
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import * as https from "https";
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { CryptoService } from "../crypto/crypto-service";
-import { Vault } from "../../domain/entities/vault";
+
+import { IVaultRepository } from "../../domain/repositories";
+import { CryptoService } from "../../infrastructure/crypto/crypto-service";
 import { CredentialsGenerator } from "../../domain/services/autocompletado/credentials-generator";
 import { authenticate } from "./auth";
+
+// Use Cases
+import { CreateVaultUseCase } from "../../application/use-cases/create-vault.use-case";
+import { GenerateCredentialsUseCase } from "../../application/use-cases/generate-credentials.use-case";
+import { ExtractCredentialsUseCase } from "../../application/use-cases/extract-credentials.use-case";
+
+// Repositorios
+import { ChromeStorageVaultRepository } from "../../infrastructure/repositories";
+
+// Tipos fuertes para credenciales
+import { CredentialsTypeFactory } from "../../domain/services/autocompletado/credentials-types";
+import {
+  EmailWithSalt,
+  PasswordWithPepper,
+} from "../../domain/services/autocompletado/credentials-types";
 
 // Configuración de seguridad
 const SECURITY_CONFIG = {
@@ -86,104 +103,123 @@ function cleanupRateLimits(): void {
 // Limpiar cada 5 minutos
 setInterval(cleanupRateLimits, 5 * 60 * 1000);
 
-// Inicializar servicios
-const cryptoService = new CryptoService();
-const credentialsGenerator = new CredentialsGenerator(cryptoService);
-
 /**
- * Handler para health checks
+ * API Server con Clean Architecture
  */
-function handleHealth(_req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(
-    JSON.stringify({
-      status: "healthy",
-      timestamp: new Date().toISOString(),
-      service: "cyber-vault-api",
-    }),
-  );
-}
+export class ApiServer {
+  private createVaultUseCase: CreateVaultUseCase;
+  private generateCredentialsUseCase: GenerateCredentialsUseCase;
+  private extractCredentialsUseCase: ExtractCredentialsUseCase;
+  private credentialsGenerator: CredentialsGenerator;
 
-/**
- * Handler para readiness checks
- */
-function handleReady(_req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(
-    JSON.stringify({
-      status: "ready",
-      timestamp: new Date().toISOString(),
-    }),
-  );
-}
+  constructor(
+    vaultRepository: IVaultRepository,
+    cryptoService: CryptoService,
+    credentialsGenerator: CredentialsGenerator,
+  ) {
+    // Inicializar Use Cases
+    this.createVaultUseCase = new CreateVaultUseCase(
+      vaultRepository,
+      cryptoService,
+    );
+    this.generateCredentialsUseCase = new GenerateCredentialsUseCase(
+      credentialsGenerator,
+    );
+    this.extractCredentialsUseCase = new ExtractCredentialsUseCase(
+      credentialsGenerator,
+    );
+    this.credentialsGenerator = credentialsGenerator;
+  }
 
-/**
- * Handler para crear vault (demo)
- */
-async function handleCreateVault(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body = "";
+  /**
+   * Parsea el body JSON de la petición
+   */
+  private async parseJsonBody(req: IncomingMessage): Promise<any> {
+    return new Promise((resolve, reject) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+      req.on("error", reject);
+    });
+  }
 
-  req.on("data", (chunk: Buffer) => {
-    body += chunk.toString();
-  });
+  /**
+   * Handler para health checks
+   */
+  private handleHealth(_req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        service: "cyber-vault-api",
+      }),
+    );
+  }
 
-  req.on("end", async () => {
+  /**
+   * Handler para readiness checks
+   */
+  private handleReady(_req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "ready",
+        timestamp: new Date().toISOString(),
+      }),
+    );
+  }
+
+  /**
+   * Handler para crear vault (uso de Use Case)
+   */
+  private async handleCreateVault(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
     try {
-      const data = JSON.parse(body);
+      const data = await this.parseJsonBody(req);
+      const { name, description, encryptionKeyId } = data;
 
-      // Encriptar datos
-      const keyPair = await cryptoService.generateKeyPair();
-      const encryptedData = await cryptoService.encrypt(
-        data.secret,
-        keyPair.publicKey,
-      );
+      if (!name || !encryptionKeyId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ error: "Name and encryptionKeyId are required" }),
+        );
+        return;
+      }
 
-      // Crear vault
-      const vault = Vault.create({
-        name: data.name || "Demo Vault",
-        description: data.description,
-        encryptedData: encryptedData,
-        encryptionKeyId: "demo-key-id",
-        metadata: {
-          encryptedWith: "AES-GCM-256",
-          keyType: "ECDSA-P-256",
-        },
+      const vault = await this.createVaultUseCase.execute({
+        name,
+        description,
+        encryptionKeyId,
       });
 
       res.writeHead(201, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          id: vault.id.toString(),
-          name: vault.name,
-          createdAt: vault.createdAt.toISOString(),
-        }),
-      );
-    } catch (error) {
+      res.end(JSON.stringify(vault.toPlainObject()));
+    } catch (error: any) {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid request" }));
+      res.end(JSON.stringify({ error: error.message || "Invalid request" }));
     }
-  });
-}
+  }
 
-/**
- * Handler para generar credenciales con sal y pimienta
- */
-async function handleGenerateCredentials(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body = "";
-
-  req.on("data", (chunk: Buffer) => {
-    body += chunk.toString();
-  });
-
-  req.on("end", async () => {
+  /**
+   * Handler para generar credenciales (uso de Use Case)
+   */
+  private async handleGenerateCredentials(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
     try {
-      const data = JSON.parse(body);
+      const data = await this.parseJsonBody(req);
       const domain = data.domain;
 
       if (!domain) {
@@ -192,13 +228,12 @@ async function handleGenerateCredentials(
         return;
       }
 
-      // Generar credenciales
-      const credentials =
-        await credentialsGenerator.generateCredentials(domain);
+      // Use Case: generar credenciales
+      const credentials = await this.generateCredentialsUseCase.execute(domain);
 
-      // Analizar calidad de las credenciales
+      // Analizar calidad de las credenciales (domains service)
       const qualityAnalysis =
-        credentialsGenerator.analyzeCredentialsQuality(credentials);
+        this.credentialsGenerator.analyzeCredentialsQuality(credentials);
 
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(
@@ -225,25 +260,17 @@ async function handleGenerateCredentials(
         }),
       );
     }
-  });
-}
+  }
 
-/**
- * Handler para extraer credenciales originales
- */
-async function handleExtractCredentials(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  let body = "";
-
-  req.on("data", (chunk: Buffer) => {
-    body += chunk.toString();
-  });
-
-  req.on("end", async () => {
+  /**
+   * Handler para extraer credenciales originales (uso de Use Case)
+   */
+  private async handleExtractCredentials(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
     try {
-      const data = JSON.parse(body);
+      const data = await this.parseJsonBody(req);
       const { email, password } = data;
 
       if (!email || !password) {
@@ -252,10 +279,16 @@ async function handleExtractCredentials(
         return;
       }
 
-      // Extraer credenciales originales
-      const original = await credentialsGenerator.extractOriginalCredentials(
-        email,
-        password,
+      // Convertir a tipos fuertes
+      const storedEmail: EmailWithSalt =
+        CredentialsTypeFactory.createEmailWithSalt(email);
+      const storedPassword: PasswordWithPepper =
+        CredentialsTypeFactory.createPasswordWithPepper(password);
+
+      // Use Case: extraer credenciales originales
+      const original = await this.extractCredentialsUseCase.execute(
+        storedEmail,
+        storedPassword,
       );
 
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -275,197 +308,219 @@ async function handleExtractCredentials(
         }),
       );
     }
-  });
-}
-
-/**
- * Handler para validar formato de credenciales
- */
-function handleValidateCredentials(
-  req: IncomingMessage,
-  res: ServerResponse,
-): void {
-  const url = new URL(req.url || "", `http://${req.headers.host}`);
-  const email = url.searchParams.get("email");
-  const password = url.searchParams.get("password");
-
-  if (!email && !password) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Email or password parameter required" }));
-    return;
   }
 
-  const result: any = {};
+  /**
+   * Handler para validar formato de credenciales
+   */
+  private handleValidateCredentials(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): void {
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    const email = url.searchParams.get("email");
+    const password = url.searchParams.get("password");
 
-  if (email) {
-    result.email = {
-      isValid: credentialsGenerator.isValidEmailWithSalt(email),
-      hasSalt: credentialsGenerator.isValidEmailWithSalt(email),
-    };
-  }
-
-  if (password) {
-    result.password = {
-      isValid: credentialsGenerator.isValidPasswordWithPepper(password),
-      hasPepper: credentialsGenerator.isValidPasswordWithPepper(password),
-    };
-  }
-
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(result));
-}
-
-/**
- * Handler principal
- */
-async function requestHandler(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  // Configurar headers de seguridad
-  const cspString = Object.entries(SECURITY_CONFIG.CSP)
-    .map(([key, values]) => `${key} ${values.join(" ")}`)
-    .join("; ");
-
-  res.setHeader("Content-Security-Policy", cspString);
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "1; mode=block");
-  res.setHeader(
-    "Strict-Transport-Security",
-    "max-age=31536000; includeSubDomains",
-  );
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-
-  // Aplicar rate limiting a todos los endpoints
-  const ip = req.socket?.remoteAddress || "unknown";
-  if (!checkRateLimit(ip)) {
-    res.writeHead(429, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Rate limit exceeded" }));
-    return;
-  }
-
-  const url = new URL(req.url || "", `http://${req.headers.host}`);
-
-  try {
-    switch (url.pathname) {
-      case "/health":
-        handleHealth(req, res);
-        break;
-
-      case "/ready":
-        handleReady(req, res);
-        break;
-
-      case "/api/v1/vaults":
-        if (req.method === "POST") {
-          // Verificar si JWT está habilitado
-          if (JWT_SECRET) {
-            authenticate(req, res, () => {
-              handleCreateVault(req, res);
-            });
-          } else {
-            await handleCreateVault(req, res);
-          }
-        } else {
-          res.writeHead(405, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Method not allowed" }));
-        }
-        break;
-
-      case "/api/v1/credentials/generate":
-        if (req.method === "POST") {
-          if (JWT_SECRET) {
-            authenticate(req, res, () => {
-              handleGenerateCredentials(req, res);
-            });
-          } else {
-            await handleGenerateCredentials(req, res);
-          }
-        } else {
-          res.writeHead(405, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Method not allowed" }));
-        }
-        break;
-
-      case "/api/v1/credentials/extract":
-        if (req.method === "POST") {
-          if (JWT_SECRET) {
-            authenticate(req, res, () => {
-              handleExtractCredentials(req, res);
-            });
-          } else {
-            await handleExtractCredentials(req, res);
-          }
-        } else {
-          res.writeHead(405, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Method not allowed" }));
-        }
-        break;
-
-      case "/api/v1/credentials/validate":
-        if (req.method === "GET") {
-          handleValidateCredentials(req, res);
-        } else {
-          res.writeHead(405, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Method not allowed" }));
-        }
-        break;
-
-      default:
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Not found" }));
+    if (!email && !password) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({ error: "Email or password parameter required" }),
+      );
+      return;
     }
-  } catch (error) {
-    console.error("Error handling request:", error);
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Internal server error" }));
-  }
-}
 
-/**
- * Iniciar servidor
- */
-export function startServer(port: number = 3000) {
-  let server: any;
+    const result: any = {};
 
-  if (SECURITY_CONFIG.HTTPS_ENABLED) {
-    try {
-      const options = {
-        key: readFileSync(resolve(SECURITY_CONFIG.TLS_KEY_PATH)),
-        cert: readFileSync(resolve(SECURITY_CONFIG.TLS_CERT_PATH)),
+    if (email) {
+      result.email = {
+        isValid: this.credentialsGenerator.isValidEmailWithSalt(email),
+        hasSalt: this.credentialsGenerator.isValidEmailWithSalt(email),
       };
-      server = https.createServer(options, requestHandler);
-      console.log(`🔒 HTTPS Server started on port ${port}`);
-    } catch (error) {
-      console.warn("HTTPS certificates not found, falling back to HTTP");
-      server = createServer(requestHandler);
-      console.log(`⚠️  HTTP Server started on port ${port} (no HTTPS)`);
     }
-  } else {
-    server = createServer(requestHandler);
-    console.log(`🌐 HTTP Server started on port ${port}`);
+
+    if (password) {
+      result.password = {
+        isValid: this.credentialsGenerator.isValidPasswordWithPepper(password),
+        hasPepper:
+          this.credentialsGenerator.isValidPasswordWithPepper(password),
+      };
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(result));
   }
 
-  server.listen(port, () => {
-    console.log(`🚀 Cyber Vault API ready at http://localhost:${port}`);
-    console.log(`   Health check: http://localhost:${port}/health`);
-    console.log(`   Ready check: http://localhost:${port}/ready`);
-    if (JWT_SECRET) {
-      console.log(`   🔐 Authentication: ENABLED`);
-    } else {
-      console.log(`   🔓 Authentication: DISABLED (development mode)`);
-    }
-    console.log(
-      `   📊 Rate limit: ${RATE_LIMIT_MAX} requests per ${RATE_LIMIT_WINDOW / 60000} minutes`,
-    );
-  });
+  /**
+   * Request principal - routing y middlewares
+   */
+  private async handleRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    // Configurar headers de seguridad
+    const cspString = Object.entries(SECURITY_CONFIG.CSP)
+      .map(([key, values]) => `${key} ${values.join(" ")}`)
+      .join("; ");
 
-  return server;
+    res.setHeader("Content-Security-Policy", cspString);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains",
+    );
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+
+    // Aplicar rate limiting a todos los endpoints
+    const ip = req.socket?.remoteAddress || "unknown";
+    if (!checkRateLimit(ip)) {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Rate limit exceeded" }));
+      return;
+    }
+
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+
+    try {
+      switch (url.pathname) {
+        case "/health":
+          this.handleHealth(req, res);
+          break;
+
+        case "/ready":
+          this.handleReady(req, res);
+          break;
+
+        case "/api/v1/vaults":
+          if (req.method === "POST") {
+            // Verificar si JWT está habilitado
+            if (JWT_SECRET) {
+              authenticate(req, res, () => {
+                this.handleCreateVault(req, res);
+              });
+            } else {
+              await this.handleCreateVault(req, res);
+            }
+          } else {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          break;
+
+        case "/api/v1/credentials/generate":
+          if (req.method === "POST") {
+            if (JWT_SECRET) {
+              authenticate(req, res, () => {
+                this.handleGenerateCredentials(req, res);
+              });
+            } else {
+              await this.handleGenerateCredentials(req, res);
+            }
+          } else {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          break;
+
+        case "/api/v1/credentials/extract":
+          if (req.method === "POST") {
+            if (JWT_SECRET) {
+              authenticate(req, res, () => {
+                this.handleExtractCredentials(req, res);
+              });
+            } else {
+              await this.handleExtractCredentials(req, res);
+            }
+          } else {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          break;
+
+        case "/api/v1/credentials/validate":
+          if (req.method === "GET") {
+            this.handleValidateCredentials(req, res);
+          } else {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          break;
+
+        default:
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Not found" }));
+      }
+    } catch (error) {
+      console.error("Error handling request:", error);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error" }));
+    }
+  }
+
+  /**
+   * Inicia el servidor HTTP/HTTPS
+   */
+  public start(port: number = 3000) {
+    let server: any;
+
+    if (SECURITY_CONFIG.HTTPS_ENABLED) {
+      try {
+        const options = {
+          key: readFileSync(resolve(SECURITY_CONFIG.TLS_KEY_PATH)),
+          cert: readFileSync(resolve(SECURITY_CONFIG.TLS_CERT_PATH)),
+        };
+        server = https.createServer(options, (req, res) =>
+          this.handleRequest(req, res),
+        );
+        console.log(`🔒 HTTPS Server started on port ${port}`);
+      } catch (error) {
+        console.warn("HTTPS certificates not found, falling back to HTTP");
+        server = createServer((req, res) => this.handleRequest(req, res));
+        console.log(`⚠️  HTTP Server started on port ${port} (no HTTPS)`);
+      }
+    } else {
+      server = createServer((req, res) => this.handleRequest(req, res));
+      console.log(`🌐 HTTP Server started on port ${port}`);
+    }
+
+    server.listen(port, () => {
+      console.log(`🚀 Cyber Vault API ready at http://localhost:${port}`);
+      console.log(`   Health check: http://localhost:${port}/health`);
+      console.log(`   Ready check: http://localhost:${port}/ready`);
+      if (JWT_SECRET) {
+        console.log(`   🔐 Authentication: ENABLED`);
+      } else {
+        console.log(`   🔓 Authentication: DISABLED (development mode)`);
+      }
+      console.log(
+        `   📊 Rate limit: ${RATE_LIMIT_MAX} requests per ${RATE_LIMIT_WINDOW / 60000} minutes`,
+      );
+    });
+
+    return server;
+  }
+}
+
+/**
+ * Función de conveniencia para iniciar el servidor con dependencias por defecto
+ */
+export async function startServer(port: number = 3000) {
+  // Dependencias por defecto (Composition Root)
+  const vaultRepository = new ChromeStorageVaultRepository();
+  const cryptoService = new CryptoService();
+  const credentialsGenerator = new CredentialsGenerator(cryptoService);
+
+  const apiServer = new ApiServer(
+    vaultRepository,
+    cryptoService,
+    credentialsGenerator,
+  );
+  return apiServer.start(port);
 }
 
 // Iniciar servidor si ejecutado directamente
 if (require.main === module) {
   const port = parseInt(process.env.PORT || "3000", 10);
-  startServer(port);
+  startServer(port).catch(console.error);
 }

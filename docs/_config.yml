@@ -1,0 +1,5 @@
+theme: jekyll-theme-cayman
+title: CyberVault v2
+description: Phishing-Aware Password Manager Based on User-Centric Domain Validation and Secure Credential Storage
+url: https://statick88.github.io
+baseurl: /cybervault

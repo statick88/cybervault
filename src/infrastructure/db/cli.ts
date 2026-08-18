@@ -7,6 +7,7 @@
 
 import { Pool } from "pg";
 import { MigrationRunner } from "./migrate";
+import { logger } from "../../shared/logger";
 
 const DATABASE_URL = process.env.DATABASE_URL || "postgresql://localhost:5432/cybervault";
 
@@ -19,20 +20,20 @@ async function main() {
     switch (command) {
       case "up":
         const result = await runner.run();
-        console.log(`Migrations applied: ${result.applied}, skipped: ${result.skipped}`);
+        logger.info(`Migrations applied: ${result.applied}, skipped: ${result.skipped}`, "DbCli");
         break;
       case "status":
         await runner.ensureMigrationTable();
         const applied = await runner.getAppliedMigrations();
         const migrations = await runner.loadMigrations();
-        console.log(`Applied: ${applied.length}/${migrations.length}`);
+        logger.info(`Applied: ${applied.length}/${migrations.length}`, "DbCli");
         for (const m of migrations) {
           const status = applied.includes(m.id) ? "✓" : "○";
-          console.log(`  ${status} ${m.name}`);
+          logger.info(`  ${status} ${m.name}`, "DbCli");
         }
         break;
       default:
-        console.log("Usage: migrate [up|status]");
+        logger.info("Usage: migrate [up|status]", "DbCli");
     }
   } finally {
     await pool.end();
@@ -40,6 +41,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  logger.error("Migration failed", "DbCli", undefined, String(err));
   process.exit(1);
 });

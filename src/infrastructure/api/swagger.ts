@@ -2,21 +2,28 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { readFileSync } from "fs";
 import { resolve as resolvePath } from "path";
 
+const STATIC_DIR = resolvePath(__dirname, "../../../static/swagger");
+
+const SWAGGER_CSS = readFileSync(resolvePath(STATIC_DIR, "swagger-ui.css"), "utf-8");
+const SWAGGER_JS_BUNDLE = readFileSync(resolvePath(STATIC_DIR, "swagger-ui-bundle.js"), "utf-8");
+const SWAGGER_JS_STANDALONE = readFileSync(resolvePath(STATIC_DIR, "swagger-ui-standalone-preset.js"), "utf-8");
+
 const SWAGGER_UI_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>CyberVault API Docs</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
+  <link rel="stylesheet" href="/api/docs/swagger-ui.css" />
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="/api/docs/swagger-ui-bundle.js"></script>
+  <script src="/api/docs/swagger-ui-standalone-preset.js"></script>
   <script>
     SwaggerUIBundle({
       url: '/api/docs/openapi.json',
       dom_id: '#swagger-ui',
-      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
       layout: 'BaseLayout'
     });
   </script>
@@ -81,8 +88,21 @@ function parseYamlValue(value: string): unknown {
   return value;
 }
 
+const STATIC_ASSETS: Record<string, { content: string; contentType: string }> = {
+  "/api/docs/swagger-ui.css": { content: SWAGGER_CSS, contentType: "text/css; charset=utf-8" },
+  "/api/docs/swagger-ui-bundle.js": { content: SWAGGER_JS_BUNDLE, contentType: "application/javascript; charset=utf-8" },
+  "/api/docs/swagger-ui-standalone-preset.js": { content: SWAGGER_JS_STANDALONE, contentType: "application/javascript; charset=utf-8" },
+};
+
 export function swaggerMiddleware(req: IncomingMessage, res: ServerResponse): boolean {
   const url = new URL(req.url || "", `http://${req.headers.host}`);
+
+  const asset = STATIC_ASSETS[url.pathname];
+  if (asset && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": asset.contentType });
+    res.end(asset.content);
+    return true;
+  }
 
   if (url.pathname === "/api/docs" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

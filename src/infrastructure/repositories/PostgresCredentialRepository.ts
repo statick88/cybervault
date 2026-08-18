@@ -5,7 +5,7 @@ import type { QueryResult } from "pg";
 import { Pool } from "pg";
 import { Credential } from "../../domain/entities/credential";
 import type { CredentialId, VaultId } from "../../domain/value-objects/ids";
-import { Logger } from "../../shared/utils/logger";
+import { logger } from "../../shared/logger";
 import { withRetry } from "../../shared/retry";
 import { CircuitBreaker } from "../../shared/circuit-breaker";
 
@@ -36,22 +36,20 @@ export interface ICredentialRepository {
  */
 export class PostgresCredentialRepository implements ICredentialRepository {
   private pool: Pool;
-  private readonly logger: Logger;
   private readonly circuitBreaker: CircuitBreaker;
 
   constructor(connectionString: string) {
-    this.logger = new Logger("PostgresCredentialRepository");
     this.pool = new Pool({ connectionString, ...PG_POOL_CONFIG });
     this.circuitBreaker = new CircuitBreaker();
 
     // Manejar errores en clientes inactivos del pool (evita crashes silenciosos)
     this.pool.on("error", (err) => {
-      this.logger.error("Unexpected error on idle PostgreSQL client", err);
+      logger.error("Unexpected error on idle PostgreSQL client", "PostgresCredentialRepository", undefined, String(err));
     });
 
     // Initialize schema on first use (non-blocking)
     this.initializeTable().catch((err) => {
-      this.logger.warn("Schema initialization failed (may need manual migration)", err);
+      logger.warn("Schema initialization failed (may need manual migration)", err);
     });
   }
 
@@ -98,7 +96,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
     `;
 
     await this.executeWithCircuit(() => this.pool.query(createTableQuery));
-    this.logger.info("Credentials table initialized");
+    logger.info("Credentials table initialized");
   }
 
   /**
@@ -152,13 +150,13 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       );
       const row = result.rows[0];
 
-      this.logger.info(`Credential saved with id: ${plain.id}`);
+      logger.info(`Credential saved with id: ${plain.id}`);
       return Credential.fromPlainObject({
         ...row,
         tags: row.tags || [],
       });
     } catch (error) {
-      this.logger.error("Failed to save credential", error);
+      logger.error("Failed to save credential", "PostgresCredentialRepository", undefined, String(error));
       throw error;
     }
   }
@@ -188,13 +186,13 @@ export class PostgresCredentialRepository implements ICredentialRepository {
 
       const row = result.rows[0];
 
-      this.logger.info(`Credential found with id: ${id.toString()}`);
+      logger.info(`Credential found with id: ${id.toString()}`);
       return Credential.fromPlainObject({
         ...row,
         tags: row.tags || [],
       });
     } catch (error) {
-      this.logger.error("Failed to find credential by id", error);
+      logger.error("Failed to find credential by id", "PostgresCredentialRepository", undefined, String(error));
       throw error;
     }
   }
@@ -226,12 +224,12 @@ export class PostgresCredentialRepository implements ICredentialRepository {
         }),
       );
 
-      this.logger.info(
+      logger.info(
         `Found ${credentials.length} credentials for vault ${vaultId.toString()}`,
       );
       return credentials;
     } catch (error) {
-      this.logger.error("Failed to find credentials by vault id", error);
+      logger.error("Failed to find credentials by vault id", "PostgresCredentialRepository", undefined, String(error));
       throw error;
     }
   }
@@ -253,16 +251,16 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       const deleted = (result.rowCount ?? 0) > 0;
 
       if (deleted) {
-        this.logger.info(`Credential deleted with id: ${id.toString()}`);
+        logger.info(`Credential deleted with id: ${id.toString()}`);
       } else {
-        this.logger.warn(
+        logger.warn(
           `Attempted to delete non-existent credential with id: ${id.toString()}`,
         );
       }
 
       return deleted;
     } catch (error) {
-      this.logger.error("Failed to delete credential", error);
+      logger.error("Failed to delete credential", "PostgresCredentialRepository", undefined, String(error));
       throw error;
     }
   }
@@ -293,10 +291,10 @@ export class PostgresCredentialRepository implements ICredentialRepository {
         }),
       );
 
-      this.logger.info(`Listed ${credentials.length} credentials`);
+      logger.info(`Listed ${credentials.length} credentials`);
       return credentials;
     } catch (error) {
-      this.logger.error("Failed to list credentials", error);
+      logger.error("Failed to list credentials", "PostgresCredentialRepository", undefined, String(error));
       throw error;
     }
   }
@@ -309,7 +307,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       await this.executeWithCircuit(() => this.pool.query("SELECT 1"));
       return true;
     } catch (error) {
-      this.logger.error("PostgreSQL health check failed", error);
+      logger.error("PostgreSQL health check failed", "PostgresCredentialRepository", undefined, String(error));
       return false;
     }
   }
@@ -319,6 +317,6 @@ export class PostgresCredentialRepository implements ICredentialRepository {
    */
   async close(): Promise<void> {
     await this.pool.end();
-    this.logger.info("PostgreSQL connection pool closed");
+    logger.info("PostgreSQL connection pool closed");
   }
 }

@@ -11,7 +11,7 @@
 import {
   CONFUSABLE_LOOKUP,
   SCRIPT_RANGES,
-} from "../../infrastructure/security/unicode-confusables";
+} from "./confusables-data";
 
 /** Evidence of a confusable character found in the input. */
 export interface ConfusableEvidence {

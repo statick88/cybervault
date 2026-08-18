@@ -10,6 +10,7 @@ import {
 } from "./credentials-generator";
 import type { DetectedForm } from "./form-detector";
 import { FormDetector } from "./form-detector";
+import { logger } from "../../../shared/logger";
 
 export interface AutocompleteSuggestion {
   email: string;
@@ -32,7 +33,7 @@ export class AutocompleteService {
    * Inicia el servicio de autocompletado
    */
   start(): void {
-    console.log("🚀 Iniciando servicio de autocompletado CyberVault...");
+    logger.info("Iniciando servicio de autocompletado CyberVault...", "AutocompleteService");
     this.setupEventListeners();
     this.checkCurrentPage();
   }
@@ -79,7 +80,7 @@ export class AutocompleteService {
     const forms = FormDetector.detectAllRegistrationForms();
 
     if (forms.length > 0) {
-      console.log(`📋 Detectados ${forms.length} formularios de registro`);
+      logger.info(`Detectados ${forms.length} formularios de registro`, "AutocompleteService");
       forms.forEach((form, index) => {
         this.processForm(form, index);
       });
@@ -327,7 +328,7 @@ export class AutocompleteService {
     // Ocultar sugerencia
     this.dismissSuggestion(index);
 
-    console.log("✅ Credenciales generadas y aplicadas");
+    logger.info("Credenciales generadas y aplicadas", "AutocompleteService");
   }
 
   /**
@@ -372,7 +373,7 @@ export class AutocompleteService {
       timestamp: Date.now(),
     };
 
-    console.log("💾 Credenciales guardadas:", credentialsData);
+    logger.info("Credenciales guardadas", "AutocompleteService", credentialsData as unknown as Record<string, unknown>);
   }
 
   /**

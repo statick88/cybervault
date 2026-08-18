@@ -6,7 +6,7 @@ import { Pool } from "pg";
 import { Vault } from "../../domain/entities/vault";
 import type { VaultId } from "../../domain/value-objects/ids";
 import type { IVaultRepository } from "../../domain/repositories";
-import { Logger } from "../../shared/utils/logger";
+import { logger } from "../../shared/logger";
 import { withRetry } from "../../shared/retry";
 import { CircuitBreaker } from "../../shared/circuit-breaker";
 
@@ -26,22 +26,20 @@ const PG_POOL_CONFIG = {
  */
 export class PostgresVaultRepository implements IVaultRepository {
   private pool: Pool;
-  private readonly logger: Logger;
   private readonly circuitBreaker: CircuitBreaker;
 
   constructor(connectionString: string) {
-    this.logger = new Logger("PostgresVaultRepository");
     this.pool = new Pool({ connectionString, ...PG_POOL_CONFIG });
     this.circuitBreaker = new CircuitBreaker();
 
     // Manejar errores en clientes inactivos del pool (evita crashes silenciosos)
     this.pool.on("error", (err) => {
-      this.logger.error("Unexpected error on idle PostgreSQL client", err);
+      logger.error("Unexpected error on idle PostgreSQL client", "PostgresVaultRepository", undefined, String(err));
     });
 
     // Initialize schema on first use (non-blocking, failure is logged not thrown)
     this.initializeTable().catch((err) => {
-      this.logger.warn("Schema initialization failed (may need manual migration)", err);
+      logger.warn("Schema initialization failed (may need manual migration)", err);
     });
   }
 
@@ -84,7 +82,7 @@ export class PostgresVaultRepository implements IVaultRepository {
     `;
 
     await this.executeWithCircuit(() => this.pool.query(createTableQuery));
-    this.logger.info("Vaults table initialized");
+    logger.info("Vaults table initialized");
   }
 
   /**
@@ -131,14 +129,14 @@ export class PostgresVaultRepository implements IVaultRepository {
       );
       const row = result.rows[0];
 
-      this.logger.info(`Vault saved with id: ${plain.id}`);
+      logger.info(`Vault saved with id: ${plain.id}`);
       return Vault.fromPlainObject({
         ...row,
         ownerId: row.owner_id ?? undefined,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
       });
     } catch (error) {
-      this.logger.error("Failed to save vault", error);
+      logger.error("Failed to save vault", "PostgresVaultRepository", undefined, String(error));
       throw error;
     }
   }
@@ -167,14 +165,14 @@ export class PostgresVaultRepository implements IVaultRepository {
 
       const row = result.rows[0];
 
-      this.logger.info(`Vault found with id: ${id.toString()}`);
+      logger.info(`Vault found with id: ${id.toString()}`);
       return Vault.fromPlainObject({
         ...row,
         ownerId: row.owner_id ?? undefined,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
       });
     } catch (error) {
-      this.logger.error("Failed to find vault by id", error);
+      logger.error("Failed to find vault by id", "PostgresVaultRepository", undefined, String(error));
       throw error;
     }
   }
@@ -203,7 +201,7 @@ export class PostgresVaultRepository implements IVaultRepository {
 
       const row = result.rows[0];
 
-      this.logger.info(
+      logger.info(
         `Vault found with id: ${vaultId} for owner: ${ownerId}`,
       );
       return Vault.fromPlainObject({
@@ -212,7 +210,7 @@ export class PostgresVaultRepository implements IVaultRepository {
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
       });
     } catch (error) {
-      this.logger.error("Failed to find vault by id and owner id", error);
+      logger.error("Failed to find vault by id and owner id", "PostgresVaultRepository", undefined, String(error));
       throw error;
     }
   }
@@ -234,16 +232,16 @@ export class PostgresVaultRepository implements IVaultRepository {
       const deleted = (result.rowCount ?? 0) > 0;
 
       if (deleted) {
-        this.logger.info(`Vault deleted with id: ${id.toString()}`);
+        logger.info(`Vault deleted with id: ${id.toString()}`);
       } else {
-        this.logger.warn(
+        logger.warn(
           `Attempted to delete non-existent vault with id: ${id.toString()}`,
         );
       }
 
       return deleted;
     } catch (error) {
-      this.logger.error("Failed to delete vault", error);
+      logger.error("Failed to delete vault", "PostgresVaultRepository", undefined, String(error));
       throw error;
     }
   }
@@ -274,10 +272,10 @@ export class PostgresVaultRepository implements IVaultRepository {
         }),
       );
 
-      this.logger.info(`Listed ${vaults.length} vaults`);
+      logger.info(`Listed ${vaults.length} vaults`);
       return vaults;
     } catch (error) {
-      this.logger.error("Failed to list vaults", error);
+      logger.error("Failed to list vaults", "PostgresVaultRepository", undefined, String(error));
       throw error;
     }
   }
@@ -309,10 +307,10 @@ export class PostgresVaultRepository implements IVaultRepository {
         }),
       );
 
-      this.logger.info(`Listed ${vaults.length} vaults for owner: ${ownerId}`);
+      logger.info(`Listed ${vaults.length} vaults for owner: ${ownerId}`);
       return vaults;
     } catch (error) {
-      this.logger.error("Failed to list vaults by owner", error);
+      logger.error("Failed to list vaults by owner", "PostgresVaultRepository", undefined, String(error));
       throw error;
     }
   }
@@ -325,7 +323,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       await this.executeWithCircuit(() => this.pool.query("SELECT 1"));
       return true;
     } catch (error) {
-      this.logger.error("PostgreSQL health check failed", error);
+      logger.error("PostgreSQL health check failed", "PostgresVaultRepository", undefined, String(error));
       return false;
     }
   }
@@ -335,6 +333,6 @@ export class PostgresVaultRepository implements IVaultRepository {
    */
   async close(): Promise<void> {
     await this.pool.end();
-    this.logger.info("PostgreSQL connection pool closed");
+    logger.info("PostgreSQL connection pool closed");
   }
 }

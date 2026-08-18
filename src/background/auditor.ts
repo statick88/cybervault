@@ -15,6 +15,7 @@ import { ConfusableDetectionStep } from "../domain/services/aitm/steps/confusabl
 import { TyposquattingStep } from "../domain/services/aitm/steps/typosquatting-step";
 import { ChromeStorageTrustStore } from "../infrastructure/repositories/chrome-storage-trust-store";
 import { metrics } from "../shared/metrics";
+import { logger } from "../shared/logger";
 import type { TrustEntry } from "../domain/repositories";
 
 /* ------------------------------------------------------------------ */
@@ -279,7 +280,7 @@ chrome.runtime.onInstalled.addListener(
         cybervault_anomaly_log: [],
       });
 
-      console.log("[CyberVault] Extension installed — default settings seeded");
+      logger.info("Extension installed — default settings seeded", "Auditor");
     }
 
     if (reason === "update") {
@@ -290,8 +291,9 @@ chrome.runtime.onInstalled.addListener(
       );
 
       if (expiredCount > 0) {
-        console.log(
-          `[CyberVault] Cleaned ${expiredCount} expired trust entries (${trustEntries.length} remaining)`,
+        logger.info(
+          `Cleaned ${expiredCount} expired trust entries (${trustEntries.length} remaining)`,
+          "Auditor",
         );
       }
     }

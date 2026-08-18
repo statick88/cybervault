@@ -33,6 +33,16 @@ import { swaggerMiddleware } from "./swagger";
 import { connectRedis, disconnectRedis } from "../redis";
 import { logger } from "../../shared/logger";
 import { metrics } from "../../shared/metrics";
+import { applyCorsHeaders } from "./middleware/cors";
+import { applySecurityHeaders } from "./middleware/security-headers";
+import {
+  checkRateLimit,
+  checkValidateRateLimit,
+  RATE_LIMIT_MAX,
+  RATE_LIMIT_WINDOW,
+  _clearRateLimitForTests,
+} from "./middleware/rate-limiter";
+export { _clearRateLimitForTests };
 
 // Use Cases
 import { CreateVaultUseCase } from "../../application/use-cases/create-vault.use-case";
@@ -58,17 +68,6 @@ const SECURITY_CONFIG = {
   HTTPS_ENABLED: process.env.HTTPS_ENABLED === "true",
   TLS_CERT_PATH: process.env.TLS_CERT_PATH || "./certs/server.crt",
   TLS_KEY_PATH: process.env.TLS_KEY_PATH || "./certs/server.key",
-  CSP: {
-    defaultSrc: ["'self'"],
-    scriptSrc: ["'self'"],
-    styleSrc: ["'self'", "'unsafe-inline'"],
-    imgSrc: ["'self'", "data:", "blob:"],
-    connectSrc: ["'self'"],
-    fontSrc: ["'self'"],
-    objectSrc: ["'none'"],
-    mediaSrc: ["'self'"],
-    frameSrc: ["'none'"],
-  },
 };
 
 // Configuración JWT — fail-fast en cualquier entorno que no sea development
@@ -85,100 +84,8 @@ if (!JWT_SECRET) {
   );
 }
 
-// Rate limiting configuration
-const requestCounts = new Map<string, { count: number; resetTime: number }>();
-const RATE_LIMIT_MAX = 100;
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutos
-
-// Dedicated rate limiter for /credentials/validate (public endpoint for browser extension)
-const validateRequestCounts = new Map<string, { count: number; resetTime: number }>();
-const VALIDATE_RATE_LIMIT_MAX = 20;
-const VALIDATE_RATE_LIMIT_WINDOW = 5 * 60 * 1000; // 5 minutos
-
 // Timeout de petición: 30 segundos → 504 Gateway Timeout
 const REQUEST_TIMEOUT_MS = 30_000;
-
-/**
- * Verifica si una IP ha excedido el límite de requests
- */
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const record = requestCounts.get(ip);
-
-  if (!record) {
-    requestCounts.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
-    return true;
-  }
-
-  // Reset si ha pasado el tiempo ventana
-  if (now > record.resetTime) {
-    requestCounts.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
-    return true;
-  }
-
-  // Incrementar contador
-  record.count++;
-
-  if (record.count > RATE_LIMIT_MAX) {
-    return false; // Rate limit excedido
-  }
-
-  return true;
-}
-
-/**
- * Limpia registros de rate limiting expirados
- */
-function cleanupRateLimits(): void {
-  const now = Date.now();
-  requestCounts.forEach((record, ip) => {
-    if (now > record.resetTime) {
-      requestCounts.delete(ip);
-    }
-  });
-  validateRequestCounts.forEach((record, ip) => {
-    if (now > record.resetTime) {
-      validateRequestCounts.delete(ip);
-    }
-  });
-}
-
-/**
- * Verifica rate limiting para el endpoint /credentials/validate (más estricto)
- */
-function checkValidateRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const record = validateRequestCounts.get(ip);
-
-  if (!record) {
-    validateRequestCounts.set(ip, { count: 1, resetTime: now + VALIDATE_RATE_LIMIT_WINDOW });
-    return true;
-  }
-
-  if (now > record.resetTime) {
-    validateRequestCounts.set(ip, { count: 1, resetTime: now + VALIDATE_RATE_LIMIT_WINDOW });
-    return true;
-  }
-
-  record.count++;
-
-  if (record.count > VALIDATE_RATE_LIMIT_MAX) {
-    return false;
-  }
-
-  return true;
-}
-
-/**
- * Limpia completamente el rate limit map (solo para tests)
- */
-export function _clearRateLimitForTests(): void {
-  requestCounts.clear();
-}
-
-// Limpiar cada 5 minutos (guardar referencia para cleanup en shutdown)
-const _rateLimitCleanupInterval = setInterval(cleanupRateLimits, 5 * 60 * 1000);
-if (_rateLimitCleanupInterval.unref) _rateLimitCleanupInterval.unref();
 
 /**
  * API Server con Clean Architecture
@@ -963,25 +870,8 @@ export class ApiServer {
     res: ServerResponse,
   ): Promise<void> {
     // Configurar headers de seguridad
-    const cspString = Object.entries(SECURITY_CONFIG.CSP)
-      .map(([key, values]) => `${key} ${values.join(" ")}`)
-      .join("; ");
-
-    res.setHeader("Content-Security-Policy", cspString);
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-Frame-Options", "DENY");
-    res.setHeader("X-XSS-Protection", "1; mode=block");
-    res.setHeader(
-      "Strict-Transport-Security",
-      "max-age=31536000; includeSubDomains",
-    );
-    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.setHeader(
-      "Access-Control-Allow-Origin",
-      process.env.CORS_ORIGIN || "http://localhost:3000",
-    );
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    applySecurityHeaders(res);
+    applyCorsHeaders(res);
 
     // Timeout de petición: 30 segundos → 504 Gateway Timeout
     // Sin listener de error, escrituras tardías tras destruir el socket podrían crashear el proceso

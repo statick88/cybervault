@@ -6,6 +6,7 @@
 import { Pool } from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import { logger } from "../../shared/logger";
 
 const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 const MIGRATION_TABLE = "schema_migrations";
@@ -71,7 +72,7 @@ export class MigrationRunner {
         continue;
       }
 
-      console.log(`Applying migration: ${migration.name}`);
+      logger.info(`Applying migration: ${migration.name}`, "MigrationRunner");
       await this.pool.query("BEGIN");
       try {
         await this.pool.query(migration.sql);
@@ -81,10 +82,10 @@ export class MigrationRunner {
         );
         await this.pool.query("COMMIT");
         appliedCount++;
-        console.log(`✓ Applied: ${migration.name}`);
+        logger.info(`✓ Applied: ${migration.name}`, "MigrationRunner");
       } catch (error) {
         await this.pool.query("ROLLBACK");
-        console.error(`✗ Failed: ${migration.name}`, error);
+        logger.error(`✗ Failed: ${migration.name}`, "MigrationRunner", undefined, String(error));
         throw error;
       }
     }

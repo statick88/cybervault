@@ -4,13 +4,11 @@
 
 | Property | Value |
 |----------|-------|
-| **GitHub** | *Por crear* — `github.com/statick88/cybervault` (recomendado) |
+| **GitHub** | [github.com/statick88/cybervault](https://github.com/statick88/cybervault) |
 | **Organization** | [github.com/statick88](https://github.com/statick88) |
 | **Default branch** | `main` |
 | **Language** | TypeScript (Node.js 24) |
 | **License** | MIT |
-
-> ⚠️ CyberVault aún no tiene repositorio propio en GitHub. El código fuente se encuentra en `/home/search14/cybervault/`.
 
 ---
 
@@ -32,8 +30,11 @@ CyberVault v2 implements a comprehensive testing strategy across three tiers: **
 ## Quick Start
 
 ```bash
+# Clone the repository
+git clone https://github.com/statick88/cybervault.git
+cd cybervault
+
 # Install dependencies
-cd /home/search14/cybervault
 npm install
 
 # Run all tests
@@ -675,7 +676,7 @@ jobs:
 ## Project Structure
 
 ```
-cyber-guardians/
+cybervault/
 ├── .github/
 │   ├── workflows/
 │   │   └── test.yml           # CI/CD pipeline
@@ -709,7 +710,7 @@ cyber-guardians/
 Add to `README.md`:
 
 ```markdown
-[![Tests](https://github.com/statick88/cyber-guardians/actions/workflows/test.yml/badge.svg)](https://github.com/statick88/cyber-guardians/actions/workflows/test.yml)
-[![Coverage](https://codecov.io/gh/statick88/cyber-guardians/branch/main/graph/badge.svg)](https://codecov.io/gh/statick88/cyber-guardians)
+[![Tests](https://github.com/statick88/cybervault/actions/workflows/test.yml/badge.svg)](https://github.com/statick88/cybervault/actions/workflows/test.yml)
+[![Coverage](https://codecov.io/gh/statick88/cybervault/branch/main/graph/badge.svg)](https://codecov.io/gh/statick88/cybervault)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ```

@@ -1,0 +1,28 @@
+# Ignorar archivos sensibles
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Ignorar directorios de desarrollo
+node_modules
+dist
+build
+.coverage
+.nyc_output
+*.log
+.DS_Store
+
+# Ignorar archivos de IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignorar datos de prueba
+data/
+tmp/

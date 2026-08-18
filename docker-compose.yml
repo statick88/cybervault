@@ -1,0 +1,186 @@
+# =============================================================================
+# CyberVault Docker Compose
+# =============================================================================
+# Sistema de gestión de credenciales Zero-Knowledge
+#
+# Servicios:
+#   - api: Servidor API de CyberVault
+#   - postgres: Base de datos para vault
+#   - redis: Cache y sesiones
+#   - ipfs: Almacenamiento descentralizado (opcional)
+#   - swagger: Documentación API
+# =============================================================================
+
+services:
+  # -----------------------------------------------------------------------------
+  # API Server
+  # -----------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: cybervault-api
+    ports:
+      - "${API_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=cybervault
+      - DB_USER=cybervault
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET}
+      - IPFS_ENABLED=${IPFS_ENABLED:-false}
+      - USE_POSTGRES=true
+      - DATABASE_URL=postgresql://cybervault:${POSTGRES_PASSWORD}@postgres:5432/cybervault
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - cybervault-network
+    volumes:
+      - api-logs:/app/logs
+
+  # -----------------------------------------------------------------------------
+  # PostgreSQL Database
+  # -----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: cybervault-db
+    environment:
+      - POSTGRES_DB=cybervault
+      - POSTGRES_USER=cybervault
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cybervault"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cybervault-network
+
+  # -----------------------------------------------------------------------------
+  # Redis (Cache & Sessions)
+  # -----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: cybervault-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cybervault-network
+
+  # -----------------------------------------------------------------------------
+  # IPFS (Optional - Decentralized Storage)
+  # -----------------------------------------------------------------------------
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: cybervault-ipfs
+    ports:
+      - "5001:5001" # API
+      - "8080:8080" # Gateway
+    environment:
+      - IPFS_PROFILE=server
+    volumes:
+      - ipfs-data:/data/ipfs
+    restart: unless-stopped
+    networks:
+      - cybervault-network
+    profiles:
+      - ipfs
+
+  # -----------------------------------------------------------------------------
+  # Swagger UI (API Documentation)
+  # -----------------------------------------------------------------------------
+  swagger:
+    image: swaggerapi/swagger-ui:v5.17.0
+    container_name: cybervault-swagger
+    ports:
+      - "${SWAGGER_PORT:-3001}:8080"
+    environment:
+      - SWAGGER_JSON=/app/openapi.json
+      - BASE_URL=/docs
+    volumes:
+      - ./docs/api/openapi.json:/app/openapi.json:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - cybervault-network
+    profiles:
+      - docs
+
+  # -----------------------------------------------------------------------------
+  # Adminer (Database Management - Dev only)
+  # -----------------------------------------------------------------------------
+  adminer:
+    image: adminer:latest
+    container_name: cybervault-adminer
+    ports:
+      - "${ADMINER_PORT:-3002}:8080"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - cybervault-network
+    profiles:
+      - dev
+
+  # -----------------------------------------------------------------------------
+  # Watchtower (Auto-update containers)
+  # -----------------------------------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: cybervault-watchtower
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INTERVAL=86400
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    networks:
+      - cybervault-network
+    profiles:
+      - ops
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  cybervault-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres-data:
+    name: cybervault-postgres
+  redis-data:
+    name: cybervault-redis
+  ipfs-data:
+    name: cybervault-ipfs
+  api-logs:
+    name: cybervault-logs

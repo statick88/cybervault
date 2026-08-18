@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberVault</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="header">
+    <h1 class="header__title">CyberVault</h1>
+    <button id="lock-toggle" class="header__lock" type="button" aria-label="Lock vault">
+      <span class="icon" id="lock-icon">🔒</span>
+    </button>
+  </header>
+
+  <section id="locked-view" class="view">
+    <div class="lock-view">
+      <p class="lock-view__label">Vault is locked</p>
+      <input
+        type="password"
+        id="passphrase-input"
+        class="lock-view__input"
+        placeholder="Enter passphrase"
+        aria-label="Passphrase"
+        autocomplete="off"
+      />
+      <button id="unlock-btn" class="btn btn--primary" type="button">Unlock</button>
+      <p id="lock-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <section id="unlocked-view" class="view" hidden>
+    <div class="toolbar">
+      <input
+        type="search"
+        id="search-input"
+        class="toolbar__search"
+        placeholder="Search credentials…"
+        aria-label="Search credentials"
+      />
+      <button id="add-btn" class="btn btn--small" type="button" aria-label="Add credential">+</button>
+    </div>
+
+    <ul id="credential-list" class="credential-list" role="list"></ul>
+
+    <div id="empty-state" class="empty-state" hidden>
+      <p>No credentials yet.</p>
+    </div>
+
+    <div id="add-form" class="add-form" hidden>
+      <input type="text" id="add-title" placeholder="Title" class="add-form__input" />
+      <input type="text" id="add-username" placeholder="Username" class="add-form__input" />
+      <input type="password" id="add-password" placeholder="Password" class="add-form__input" />
+      <input type="url" id="add-url" placeholder="URL (optional)" class="add-form__input" />
+      <div class="add-form__actions">
+        <button id="add-save" class="btn btn--primary" type="button">Save</button>
+        <button id="add-cancel" class="btn btn--ghost" type="button">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <a id="options-link" href="#" class="footer__link">Settings</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

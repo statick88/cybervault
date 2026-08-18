@@ -1,0 +1,386 @@
+{
+  "name": "Synthetic Dataset",
+  "description": "47 scenarios: 20 legitimate, 20 typosquatting, 4 homograph, 3 unknown",
+  "scenarios": [
+    {
+      "id": "LEG-001",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "google.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-002",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "mail.google.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-003",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "facebook.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-004",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "www.facebook.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-005",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "amazon.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-006",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "aws.amazon.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-007",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "microsoft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-008",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "login.microsoft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-009",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "apple.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-010",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "icloud.apple.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-011",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "netflix.com",
+      "expectedDomain": "netflix.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-012",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "twitter.com",
+      "expectedDomain": "twitter.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-013",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "github.com",
+      "expectedDomain": "github.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-014",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "linkedin.com",
+      "expectedDomain": "linkedin.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-015",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "yahoo.com",
+      "expectedDomain": "yahoo.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-016",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "outlook.com",
+      "expectedDomain": "outlook.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-017",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "paypal.com",
+      "expectedDomain": "paypal.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-018",
+      "category": "legitimate",
+      "subType": "exact",
+      "hostname": "ebay.com",
+      "expectedDomain": "ebay.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-019",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "www.reddit.com",
+      "expectedDomain": "reddit.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "LEG-020",
+      "category": "legitimate",
+      "subType": "subdomain",
+      "hostname": "discord.com",
+      "expectedDomain": "discord.com",
+      "expectedVerdict": "allow"
+    },
+    {
+      "id": "TYPO-001",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "gooogle.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-002",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "gogle.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-003",
+      "category": "typosquatting",
+      "subType": "char-substitution",
+      "hostname": "go0gle.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-004",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "googl.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-005",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "googlee.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-006",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "facebok.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-007",
+      "category": "typosquatting",
+      "subType": "char-substitution",
+      "hostname": "faceb00k.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-008",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "facebk.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-009",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "facebookk.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-010",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "amazn.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-011",
+      "category": "typosquatting",
+      "subType": "char-substitution",
+      "hostname": "amaz0n.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-012",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "amazzon.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-013",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "amazno.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-014",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "micrsoft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-015",
+      "category": "typosquatting",
+      "subType": "char-substitution",
+      "hostname": "micr0soft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-016",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "microsoftt.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-017",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "microsft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-018",
+      "category": "typosquatting",
+      "subType": "missing-char",
+      "hostname": "aple.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-019",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "appple.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "TYPO-020",
+      "category": "typosquatting",
+      "subType": "extra-char",
+      "hostname": "applee.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "HOME-001",
+      "category": "homograph",
+      "subType": "cyrillic-o",
+      "hostname": "g\u043E\u043Egle.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'о' (U+043E) replaces Latin 'o'"
+    },
+    {
+      "id": "HOME-002",
+      "category": "homograph",
+      "subType": "cyrillic-a",
+      "hostname": "\u0430mazon.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'а' (U+0430) replaces Latin 'a'"
+    },
+    {
+      "id": "HOME-003",
+      "category": "homograph",
+      "subType": "cyrillic-a",
+      "hostname": "\u0430pple.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'а' (U+0430) replaces Latin 'a'"
+    },
+    {
+      "id": "HOME-004",
+      "category": "homograph",
+      "subType": "cyrillic-o",
+      "hostname": "micros\u043Eft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'о' (U+043E) replaces Latin 'o'"
+    },
+    {
+      "id": "UNK-001",
+      "category": "unknown",
+      "subType": "unrelated",
+      "hostname": "random-site.xyz",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "UNK-002",
+      "category": "unknown",
+      "subType": "unrelated",
+      "hostname": "totally-different.org",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "UNK-003",
+      "category": "unknown",
+      "subType": "unrelated",
+      "hostname": "not-related.net",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    }
+  ]
+}

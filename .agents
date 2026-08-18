@@ -1,0 +1,118 @@
+# CyberVault — Project Context for AI Agents
+# Última actualización: 2026-08-16
+
+## Identidad del Proyecto
+- **Nombre:** CyberVault
+- **Tipo:** Phishing-Aware Password Manager (Research Paper Prototype)
+- **Versión:** 0.1.0
+- **Stack:** TypeScript, Node.js 22, Chrome Extension (Manifest V3), PostgreSQL 16, Redis 7, Docker
+- **Target:** Browser-based credential protection against phishing, typosquatting, homograph attacks
+- **Propósito:** Pre-submission domain validation + zero-knowledge credential storage
+- **Contexto:** Paper de investigación — Universidad de las Fuerzas Armadas ESPE, Ecuador
+- **Autores:** Luis Jaramillo-Montaño, Diego Medardo Saavedra, Gustavo Salazar-Chacón, Cristian Bustos-Sánchez
+
+## Arquitectura
+```
+src/
+├── domain/              → Entities, Ports/Interfaces, Pure Business Logic
+│   ├── entities/        → Vault, Credential, Vulnerability
+│   ├── ports/           → ICryptoService, ISubmissionGate, IDomainNormalizer
+│   ├── repositories/    → IVaultRepository, ICredentialRepository
+│   ├── services/        → AiTM detection pipeline (3-phase), domain validation
+│   └── value-objects/   → VaultId, CredentialId, CryptoHash (branded IDs)
+│
+├── application/         → Use Cases orchestration
+│   └── use-cases/       → CreateVault, GenerateCredentials, ExtractCredentials, ValidateFormSubmission
+│
+├── infrastructure/      → Adapters implementing ports
+│   ├── api/             → HTTP server (raw Node.js), JWT auth, rate limiting
+│   ├── browser/         → Chrome DOM adapters (SubmissionGate, DomainNormalizer, WarningRenderer)
+│   ├── crypto/          → AES-GCM-256, PBKDF2, ECDSA P-256, EncryptionService
+│   ├── db/              → Migration runner, CLI
+│   ├── repositories/    → PostgresVaultRepo, PostgresCredentialRepo, PostgresUserRepo
+│   ├── security/        → ConfusableDetector, TimingAnalyzer, Unicode confusables
+│   ├── ipfs/            → IPFS adapter with circuit breaker + retry
+│   └── cookie/          → Cookie isolation
+│
+├── shared/              → Cross-cutting utilities
+│   ├── retry.ts         → Exponential backoff + jitter
+│   ├── logger.ts        → Structured JSON/human logging
+│   ├── metrics.ts       → Lightweight Prometheus-format metrics
+│   └── circuit-breaker.ts → Fault tolerance state machine
+│
+├── background/          → Chrome Extension service worker
+│   └── auditor.ts       → AiTM detection in extension context
+│
+└── ui/                  → Chrome Extension popup, options, content scripts
+```
+
+## Estado Actual del Proyecto
+- **Etapa:** Security-hardened + resilience-improved prototype
+- **Compilación:** tsc --noEmit = 0 errores
+- **Tests:** 160 passing (12 suites), 10 skipped
+- **Score actual:** ~55/70 (79%) — objetivo 100/100
+
+## Objetivos del Paper
+1. Demostrar validación de dominio pre-envío contra phishing
+2. Pipeline de 3 fases: ExactMatch → ConfusableDetection → Levenshtein
+3. Almacenamiento zero-knowledge con encriptación local
+4. Integración IPFS para almacenamiento descentralizado
+5. Monitoreo de brechas HIBP (k-anonymity)
+6. Benchmarks reproducibles
+
+## Público Objetivo
+- Investigadores en seguridad informática
+- Desarrolladores de password managers
+- Comunidad académica en criptografía aplicada
+- Profesionales de ciberseguridad
+
+## Convenciones del Proyecto
+- **Idioma:** TypeScript (CommonJS)
+- **Arquitectura:** Clean Architecture / Hexagonal
+- **Build:** esbuild (extension), tsc (backend)
+- **Testing:** Jest + Playwright + Supertest
+- **Git:** Conventional commits (no AI attribution)
+- **Logging:** Structured logger (src/shared/logger.ts)
+- **Metrics:** Lightweight Prometheus format (src/shared/metrics.ts)
+
+## Dependencias Externas
+- PostgreSQL 16 (credential/vault storage)
+- Redis 7 (cache & sessions) — configurado pero no aún conectado
+- IPFS (optional decentralized storage) — con circuit breaker + retry
+- Chrome browser (extension host)
+
+## Seguridad Implementada
+- JWT auth con jti claim para revocación futura
+- JWT_SECRET gate para staging/production
+- CORS explícito (no wildcard)
+- User scoping en vault/credential queries (ownerId)
+- Rate limiting por IP
+- CSP headers configurados
+- Body size limits (1MB)
+- PBKDF2 con 600,000 iteraciones (NIST)
+- AES-GCM-256 con key derivation
+- ECDSA P-256 para firmas
+- Timing-safe password comparison
+
+## Resiliencia Implementada
+- Retry con exponential backoff + jitter (IPFS, Postgres)
+- Circuit breaker (IPFS: degradación graceful, Postgres: fail-fast)
+- Connection pooling (pg.Pool, max 10, idle 30s)
+- Health checks (DB + IPFS dependency verification)
+- API request timeout (30s → 504)
+- Structured logging con contextos
+
+## Puntos de Atención (Known Issues)
+1. encryption-service.ts:177 — exportKey en key no-extractable (DOMException en Node)
+2. entropy.test.ts — test flaky por dependencia en random generation
+3. Redis configurado en docker-compose pero no conectado en código
+4. Chrome Extension UI creada pero no testeada end-to-end
+5. Paper v1 tiene claims inflados que须 corregir para v2
+
+## Próximos Pasos (para 100/100)
+1. Fix encryption-service exportKey bug
+2. Fix flaky entropy test
+3. Ejecutar benchmarks y documentar resultados
+4. Cubrir test coverage gaps
+5. Aplicar correcciones del paper v2
+6. Conectar Redis para cache/sesiones

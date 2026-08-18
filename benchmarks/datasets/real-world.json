@@ -1,0 +1,214 @@
+{
+  "name": "Real-World Phishing Dataset",
+  "description": "26 real-world phishing domains across 5 attack categories from the paper",
+  "categories": {
+    "brand-impersonation": "Fake brand domains using deceptive naming patterns",
+    "subdomain-abuse": "Legitimate brands abused as subdomains of attacker-controlled domains",
+    "unicode-cyrillic": "IDN homograph attacks using Cyrillic glyphs visually identical to Latin",
+    "typosquatting": "Character substitution and transposition targeting common brands",
+    "punycode-idn": "Punycode-encoded IDN domains that render as visual lookalikes"
+  },
+  "scenarios": [
+    {
+      "id": "RW-001",
+      "category": "brand-impersonation",
+      "hostname": "paypal-secure.com",
+      "expectedDomain": "paypal.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-002",
+      "category": "brand-impersonation",
+      "hostname": "amazon-billing.net",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-003",
+      "category": "brand-impersonation",
+      "hostname": "apple-verify.org",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-004",
+      "category": "brand-impersonation",
+      "hostname": "microsoft365-login.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-005",
+      "category": "brand-impersonation",
+      "hostname": "facebook-security.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-006",
+      "category": "brand-impersonation",
+      "hostname": "netflix-account.update.com",
+      "expectedDomain": "netflix.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-007",
+      "category": "brand-impersonation",
+      "hostname": "ebay-pay.com",
+      "expectedDomain": "ebay.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-008",
+      "category": "brand-impersonation",
+      "hostname": "twitter-verify.org",
+      "expectedDomain": "twitter.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-009",
+      "category": "brand-impersonation",
+      "hostname": "linkedin-security.com",
+      "expectedDomain": "linkedin.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-010",
+      "category": "brand-impersonation",
+      "hostname": "yahoo-mail.com",
+      "expectedDomain": "yahoo.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-011",
+      "category": "brand-impersonation",
+      "hostname": "github-security.com",
+      "expectedDomain": "github.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-012",
+      "category": "brand-impersonation",
+      "hostname": "discord-nitro.com",
+      "expectedDomain": "discord.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-013",
+      "category": "brand-impersonation",
+      "hostname": "slack-workspace.com",
+      "expectedDomain": "slack.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-014",
+      "category": "brand-impersonation",
+      "hostname": "notion-login.com",
+      "expectedDomain": "notion.so",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-015",
+      "category": "brand-impersonation",
+      "hostname": "figma-verify.com",
+      "expectedDomain": "figma.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-016",
+      "category": "subdomain-abuse",
+      "hostname": "login.google.com.phishing.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-017",
+      "category": "subdomain-abuse",
+      "hostname": "secure.paypal.attacker.net",
+      "expectedDomain": "paypal.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-018",
+      "category": "subdomain-abuse",
+      "hostname": "verify.amazon.fake.org",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-019",
+      "category": "unicode-cyrillic",
+      "hostname": "g\u043E\u043Egle.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'о' (U+043E) replaces Latin 'o'"
+    },
+    {
+      "id": "RW-020",
+      "category": "unicode-cyrillic",
+      "hostname": "\u0430mazon.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'а' (U+0430) replaces Latin 'a'"
+    },
+    {
+      "id": "RW-021",
+      "category": "unicode-cyrillic",
+      "hostname": "\u0430pple.com",
+      "expectedDomain": "apple.com",
+      "expectedVerdict": "block",
+      "note": "Cyrillic 'а' (U+0430) replaces Latin 'a'"
+    },
+    {
+      "id": "RW-022",
+      "category": "typosquatting",
+      "hostname": "g00gle.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-023",
+      "category": "typosquatting",
+      "hostname": "goog1e.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-024",
+      "category": "typosquatting",
+      "hostname": "faceb00k.com",
+      "expectedDomain": "facebook.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-025",
+      "category": "typosquatting",
+      "hostname": "amaz0n.com",
+      "expectedDomain": "amazon.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-026",
+      "category": "typosquatting",
+      "hostname": "micr0soft.com",
+      "expectedDomain": "microsoft.com",
+      "expectedVerdict": "block"
+    },
+    {
+      "id": "RW-027",
+      "category": "punycode-idn",
+      "hostname": "xn--80ak6aa92e.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block",
+      "note": "Punycode encoding of Cyrillic 'google'"
+    },
+    {
+      "id": "RW-028",
+      "category": "punycode-idn",
+      "hostname": "xn--n397793a.com",
+      "expectedDomain": "google.com",
+      "expectedVerdict": "block",
+      "note": "Punycode encoding of Cyrillic domain"
+    }
+  ]
+}

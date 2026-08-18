@@ -1,0 +1,128 @@
+# CyberVault — Progress Checklist
+# Se actualiza al final de cada sesión
+# Última actualización: 2026-08-16
+
+## Code Review
+- [x] Explorar estructura del proyecto
+- [x] Revisar archivos core (server.ts, auth.ts, crypto/)
+- [x] Identificar issues de seguridad (6 CRITICAL, 12 HIGH)
+- [x] Identificar issues de resiliencia
+- [x] Identificar issues de legibilidad
+
+## Juicio de Implementación
+- [x] Evaluar domain layer (9/10)
+- [x] Evaluar crypto layer (6/10 — 3 de 6 algoritmos implementados)
+- [x] Evaluar API layer (8/10 — post-fixes)
+- [x] Evaluar storage layer (4/10 — IPFS con fallback)
+- [x] Evaluar testing (7/10 — 160 tests, gaps en coverage)
+- [x] Evaluar resiliencia (65/80 — post-fixes)
+- [x] Emitir veredicto: 55/70 (79%)
+
+## Refutación
+- [x] Cuestionar "Zero-Knowledge" (parcial)
+- [x] Cuestionar "6 algoritmos crypto" (solo 3 implementados)
+- [x] Cuestionar "<0.19ms latencia" (sin evidencia)
+- [x] Cuestionar "0% falsos positivos" (sin dataset)
+- [x] Cuestionar "pre-submission blocking" (solo detección)
+- [x] Cuestionar "IPFS hybrid storage" (roto, arreglado)
+- [x] Proponer correcciones para paper v2
+
+## Security Hardening
+- [x] C1: JWT_SECRET gate para staging/production
+- [x] C5: IPFS key — Date.now() → crypto.getRandomValues()
+- [x] C6: CORS wildcard → http://localhost:3000
+- [x] H4: Pipeline timer handle cleanup
+- [x] H5: secureHashPassword → hashData (renombrado)
+- [x] H7: jti claim en JWT tokens
+- [x] H9: IPFS download() ahora descifra realmente
+- [x] H2/H3: User scoping — vault/credential owner isolation
+
+## Resilience
+- [x] Retry/Backoff utility (exponential + jitter)
+- [x] IPFS retry (upload/download, maxAttempts 3)
+- [x] Postgres retry (reads: 2, writes: 3)
+- [x] Connection pooling (pg.Pool, max 10, idle 30s)
+- [x] Health checks (DB + IPFS dependency verification)
+- [x] Ready check (all deps must be reachable)
+- [x] API request timeout (30s → 504)
+- [x] Structured logging (logger.ts, JSON/human formats)
+
+## Circuit Breaker
+- [x] Circuit breaker utility (CLOSED→OPEN→HALF_OPEN)
+- [x] IPFS circuit breaker (graceful degradation)
+- [x] Postgres circuit breaker (fail-fast)
+
+## Observability
+- [x] Metrics collector (Prometheus format)
+- [x] /metrics endpoint
+- [x] Request metrics (http_requests_total, duration, active)
+- [x] Business metrics (vaults, logins, credentials, aitm)
+
+## Database
+- [x] Migration runner
+- [x] Initial schema (vaults, credentials, users, trust_store)
+- [x] Migration CLI (db:migrate, db:migrate:status)
+- [x] Remove initializeTable() race condition
+
+## Test Infrastructure
+- [x] jest.setup.js (test environment)
+- [x] Authenticated API tests
+- [x] 160 tests passing (12 suites)
+
+## Benchmarks (ejecutados 2026-08-16)
+- [x] Exact-match: 0.0030ms/op, 328K/s (paper: <0.001ms, 22.1M/s)
+- [x] Similarity: 0.0054ms/op, 185K/s (paper: 0.19ms, 5.2K/s)
+- [x] Synthetic accuracy: 100% (47/47) — paper: 96.15%
+- [x] Real-world accuracy: 100% (28/28) — paper: 100%
+- [x] Report: benchmarks/results/benchmark-report.json
+
+## Bugs Fixed
+- [x] Fix encryption-service.ts exportKey bug (line 177 — removed non-extractable export)
+- [x] Fix flaky entropy test (password + assertion → lastIndexOf pepper validation)
+- [x] Fix extractOriginalCredentials regex (password base with + chars)
+- [x] 16 suites, 197 tests passing (5/5 stable runs)
+
+## Paper v2 Corrections
+- [x] Crear correcciones.md con 22 mejoras por sección del paper
+- [x] Incluir benchmarks reales vs paper v1
+- [x] Incluir threat model, limitaciones, referencias nuevas
+- [ ] Aplicar correcciones al documento Word
+
+## Redis Integration
+- [x] Instalar ioredis
+- [x] Crear redis-client.ts (lazy connect, retry, graceful shutdown)
+- [x] Crear cache-service.ts (JSON serialization, TTL, namespacing)
+- [x] Crear session-store.ts (create/get/destroy/refresh)
+- [x] Wire into server.ts (connect on startup, disconnect on SIGTERM)
+- [x] Tests: 19 passing (redis-client + cache-service)
+
+## Chrome Extension E2E
+- [x] Crear playwright.config.ts
+- [x] Crear extension-fixture.ts (launchPersistentContext + --load-extension)
+- [x] Crear popup.spec.ts (9 tests)
+- [x] Crear content-scripts.spec.ts (8 tests)
+- [x] Crear background.spec.ts (5 tests)
+- [x] Crear test-page.html fixture
+- [x] Tests: 22 E2E tests (skipped — no Chrome in this environment)
+
+## OpenAPI/Swagger
+- [x] Crear openapi.yaml (OpenAPI 3.0.3)
+- [x] Crear swagger.ts (CDN-based Swagger UI)
+- [x] Wire into server.ts (/api/docs)
+- [x] Tests: 5 passing (swagger integration)
+- [x] 16 endpoints documentados
+
+## Pendiente para 100/100
+- [ ] Aplicar correcciones al documento Word
+- [ ] Ejecutar E2E tests en máquina con Chrome
+
+## Archivos Clave
+- src/shared/retry.ts — retry con exponential backoff
+- src/shared/logger.ts — structured logging
+- src/shared/metrics.ts — lightweight metrics
+- src/shared/circuit-breaker.ts — fault tolerance
+- src/infrastructure/db/migrate.ts — migration runner
+- src/infrastructure/api/server.ts — API principal
+- src/infrastructure/ipfs/ipfs-adapter.ts — IPFS con circuit breaker
+- benchmarks/domain-validation.bench.ts — benchmark suite
+- benchmarks/results/benchmark-report.json — benchmark results

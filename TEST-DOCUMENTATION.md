@@ -44,6 +44,49 @@ npm test
 npx tsx benchmarks/domain-validation.bench.ts
 ```
 
+### Docker Deployment (Swarm)
+
+```bash
+# Initialize Docker Swarm (first time only)
+docker swarm init --advertise-addr 127.0.0.1
+
+# Create shared network (first time only)
+docker network create --driver overlay --attachable homelab-net
+
+# Build the API image
+docker build -t cybervault-api:latest -f docker/Dockerfile.simple .
+
+# Deploy the stack
+docker stack deploy -c stack.yml cybervault
+
+# Check status
+docker stack services cybervault
+
+# View logs
+docker service logs cybervault_api -f
+
+# Access API
+curl http://localhost:3001/health
+
+# Remove stack
+docker stack rm cybervault
+```
+
+### Environment Variables
+
+Create a `.env` file:
+
+```bash
+# CyberVault
+CYBERVAULT_DB_PASSWORD=your_secure_password
+CYBERVAULT_JWT_SECRET=your_jwt_secret_at_least_32_chars
+VAULT_MASTER_KEY=your_64_char_hex_key
+VAULT_ENCRYPTION_SALT=your_32_char_hex_salt
+
+# Telegram Bot (optional)
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+```
+
 ---
 
 ## Prerequisites

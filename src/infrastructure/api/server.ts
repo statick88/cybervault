@@ -26,6 +26,7 @@ import {
   getUserByEmail,
   createUser,
   verifyPassword,
+  type AuthenticatedRequest,
 } from "./auth";
 
 import { swaggerMiddleware } from "./swagger";
@@ -89,6 +90,11 @@ const requestCounts = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_MAX = 100;
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutos
 
+// Dedicated rate limiter for /credentials/validate (public endpoint for browser extension)
+const validateRequestCounts = new Map<string, { count: number; resetTime: number }>();
+const VALIDATE_RATE_LIMIT_MAX = 20;
+const VALIDATE_RATE_LIMIT_WINDOW = 5 * 60 * 1000; // 5 minutos
+
 // Timeout de petición: 30 segundos → 504 Gateway Timeout
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -130,6 +136,37 @@ function cleanupRateLimits(): void {
       requestCounts.delete(ip);
     }
   });
+  validateRequestCounts.forEach((record, ip) => {
+    if (now > record.resetTime) {
+      validateRequestCounts.delete(ip);
+    }
+  });
+}
+
+/**
+ * Verifica rate limiting para el endpoint /credentials/validate (más estricto)
+ */
+function checkValidateRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const record = validateRequestCounts.get(ip);
+
+  if (!record) {
+    validateRequestCounts.set(ip, { count: 1, resetTime: now + VALIDATE_RATE_LIMIT_WINDOW });
+    return true;
+  }
+
+  if (now > record.resetTime) {
+    validateRequestCounts.set(ip, { count: 1, resetTime: now + VALIDATE_RATE_LIMIT_WINDOW });
+    return true;
+  }
+
+  record.count++;
+
+  if (record.count > VALIDATE_RATE_LIMIT_MAX) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -378,7 +415,7 @@ export class ApiServer {
         name,
         description,
         encryptionKeyId,
-        ownerId: (req as any).userId as string | undefined,
+        ownerId: (req as AuthenticatedRequest).userId,
       });
 
       metrics.counter(
@@ -708,7 +745,7 @@ export class ApiServer {
    * Handler para verificar token
    */
   private handleVerifyToken(req: IncomingMessage, res: ServerResponse): void {
-    const authReq = req as any;
+    const authReq = req as AuthenticatedRequest;
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -764,7 +801,7 @@ export class ApiServer {
     res: ServerResponse,
   ): Promise<void> {
     try {
-      const userId = (req as any).userId as string | undefined;
+      const userId = (req as AuthenticatedRequest).userId;
       // SECURITY: Never return all vaults without authentication
       // When JWT_SECRET is unset, userId is undefined — return empty, not everything
       const vaults = userId
@@ -792,7 +829,7 @@ export class ApiServer {
     vaultId: string,
   ): Promise<void> {
     try {
-      const userId = (req as any).userId as string | undefined;
+      const userId = (req as AuthenticatedRequest).userId;
       if (!userId) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Authentication required" }));
@@ -821,7 +858,7 @@ export class ApiServer {
     vaultId: string,
   ): Promise<void> {
     try {
-      const userId = (req as any).userId as string | undefined;
+      const userId = (req as AuthenticatedRequest).userId;
       if (!userId) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Authentication required" }));
@@ -885,7 +922,7 @@ export class ApiServer {
         );
         return;
       }
-      const userId = (req as any).userId as string | undefined;
+      const userId = (req as AuthenticatedRequest).userId;
       // Solo exponer credenciales de vaults propiedad del usuario autenticado
       let credentials: any[];
       if (userId) {
@@ -1074,7 +1111,30 @@ export class ApiServer {
 
         case "/api/v1/credentials/validate":
           if (req.method === "POST") {
-            this.handleValidateCredentials(req, res);
+            // Dedicated rate limiter for this public endpoint (browser extension flow)
+            const validateIp = req.socket?.remoteAddress || "unknown";
+            if (!checkValidateRateLimit(validateIp)) {
+              logger.warn(
+                `Rate limit exceeded for /credentials/validate from ${validateIp}`,
+                "ApiServer",
+              );
+              metrics.counter(
+                "cybervault_validate_rate_limited_total",
+                "Total rate-limited validate requests",
+              );
+              res.writeHead(429, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Rate limit exceeded" }));
+              return;
+            }
+            logger.info(
+              `Credential validate request from ${validateIp}`,
+              "ApiServer",
+            );
+            metrics.counter(
+              "cybervault_validate_requests_total",
+              "Total validate requests",
+            );
+            await this.handleValidateCredentials(req, res);
           } else {
             res.writeHead(405, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Method not allowed" }));

@@ -29,6 +29,7 @@
 
 ## Security Hardening
 - [x] C1: JWT_SECRET gate para staging/production
+- [x] SEC-01: Remove hardcoded JWT default, require JWT_SECRET always
 - [x] C5: IPFS key — Date.now() → crypto.getRandomValues()
 - [x] C6: CORS wildcard → http://localhost:3000
 - [x] H4: Pipeline timer handle cleanup

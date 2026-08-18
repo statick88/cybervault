@@ -502,24 +502,15 @@ export class ApiServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    // Support both POST body and GET query for backward compatibility,
-    // but POST is strongly preferred to avoid password leakage in URLs
     let email: string | null = null;
     let password: string | null = null;
 
-    if (req.method === "POST") {
-      try {
-        const data = await this.parseJsonBody(req);
-        email = (data.email as string) || null;
-        password = (data.password as string) || null;
-      } catch {
-        // If body parsing fails, fall through to empty values
-      }
-    } else {
-      // GET fallback — DEPRECATED: password in URL is a security risk
-      const url = new URL(req.url || "", `http://${req.headers.host}`);
-      email = url.searchParams.get("email");
-      password = url.searchParams.get("password");
+    try {
+      const data = await this.parseJsonBody(req);
+      email = (data.email as string) || null;
+      password = (data.password as string) || null;
+    } catch {
+      // If body parsing fails, fall through to empty values
     }
 
     if (!email && !password) {
@@ -754,7 +745,7 @@ export class ApiServer {
             list: "GET /api/v1/credentials",
             generate: "POST /api/v1/credentials/generate",
             extract: "POST /api/v1/credentials/extract",
-            validate: "GET /api/v1/credentials/validate",
+            validate: "POST /api/v1/credentials/validate",
           },
           health: {
             health: "GET /health",
@@ -802,10 +793,12 @@ export class ApiServer {
   ): Promise<void> {
     try {
       const userId = (req as any).userId as string | undefined;
-      // Verificar propiedad del vault antes de devolverlo
-      const vault = userId
-        ? await this.vaultRepository.findByVaultIdAndOwnerId(vaultId, userId)
-        : await this.vaultRepository.findById(VaultId.fromString(vaultId));
+      if (!userId) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication required" }));
+        return;
+      }
+      const vault = await this.vaultRepository.findByVaultIdAndOwnerId(vaultId, userId);
       if (!vault) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Vault not found" }));
@@ -829,17 +822,19 @@ export class ApiServer {
   ): Promise<void> {
     try {
       const userId = (req as any).userId as string | undefined;
-      // Verificar propiedad antes de eliminar
-      if (userId) {
-        const vault = await this.vaultRepository.findByVaultIdAndOwnerId(
-          vaultId,
-          userId,
-        );
-        if (!vault) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Vault not found" }));
-          return;
-        }
+      if (!userId) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication required" }));
+        return;
+      }
+      const vault = await this.vaultRepository.findByVaultIdAndOwnerId(
+        vaultId,
+        userId,
+      );
+      if (!vault) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Vault not found" }));
+        return;
       }
       const deleted = await this.vaultRepository.delete(
         VaultId.fromString(vaultId),
@@ -1078,7 +1073,7 @@ export class ApiServer {
           break;
 
         case "/api/v1/credentials/validate":
-          if (req.method === "GET") {
+          if (req.method === "POST") {
             this.handleValidateCredentials(req, res);
           } else {
             res.writeHead(405, { "Content-Type": "application/json" });

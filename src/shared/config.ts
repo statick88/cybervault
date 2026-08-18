@@ -37,7 +37,7 @@ export const API_CONFIG = {
 // Security
 // ============================================================================
 export const SECURITY_CONFIG = {
-  jwtSecret: env("JWT_SECRET", "dev-only-change-in-production"),
+  jwtSecret: env("JWT_SECRET", ""),
   jwtExpiry: env("JWT_EXPIRY", "24h"),
   sessionTimeoutMinutes: envInt("SESSION_TIMEOUT_MINUTES", "15"),
   rateLimitMaxRequests: envInt("RATE_LIMIT_MAX_REQUESTS", "100"),
@@ -129,11 +129,16 @@ export const Config = {
 export function validateConfig(): void {
   const errors: string[] = [];
 
+  // JWT_SECRET is always required
+  if (!process.env.JWT_SECRET) {
+    errors.push("JWT_SECRET is required");
+  }
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+    errors.push("JWT_SECRET must be at least 32 characters");
+  }
+
   // Production validations
   if (process.env.NODE_ENV === "production") {
-    if (!process.env.JWT_SECRET) {
-      errors.push("JWT_SECRET is required in production");
-    }
     if (!process.env.VAULT_MASTER_KEY) {
       errors.push("VAULT_MASTER_KEY is required in production");
     }
@@ -146,15 +151,6 @@ export function validateConfig(): void {
     ) {
       errors.push("DB_PASSWORD is required in production");
     }
-
-    // Warn about weak JWT secret
-    if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
-      errors.push("JWT_SECRET must be at least 32 characters in production");
-    }
-    // Reject default JWT secret value in production
-    if (process.env.JWT_SECRET === "dev-only-change-in-production") {
-      errors.push("JWT_SECRET must NOT be the default value in production");
-    }
   }
 
   if (errors.length > 0) {
@@ -162,7 +158,5 @@ export function validateConfig(): void {
   }
 }
 
-// Validate on import in production
-if (process.env.NODE_ENV === "production") {
-  validateConfig();
-}
+// Validate on import
+validateConfig();

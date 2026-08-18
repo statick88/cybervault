@@ -6,4 +6,4 @@
  * development environment with a test-only secret.
  */
 process.env.NODE_ENV = "development";
-process.env.JWT_SECRET = process.env.JWT_SECRET || "test-only-secret-change-me";
+process.env.JWT_SECRET = process.env.JWT_SECRET || "test-only-secret-change-me-32chars";

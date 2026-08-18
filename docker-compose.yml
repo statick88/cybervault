@@ -32,6 +32,7 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
       - JWT_SECRET=${JWT_SECRET}
       - IPFS_ENABLED=${IPFS_ENABLED:-false}
       - USE_POSTGRES=true
@@ -80,12 +81,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cybervault-redis
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-cybervault_redis_secret}
     volumes:
       - redis-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-cybervault_redis_secret}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -152,13 +153,18 @@ services:
   # Watchtower (Auto-update containers)
   # -----------------------------------------------------------------------------
   watchtower:
-    image: containrrr/watchtower:latest
+    image: containrrr/watchtower:1.5.3
     container_name: cybervault-watchtower
     environment:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_INTERVAL=86400
+      - WATCHTOWER_LABEL_ENABLE=true
+    command: --label-enable --cleanup
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     networks:
       - cybervault-network

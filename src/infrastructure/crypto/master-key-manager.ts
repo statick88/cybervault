@@ -11,7 +11,7 @@
  * 3. All operations use session key derived from master key
  */
 
-import { encryptWithKey, decryptWithKey } from "./encryption-service";
+import { encryptWithKey, decryptWithKey } from "./EncryptionService";
 import { KeyDerivationService } from "./key-derivation-service";
 import { binaryToBase64, base64ToBinary } from "../../shared/utils";
 

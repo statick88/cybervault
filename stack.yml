@@ -29,6 +29,7 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD:-cybervault_secret}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
       - JWT_SECRET=${JWT_SECRET:-SuperSecretJWTKey12345678901234567890}
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY:-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2}
       - VAULT_ENCRYPTION_SALT=${VAULT_ENCRYPTION_SALT:-abcdef1234567890abcdef1234567890}
@@ -97,12 +98,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cybervault-redis
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-cybervault_redis_secret}
     volumes:
       - redis-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-cybervault_redis_secret}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

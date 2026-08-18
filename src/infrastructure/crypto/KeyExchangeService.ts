@@ -1,6 +1,6 @@
 import type { ICryptoService, EncryptedPayload, SignedPayload } from '../../domain/ports/ICryptoService';
 
-export class CryptoService implements ICryptoService {
+export class KeyExchangeService implements ICryptoService {
   private readonly subtle = globalThis.crypto.subtle;
 
   async generateX25519KeyPair(): Promise<{ publicKey: Uint8Array; privateKey: Uint8Array }> {

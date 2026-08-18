@@ -3,7 +3,6 @@
  * Implementa el concepto de "salting" y "peppering" para mayor seguridad en credenciales almacenadas
  */
 
-import type { CryptoService } from "../../../infrastructure/crypto/crypto-service";
 import {
   InvalidEmailFormatError,
   InvalidPasswordFormatError,

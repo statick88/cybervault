@@ -1,4 +1,4 @@
-import { encrypt, decrypt } from "../../../src/infrastructure/crypto/encryption-service";
+import { encrypt, decrypt } from "../../../src/infrastructure/crypto/EncryptionService";
 
 describe("EncryptionService", () => {
   // PBKDF2 with 600k iterations is slow

@@ -289,20 +289,54 @@ dist/
 
 ## 6. Instalación del Plugin en Chrome
 
-### 6.1 Modo Desarrollador
+### 6.1 Opción A: Instalación Directa (recomendado)
 
-1. Abrir Chrome y navegar a `chrome://extensions/`
+1. Descargar el archivo empaquetado:
+   ```
+   cybervault-plugin.tar.gz (129.7 KB)
+   ```
 
-2. Habilitar **"Modo desarrollador"** (toggle en la esquina superior derecha)
+2. Extraer el archivo:
+   ```bash
+   tar -xzf cybervault-plugin.tar.gz
+   ```
 
-3. Hacer clic en **"Cargar extensión sin empaquetar"** (Load unpacked)
+3. Abrir Chrome y navegar a `chrome://extensions/`
 
-4. Seleccionar la carpeta `dist/` del proyecto:
+4. Habilitar **"Modo desarrollador"** (toggle en la esquina superior derecha)
+
+5. Hacer clic en **"Cargar extensión sin empaquetar"** (Load unpacked)
+
+6. Seleccionar la carpeta `dist/` extraída
+
+7. La extensión aparecerá en la barra de herramientas con el icono de CyberVault
+
+### 6.1 Opción B: Desde el Repositorio
+
+1. Clonar el repositorio:
+   ```bash
+   git clone <URL_DEL_REPOSITORIO>
+   cd cybervault
+   ```
+
+2. Instalar dependencias y compilar:
+   ```bash
+   npm install
+   npm run build:all
+   ```
+
+3. Abrir Chrome y navegar a `chrome://extensions/`
+
+4. Habilitar **"Modo desarrollador"** (toggle en la esquina superior derecha)
+
+5. Hacer clic en **"Cargar extensión sin empaquetar"** (Load unpacked)
+
+6. Seleccionar la carpeta `dist/` del proyecto:
    ```
    /home/search14/cybervault/dist/
    ```
 
-5. La extensión aparecerá en la barra de herramientas con el icono de CyberVault
+7. La extensión aparecerá en la barra de herramientas con el icono de CyberVault
 
 ### 6.2 Verificar Instalación
 
@@ -310,7 +344,22 @@ dist/
 2. Debería mostrarse el popup con el mensaje "Vault is locked"
 3. Verificar en `chrome://extensions/` que no hay errores
 
-### 6.3 Permisos de la Extensión
+### 6.3 Página de Prueba
+
+Una vez instalado el plugin, abrir esta URL para probar la detección de phishing:
+
+```
+http://localhost:3010/test-plugin.html
+```
+
+La página contiene 49 dominios de prueba categorizados:
+- ✅ 15 dominios legítimos (sin alerta)
+- 🚨 14 typosquatting (alerta PHISHING)
+- 🚨 6 homograph/unicode (alerta HOMOGRAPH)
+- ⚠️ 6 subdomain abuse (alerta SUBDOMAIN)
+- 🚨 8 real-world phishing (alerta PHISHING)
+
+### 6.4 Permisos de la Extensión
 
 | Permiso | Propósito |
 |---------|-----------|

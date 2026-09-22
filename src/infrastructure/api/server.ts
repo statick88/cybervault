@@ -714,16 +714,17 @@ export class ApiServer {
       const vaults = userId
         ? await this.vaultRepository.listByOwnerId(userId)
         : [];
+      const body = JSON.stringify({
+        vaults: vaults.map((v) => v.toSafeObject()),
+        total: vaults.length,
+      });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          vaults: vaults.map((v) => v.toSafeObject()),
-          total: vaults.length,
-        }),
-      );
+      res.end(body);
     } catch {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to list vaults" }));
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to list vaults" }));
+      }
     }
   }
 
@@ -748,11 +749,14 @@ export class ApiServer {
         res.end(JSON.stringify({ error: "Vault not found" }));
         return;
       }
+      const body = JSON.stringify(vault.toSafeObject());
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(vault.toSafeObject()));
+      res.end(body);
     } catch {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to get vault" }));
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to get vault" }));
+      }
     }
   }
 
@@ -788,17 +792,18 @@ export class ApiServer {
         res.end(JSON.stringify({ error: "Vault not found" }));
         return;
       }
+      const body = JSON.stringify({
+        id: vaultId,
+        status: "deleted",
+        message: "Vault deleted successfully",
+      });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          id: vaultId,
-          status: "deleted",
-          message: "Vault deleted successfully",
-        }),
-      );
+      res.end(body);
     } catch {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to delete vault" }));
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to delete vault" }));
+      }
     }
   }
 

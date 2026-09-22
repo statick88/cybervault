@@ -47,10 +47,11 @@ src/
 ```
 
 ## Estado Actual del Proyecto
-- **Etapa:** Security-hardened + resilience-improved prototype
+- **Etapa:** Security-hardened + resilience-improved + observability-complete
 - **Compilación:** tsc --noEmit = 0 errores
-- **Tests:** 160 passing (12 suites), 10 skipped
+- **Tests:** 197 passing (16 suites), 22 E2E skipped (Chrome requerido)
 - **Score actual:** ~55/70 (79%) — objetivo 100/100
+- **SDD:** Cambio `cybervault-100-completion` en progreso
 
 ## Objetivos del Paper
 1. Demostrar validación de dominio pre-envío contra phishing
@@ -103,16 +104,11 @@ src/
 - Structured logging con contextos
 
 ## Puntos de Atención (Known Issues)
-1. encryption-service.ts:177 — exportKey en key no-extractable (DOMException en Node)
-2. entropy.test.ts — test flaky por dependencia en random generation
-3. Redis configurado en docker-compose pero no conectado en código
-4. Chrome Extension UI creada pero no testeada end-to-end
-5. Paper v1 tiene claims inflados que须 corregir para v2
+1. **E2E Tests skipeados** — Requieren Chrome real (no Chromium bundled). Fixture usa `channel: 'chrome'`
+2. **Paper v2 incompleto** — Documento tiene mezcla de texto v1/v2. Correcciones 1-7 aplicadas, resto pendiente
+3. **Redis configurado** pero no conectado en aplicación (solo docker-compose)
 
 ## Próximos Pasos (para 100/100)
-1. Fix encryption-service exportKey bug
-2. Fix flaky entropy test
-3. Ejecutar benchmarks y documentar resultados
-4. Cubrir test coverage gaps
-5. Aplicar correcciones del paper v2
-6. Conectar Redis para cache/sesiones
+1. **CI Pipeline** — Crear workflow GitHub Actions con `setup-chrome` para E2E tests
+2. **Paper v2** — Aplicar 15 correcciones restantes (usar script o edición manual)
+3. **Verificación final** — Ejecutar 22 E2E tests en CI con Chrome real

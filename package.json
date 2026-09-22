@@ -15,6 +15,7 @@
     "test:e2e:headed": "playwright test --headed",
     "build": "tsc",
     "build:ext": "node scripts/build-extension.mjs",
+    "build:all": "npm run build && npm run build:ext",
     "build:docker": "docker build -t cyber-vault/api:latest -f infra/docker/Dockerfile.api .",
     "db:migrate": "npx tsx src/infrastructure/db/cli.ts up",
     "db:migrate:status": "npx tsx src/infrastructure/db/cli.ts status",

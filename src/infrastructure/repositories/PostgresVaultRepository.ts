@@ -134,6 +134,8 @@ export class PostgresVaultRepository implements IVaultRepository {
         ...row,
         ownerId: row.owner_id ?? undefined,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
       });
     } catch (error) {
       logger.error("Failed to save vault", "PostgresVaultRepository", undefined, String(error));
@@ -170,6 +172,8 @@ export class PostgresVaultRepository implements IVaultRepository {
         ...row,
         ownerId: row.owner_id ?? undefined,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
       });
     } catch (error) {
       logger.error("Failed to find vault by id", "PostgresVaultRepository", undefined, String(error));
@@ -208,6 +212,8 @@ export class PostgresVaultRepository implements IVaultRepository {
         ...row,
         ownerId: row.owner_id ?? undefined,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
       });
     } catch (error) {
       logger.error("Failed to find vault by id and owner id", "PostgresVaultRepository", undefined, String(error));
@@ -269,6 +275,8 @@ export class PostgresVaultRepository implements IVaultRepository {
           ...row,
           ownerId: row.owner_id ?? undefined,
           metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
         }),
       );
 
@@ -304,6 +312,8 @@ export class PostgresVaultRepository implements IVaultRepository {
           ...row,
           ownerId: row.owner_id ?? undefined,
           metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
         }),
       );
 

@@ -14,11 +14,30 @@ const rootDir = join(__dirname, "..");
 const distDir = join(rootDir, "dist");
 const srcDir = join(rootDir, "src");
 
-// Clean dist
-if (existsSync(distDir)) {
-  rmSync(distDir, { recursive: true });
+// Clean ONLY extension-specific directories in dist/ (NOT the entire dist/)
+// This preserves tsc output (infrastructure/, domain/, etc.) needed by the API server
+const extDirs = ["background", "ui", "icons"];
+const extFiles = ["manifest.json"];
+for (const dir of extDirs) {
+  const target = join(distDir, dir);
+  if (existsSync(target)) rmSync(target, { recursive: true });
 }
-mkdirSync(distDir, { recursive: true });
+for (const file of extFiles) {
+  const target = join(distDir, file);
+  if (existsSync(target)) rmSync(target);
+}
+// Ensure directories exist
+for (const dir of extDirs) {
+  mkdirSync(join(distDir, dir), { recursive: true });
+}
+
+// Shared define replacements — injected at build-time so Chrome
+// Service Workers / content scripts never see `process.env.*`
+const buildDefines = {
+  "process.env.NODE_ENV": '"production"',
+  "process.env.LOG_LEVEL": '"info"',
+  "process.env.LOG_FORMAT": '"json"',
+};
 
 // 1. Build background script with esbuild (bundle into single file)
 await esbuild.build({
@@ -34,9 +53,7 @@ await esbuild.build({
     "@noble/hashes/utils": "@noble/hashes/utils.js",
     "@noble/hashes/sha2": "@noble/hashes/sha2.js",
   },
-  define: {
-    "process.env.NODE_ENV": '"production"',
-  },
+  define: buildDefines,
 });
 
 console.log("✓ Background script bundled");
@@ -51,9 +68,7 @@ await esbuild.build({
   format: "iife",
   minify: false,
   sourcemap: true,
-  define: {
-    "process.env.NODE_ENV": '"production"',
-  },
+  define: buildDefines,
 });
 
 console.log("✓ Popup built");
@@ -86,16 +101,19 @@ await esbuild.build({
 
 console.log("✓ Autocomplete content script built");
 
-// 4. Build options page
+// 4. Build options page — use IIFE (not ESM) because the source wraps
+//    everything in an IIFE; esbuild would otherwise emit an invalid
+//    `export default require_options()` mixing CommonJS + ESM.
 await esbuild.build({
   entryPoints: [join(srcDir, "ui/options/options.ts")],
   bundle: true,
   outfile: join(distDir, "ui/options/options.js"),
   platform: "browser",
   target: "chrome120",
-  format: "esm",
+  format: "iife",
   minify: false,
   sourcemap: true,
+  define: buildDefines,
 });
 
 console.log("✓ Options page built");

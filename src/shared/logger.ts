@@ -21,10 +21,16 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   error: 3,
 };
 
-const MIN_LEVEL = LOG_LEVELS[process.env.LOG_LEVEL as LogLevel] ?? LOG_LEVELS.info;
+// Build-time replacement via esbuild `define`; runtime fallback for safety
+const _logLevel: string =
+  (typeof process !== "undefined" && process.env?.LOG_LEVEL) || "info";
+const _logFormat: string =
+  (typeof process !== "undefined" && process.env?.LOG_FORMAT) || "json";
+
+const MIN_LEVEL = LOG_LEVELS[_logLevel as LogLevel] ?? LOG_LEVELS.info;
 
 function formatEntry(entry: LogEntry): string {
-  if (process.env.LOG_FORMAT === "json") {
+  if (_logFormat === "json") {
     return JSON.stringify(entry);
   }
   // Human-readable format for development

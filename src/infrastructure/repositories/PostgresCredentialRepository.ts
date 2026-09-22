@@ -154,6 +154,11 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       return Credential.fromPlainObject({
         ...row,
         tags: row.tags || [],
+        vaultId: row.vault_id,
+        encryptedPassword: row.encrypted_password,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        lastUsed: row.last_used,
       });
     } catch (error) {
       logger.error("Failed to save credential", "PostgresCredentialRepository", undefined, String(error));
@@ -190,6 +195,11 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       return Credential.fromPlainObject({
         ...row,
         tags: row.tags || [],
+        vaultId: row.vault_id,
+        encryptedPassword: row.encrypted_password,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        lastUsed: row.last_used,
       });
     } catch (error) {
       logger.error("Failed to find credential by id", "PostgresCredentialRepository", undefined, String(error));
@@ -221,6 +231,11 @@ export class PostgresCredentialRepository implements ICredentialRepository {
         Credential.fromPlainObject({
           ...row,
           tags: row.tags || [],
+          vaultId: row.vault_id,
+          encryptedPassword: row.encrypted_password,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          lastUsed: row.last_used,
         }),
       );
 
@@ -288,6 +303,11 @@ export class PostgresCredentialRepository implements ICredentialRepository {
         Credential.fromPlainObject({
           ...row,
           tags: row.tags || [],
+          vaultId: row.vault_id,
+          encryptedPassword: row.encrypted_password,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          lastUsed: row.last_used,
         }),
       );
 

@@ -1,6 +1,6 @@
 # CyberVault — Progress Checklist
 # Se actualiza al final de cada sesión
-# Última actualización: 2026-08-16
+# Última actualización: 2026-09-22
 
 ## Code Review
 - [x] Explorar estructura del proyecto
@@ -83,6 +83,20 @@
 - [x] Fix extractOriginalCredentials regex (password base with + chars)
 - [x] 16 suites, 197 tests passing (5/5 stable runs)
 
+## Chrome Extension Manifest V3 Fixes (2026-09-22)
+- [x] Fix `process.env` errors — added `buildDefines` with `LOG_LEVEL`/`LOG_FORMAT` replacement
+- [x] Fix ESM/CJS mismatch — changed options format from `"esm"` to `"iife"`
+- [x] Fix ERR_HTTP_HEADERS_SENT — serialize BEFORE `writeHead`, add `!res.headersSent` guards
+- [x] Fix snake_case/camelCase mapping — explicit `createdAt: row.created_at` in 5 Vault + 4 Credential `fromPlainObject()` calls
+- [x] Fix Docker healthcheck — changed from `curl` (not in Alpine) to `node -e`
+- [x] Fix Docker build pipeline — Dockerfile now runs both `npm run build` AND `npm run build:ext`
+- [x] Fix `build-extension.mjs` — selective clean instead of full `rmSync(distDir)` to preserve tsc output
+- [x] Add `build:all` script to package.json
+- [x] Generate installation docs (`docs/INSTALACION_PLUGIN.md` + PDF) with Section 14: Test Credentials
+- [x] Update `docs/correcciones.md` with bugfix documentation
+- [x] Create auth UI at `static/auth.html` (login/register with JWT display)
+- [x] Clean up stale `rdd-test-*` user from database
+
 ## Paper v2 Corrections
 - [x] Crear correcciones.md con 22 mejoras por sección del paper
 - [x] Incluir benchmarks reales vs paper v1
@@ -105,6 +119,8 @@
 - [x] Crear background.spec.ts (5 tests)
 - [x] Crear test-page.html fixture
 - [x] Tests: 22 E2E tests (skipped — no Chrome in this environment)
+- [x] Chrome Extension Manifest V3 fixes (process.env, ESM/CJS, build pipeline)
+- [x] Exhaustive RDD audit — all checks passed (IIFE, no Node.js globals, no CJS residues)
 
 ## OpenAPI/Swagger
 - [x] Crear openapi.yaml (OpenAPI 3.0.3)
@@ -113,9 +129,37 @@
 - [x] Tests: 5 passing (swagger integration)
 - [x] 16 endpoints documentados
 
+## SDD Initialization
+- [x] Detect stack & conventions (TypeScript, Node.js, Clean Architecture)
+- [x] Detect testing capabilities (Jest + Playwright + Supertest)
+- [x] Resolve Strict TDD (enabled — test runner detected)
+- [x] Initialize persistence (engram mode)
+- [x] Build skill registry (.atl/skill-registry.md)
+- [x] Persist testing capabilities to Engram
+- [x] Persist project context to Engram
+
+## SDD Change: cybervault-100-completion
+- [x] Exploration — separar en dos tracks independientes
+- [x] Proposal — intent, scope, approach, risks
+- [x] Design — architecture decisions, file changes, testing strategy
+- [x] Specs — e2e-test-execution, paper-v2-corrections
+- [x] Tasks — 16 tasks across 4 phases
+- [ ] Apply — Track A bloqueado (Chrome), Track B parcial
+- [ ] Verify
+- [ ] Archive
+
 ## Pendiente para 100/100
-- [ ] Aplicar correcciones al documento Word
-- [ ] Ejecutar E2E tests en máquina con Chrome
+- [ ] **CI Pipeline** — Crear GitHub Actions workflow con setup-chrome
+- [ ] **Paper v2** — Aplicar 15 correcciones restantes al Word
+- [ ] **E2E Tests** — Ejecutar 22 tests en CI con Chrome real
+
+## Archivos Clave Actualizados
+- scripts/build-extension.mjs — selective clean + buildDefines + IIFE format
+- docker/Dockerfile.api — added COPY scripts/, esbuild install, build:ext step
+- docker-compose.yml — fixed healthcheck (curl→node), added VAULT_MASTER_KEY/SALT
+- static/auth.html — auth UI (login/register/JWT display)
+- docs/INSTALACION_PLUGIN.md — installation guide with Section 14: Test Credentials
+- docs/correcciones.md — bugfix documentation
 
 ## Archivos Clave
 - src/shared/retry.ts — retry con exponential backoff

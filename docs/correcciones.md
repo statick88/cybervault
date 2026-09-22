@@ -522,6 +522,42 @@ Plaintext ──────────────────────→ 
 
 ---
 
+## Bugfix: ERR_HTTP_HEADERS_SENT + snake_case/camelCase Mapping (2026-09-22)
+
+### Problema
+
+El endpoint `GET /api/v1/vaults` lanzaba `ERR_HTTP_HEADERS_SENT` y crashaba el servidor Node.js:
+
+```
+Error [ERR_HTTP_HEADERS_SENT]: Cannot write headers after they are sent to the client
+    at ServerResponse.writeHead (node:_http_server:354:11)
+    at ApiServer.handleVaultsList (/app/dist/infrastructure/api/server.js:561:17)
+```
+
+### Causa raíz (dos bugs en cascada)
+
+**Bug 1 — Serialización después de `writeHead`:**
+`res.writeHead(200, ...)` se ejecutaba ANTES de `res.end(JSON.stringify(v.toSafeObject()))`. Si `toSafeObject()` lanzaba una excepción, el bloque `catch` intentaba `res.writeHead(500, ...)` después de que los headers ya se habían enviado.
+
+**Bug 2 — Mapeo snake_case/camelCase:**
+PostgreSQL devuelve columnas en snake_case (`created_at`, `updated_at`, `owner_id`, `vault_id`, `encrypted_password`, `last_used`), pero `fromPlainObject()` espera camelCase (`createdAt`, `updatedAt`, `ownerId`, `vaultId`, `encryptedPassword`, `lastUsed`). El `...row` spread pasaba los campos snake_case y los camelCase quedaban `undefined` → `new Date(undefined)` = `Invalid Date` → `.toISOString()` lanzaba.
+
+### Archivos afectados
+
+| Archivo | Cambio |
+|---------|--------|
+| `src/infrastructure/api/server.ts` | Serializar antes de `writeHead` + guards `!res.headersSent` en catch blocks |
+| `src/infrastructure/repositories/PostgresVaultRepository.ts` | 5 llamadas `fromPlainObject` con mapping explícito snake_case→camelCase |
+| `src/impacte/repositories/PostgresCredentialRepository.ts` | 4 llamadas `fromPlainObject` con mapping explícito snake_case→camelCase |
+
+### Lecciones aprendidas
+
+1. **Siempre serializar ANTES de `writeHead`**, no dentro de `res.end()`.
+2. **PostgreSQL usa snake_case por defecto** — al hacer spread de `row` hacia `fromPlainObject`, mapear explícitamente cada campo.
+3. **`ERR_HTTP_HEADERS_SENT` era un SÍNTOMA** — el bug real era el mapeo de columnas causando `Invalid Date`.
+
+---
+
 ## Checklist final de revisión
 
 - [ ] Abstract actualizado (3 crypto, zero-knowledge parcial)

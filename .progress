@@ -97,6 +97,14 @@
 - [x] Create auth UI at `static/auth.html` (login/register with JWT display)
 - [x] Clean up stale `rdd-test-*` user from database
 
+## RDD Security Audit (2026-09-22)
+- [x] SAST — 0 CRITICAL, 0 HIGH, 3 MEDIUM, 5 LOW findings
+- [x] DAST — all attack vectors blocked (SQL injection, XSS, IDOR, path traversal)
+- [x] Integration tests — 285/295 pass, 10 skipped (Playwright E2E)
+- [x] Previous bug fixes verified working
+- [x] Security headers verified (CSP, HSTS, X-Frame-Options, CORS)
+- [x] Report: docs/RDD-REPORT-2026-09-22.md
+
 ## Paper v2 Corrections
 - [x] Crear correcciones.md con 22 mejoras por sección del paper
 - [x] Incluir benchmarks reales vs paper v1

@@ -125,6 +125,7 @@ export class AutocompleteService {
     const suggestionContainer = document.createElement("div");
     suggestionContainer.id = `cybervault-suggestion-${index}`;
     suggestionContainer.className = "cybervault-suggestion-container";
+    // SECURITY: Build DOM with textContent to prevent XSS — never interpolate user data into innerHTML
     suggestionContainer.innerHTML = `
       <div class="cybervault-suggestion-header">
         <span class="cybervault-logo">🔐 CyberVault</span>
@@ -135,11 +136,11 @@ export class AutocompleteService {
         <div class="cybervault-credentials-preview">
           <div class="credential-item">
             <label>Email:</label>
-            <code>${credentials.email}</code>
+            <code class="cybervault-email-value"></code>
           </div>
           <div class="credential-item">
             <label>Password:</label>
-            <code>${credentials.password}</code>
+            <code class="cybervault-password-value"></code>
           </div>
         </div>
       </div>
@@ -155,6 +156,12 @@ export class AutocompleteService {
         </button>
       </div>
     `;
+
+    // Set credential values via textContent (safe — no HTML parsing)
+    const emailCode = suggestionContainer.querySelector<HTMLElement>(".cybervault-email-value");
+    const passwordCode = suggestionContainer.querySelector<HTMLElement>(".cybervault-password-value");
+    if (emailCode) emailCode.textContent = credentials.email;
+    if (passwordCode) passwordCode.textContent = credentials.password;
 
     // Estilos CSS
     const styles = `

@@ -123,14 +123,30 @@ export interface AuthenticatedRequest extends IncomingMessage {
 }
 
 /**
- * Genera un token JWT para un usuario
+ * Genera un token JWT para un usuario (access token — short-lived)
  */
 export function generateToken(userId: string, secret: string): string {
   const payload = {
     sub: userId,
     jti: crypto.randomUUID(),
+    type: "access",
     iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + 24 * 60 * 60, // 24 horas
+    exp: Math.floor(Date.now() / 1000) + 15 * 60, // 15 minutes
+  };
+
+  return jwt.sign(payload, secret);
+}
+
+/**
+ * Genera un refresh token (long-lived, used to obtain new access tokens)
+ */
+export function generateRefreshToken(userId: string, secret: string): string {
+  const payload = {
+    sub: userId,
+    jti: crypto.randomUUID(),
+    type: "refresh",
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60, // 7 days
   };
 
   return jwt.sign(payload, secret);
@@ -142,10 +158,10 @@ export function generateToken(userId: string, secret: string): string {
 export function verifyToken(
   token: string,
   secret: string,
-): { userId: string } | null {
+): { userId: string; type?: string } | null {
   try {
-    const decoded = jwt.verify(token, secret) as { sub: string };
-    return { userId: decoded.sub };
+    const decoded = jwt.verify(token, secret) as { sub: string; type?: string };
+    return { userId: decoded.sub, type: decoded.type };
   } catch (error) {
     logger.warn("JWT token verification failed", "Auth", {
       reason: error instanceof Error ? error.message : "invalid token",

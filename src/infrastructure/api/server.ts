@@ -23,6 +23,8 @@ import { CredentialsGenerator } from "../../domain/services/autocompletado/crede
 import {
   authenticate,
   generateToken,
+  generateRefreshToken,
+  verifyToken,
   getUserByEmail,
   createUser,
   verifyPassword,
@@ -42,6 +44,7 @@ import {
   RATE_LIMIT_WINDOW,
   _clearRateLimitForTests,
 } from "./middleware/rate-limiter";
+import { loginRateLimiter } from "./login-rate-limiter";
 export { _clearRateLimitForTests };
 
 // Use Cases
@@ -548,6 +551,7 @@ export class ApiServer {
       }
 
       const token = generateToken(user.userId, JWT_SECRET);
+      const refreshToken = generateRefreshToken(user.userId, JWT_SECRET);
 
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(
@@ -555,6 +559,7 @@ export class ApiServer {
           userId: user.userId,
           email: user.email,
           token,
+          refreshToken,
           message: "User registered successfully",
         }),
       );
@@ -588,18 +593,34 @@ export class ApiServer {
         return;
       }
 
+      // Brute-force protection: check if email is locked out
+      const lockout = loginRateLimiter.isLocked(email);
+      if (lockout.locked) {
+        res.writeHead(429, {
+          "Content-Type": "application/json",
+          "Retry-After": String(Math.ceil((lockout.retryAfterMs ?? 60_000) / 1000)),
+        });
+        res.end(JSON.stringify({ error: "Too many failed attempts. Try again later." }));
+        return;
+      }
+
       const user = await getUserByEmail(email);
       if (!user) {
+        loginRateLimiter.recordFailure(email);
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid email or password" }));
         return;
       }
 
       if (!verifyPassword(password, user.hash, user.salt)) {
+        loginRateLimiter.recordFailure(email);
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid email or password" }));
         return;
       }
+
+      // Successful login — clear any failed attempts
+      loginRateLimiter.recordSuccess(email);
 
       if (!JWT_SECRET) {
         if (process.env.NODE_ENV === "production") {
@@ -624,6 +645,7 @@ export class ApiServer {
       }
 
       const token = generateToken(user.userId, JWT_SECRET);
+      const refreshToken = generateRefreshToken(user.userId, JWT_SECRET);
 
       metrics.counter("cybervault_logins_total", "Total successful logins");
 
@@ -633,12 +655,67 @@ export class ApiServer {
           userId: user.userId,
           email: user.email,
           token,
+          refreshToken,
           message: "Login successful",
         }),
       );
     } catch (error) {
       logger.error(
         "Error logging in",
+        "ApiServer",
+        undefined,
+        error instanceof Error ? error.message : String(error),
+      );
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error" }));
+    }
+  }
+
+  /**
+   * Handler para refresh token — intercambia un refresh token válido por un nuevo access token
+   */
+  private async handleRefreshToken(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const data = await this.parseJsonBody(req);
+      const refreshToken = data.refreshToken as string;
+
+      if (!refreshToken) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "refreshToken is required" }));
+        return;
+      }
+
+      if (!JWT_SECRET) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication not configured" }));
+        return;
+      }
+
+      const decoded = verifyToken(refreshToken, JWT_SECRET);
+      if (!decoded || decoded.type !== "refresh") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid or expired refresh token" }));
+        return;
+      }
+
+      // Issue new access token + rotate refresh token
+      const newAccessToken = generateToken(decoded.userId, JWT_SECRET);
+      const newRefreshToken = generateRefreshToken(decoded.userId, JWT_SECRET);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          token: newAccessToken,
+          refreshToken: newRefreshToken,
+          message: "Tokens refreshed successfully",
+        }),
+      );
+    } catch (error) {
+      logger.error(
+        "Error refreshing token",
         "ApiServer",
         undefined,
         error instanceof Error ? error.message : String(error),
@@ -1049,6 +1126,15 @@ export class ApiServer {
         case "/api/v1/auth/login":
           if (req.method === "POST") {
             await this.handleLogin(req, res);
+          } else {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          break;
+
+        case "/api/v1/auth/refresh":
+          if (req.method === "POST") {
+            await this.handleRefreshToken(req, res);
           } else {
             res.writeHead(405, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Method not allowed" }));

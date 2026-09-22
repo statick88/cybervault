@@ -287,6 +287,9 @@ HALF_OPEN → éxito → CLOSED / fallo → OPEN
 | CORS explícito | Allowlist de orígenes (no wildcard) | `server.ts` |
 | User scoping | Vault/credential queries filtradas por ownerId | `server.ts`, repos |
 | Rate limiting | 100 req/15min por IP | `server.ts` |
+| Brute-force protection | 5 intentos → lockout progresivo | `login-rate-limiter.ts` |
+| JWT access tokens | Expira en 15 minutos | `auth.ts` |
+| JWT refresh tokens | Expira en 7 días, rotación | `auth.ts` |
 | CSP headers | Content-Security-Policy configurado | `server.ts` |
 | Body limits | 1MB max request size | `server.ts` |
 | JWT jti claim | ID único para revocación futura | `auth.ts` |
@@ -555,6 +558,67 @@ PostgreSQL devuelve columnas en snake_case (`created_at`, `updated_at`, `owner_i
 1. **Siempre serializar ANTES de `writeHead`**, no dentro de `res.end()`.
 2. **PostgreSQL usa snake_case por defecto** — al hacer spread de `row` hacia `fromPlainObject`, mapear explícitamente cada campo.
 3. **`ERR_HTTP_HEADERS_SENT` era un SÍNTOMA** — el bug real era el mapeo de columnas causando `Invalid Date`.
+
+---
+
+## Bugfix: RDD Security Findings (2026-09-22)
+
+### Hallazgos Corregidos
+
+#### MEDIUM-1: XSS en autocomplete-service.ts
+
+**Problema:** `innerHTML` interpolaba `credentials.email` y `credentials.password` directamente en HTML sin sanitización.
+
+**Riesgo:** Si las credenciales fueran manipuladas (ataque MITM), podría inyectarse HTML/JS malicioso.
+
+**Corrección:** Reemplazado con `textContent` para valores dinámicos:
+```typescript
+// ANTES (inseguro)
+suggestionContainer.innerHTML = `
+  <code>${credentials.email}</code>
+  <code>${credentials.password}</code>
+`;
+
+// DESPUÉS (seguro)
+suggestionContainer.innerHTML = `
+  <code class="cybervault-email-value"></code>
+  <code class="cybervault-password-value"></code>
+`;
+// Valores establecidos vía textContent (no parsea HTML)
+```
+
+#### MEDIUM-2: Sin protección contra brute-force
+
+**Problema:** No había límite de intentos de login fallidos. Un atacante podía probar miles de contraseñas.
+
+**Corrección:** Nuevo módulo `login-rate-limiter.ts` con lockout progresivo:
+
+| Fallos | Lockout |
+|--------|---------|
+| 5 | 1 minuto |
+| 10 | 5 minutos |
+| 15+ | 15 minutos |
+
+- Retorna `429 Too Many Requests` con `Retry-After` header
+- Se limpia en login exitoso
+- Limpieza periódica previene memory leak
+
+#### MEDIUM-3: JWT sin refresh/revocación
+
+**Problema:** Access tokens duraban 24 horas sin mecanismo de renovación. Si un token era comprometido, quedaba válido por mucho tiempo.
+
+**Corrección:**
+- Access tokens ahora expiran en **15 minutos** (antes: 24h)
+- Refresh tokens expiran en **7 días**
+- Nuevo endpoint `POST /api/v1/auth/refresh` para rotación de tokens
+- Login y register ahora retornan `{token, refreshToken}`
+
+### Verificación
+
+- ✅ 285/295 tests passing
+- ✅ DAST verificado: rate limiter funciona tras 5 intentos
+- ✅ DAST verificado: refresh token genera nuevos tokens
+- ✅ Commit: `f2a2816`
 
 ---
 

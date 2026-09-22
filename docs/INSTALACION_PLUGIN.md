@@ -1,9 +1,9 @@
 # CyberVault — Guía Integral de Instalación del Plugin Chrome
 
 **Código:** CV-DOC-INST-001  
-**Versión:** 1.0.0  
-**Fecha:** 2026-09-17  
-**Estado:** Verificado con servicios levantados
+**Versión:** 1.1.0  
+**Fecha:** 2026-09-22  
+**Estado:** Verificado con servicios levantados + seguridad auditada
 
 ---
 
@@ -552,26 +552,46 @@ Los siguientes usuarios están disponibles para pruebas inmediatas:
 ### 14.2 Autenticación vía API
 
 ```bash
-# Login — obtener token JWT
+# Login — obtener token JWT + refresh token
 curl -s -X POST http://localhost:3010/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@cybervault.test","password":"Admin2024!"}'
 
 # Respuesta esperada:
 # {
-#   "token": "eyJhbGciOiJIUzI1NiIs...",
 #   "userId": "0d769a7f-...",
-#   "email": "admin@cybervault.test"
+#   "email": "admin@cybervault.test",
+#   "token": "eyJhbGciOiJIUzI1NiIs...",
+#   "refreshToken": "eyJhbGciOiJIUzI1NiIs...",
+#   "message": "Login successful"
+# }
+
+# ⚠️ Rate Limiting: 5 intentos fallidos → lockout 1 min, 10 → 5 min, 15+ → 15 min
+```
+
+### 14.3 Refresh Token
+
+```bash
+# Renovar access token usando refresh token
+curl -s -X POST http://localhost:3010/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"<REFRESH_TOKEN>"}'
+
+# Respuesta:
+# {
+#   "token": "nuevo_access_token",
+#   "refreshToken": "nuevo_refresh_token",
+#   "message": "Tokens refreshed successfully"
 # }
 ```
 
-### 14.3 Autenticación vía UI
+### 14.4 Autenticación vía UI
 
 1. Navegar a `http://localhost:3010/auth.html`
 2. Ingresar email y contraseña
 3. El token JWT se muestra en pantalla y se guarda en localStorage
 
-### 14.4 Uso del Token
+### 14.5 Uso del Token
 
 ```bash
 # Listar vaults (con token)
@@ -585,7 +605,7 @@ curl -s -X POST http://localhost:3010/api/v1/vaults \
   -d '{"name":"Mi Vault","encryptedData":"...","encryptionKeyId":"key-1"}'
 ```
 
-### 14.5 Registrar Nuevo Usuario
+### 14.6 Registrar Nuevo Usuario
 
 ```bash
 curl -s -X POST http://localhost:3010/api/v1/auth/register \
@@ -595,10 +615,40 @@ curl -s -X POST http://localhost:3010/api/v1/auth/register \
 
 ---
 
+## 15. Seguridad Implementada
+
+### 15.1 Controles de Seguridad
+
+| Control | Estado | Descripción |
+|---------|--------|-------------|
+| JWT_SECRET gate | ✅ | Requiere JWT_SECRET en staging/production |
+| CORS explícito | ✅ | Allowlist: `http://localhost:3000` |
+| User scoping | ✅ | Vault/credential queries filtradas por ownerId |
+| Rate limiting | ✅ | 100 req/15min por IP |
+| Brute-force protection | ✅ | 5 intentos → 1min lockout, progresivo |
+| JWT access tokens | ✅ | Expira en 15 minutos |
+| JWT refresh tokens | ✅ | Expira en 7 días, rotación |
+| CSP headers | ✅ | Content-Security-Policy configurado |
+| Body limits | ✅ | 1MB max request size |
+| Timing-safe compare | ✅ | Comparación resistente a timing attacks |
+
+### 15.2 Endpoints de Seguridad
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/v1/auth/login` | POST | Login con rate limiting + lockout |
+| `/api/v1/auth/register` | POST | Registro de usuario |
+| `/api/v1/auth/refresh` | POST | Renovación de tokens |
+| `/api/v1/auth/verify` | GET | Verificar token válido |
+
+---
+
 ## Documento Generado
 
 - **Fecha:** 2026-09-22
-- **Última actualización:** Fix snake_case/camelCase mapping + credenciales de prueba
+- **Última actualización:** RDD audit — XSS, brute-force protection, JWT refresh
 - **Servicios verificados:** API (healthy), PostgreSQL (healthy), Redis (healthy)
 - **Build de extensión:** Completo en `dist/`
+- **Tests:** 285/295 passing (10 skipped — Playwright E2E)
+- **Seguridad:** 0 CRITICAL, 0 HIGH, 0 MEDIUM (todos corregidos)
 - **Estado:** Listo para instalación en Chrome

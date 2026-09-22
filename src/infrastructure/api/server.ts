@@ -1206,8 +1206,8 @@ export class ApiServer {
           break;
 
         default:
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Not found" }));
+          // Serve static files from dist/ directory
+          await this.handleStaticFile(req, res, url.pathname);
       }
     } catch (error) {
       logger.error(
@@ -1219,6 +1219,40 @@ export class ApiServer {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));
     }
+  }
+
+  /**
+   * Serve static files from dist/ directory
+   */
+  private async handleStaticFile(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+  ): Promise<void> {
+    const { readFileSync: readFS, existsSync } = await import("fs");
+    const { join, extname } = await import("path");
+
+    // Security: only serve specific static files
+    const allowedFiles = ["/auth.html", "/test-plugin.html"];
+    if (!allowedFiles.includes(pathname)) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+
+    const filePath = join(process.cwd(), "dist", pathname);
+    if (!existsSync(filePath)) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+
+    const content = readFS(filePath);
+    const contentType = pathname.endsWith(".html")
+      ? "text/html"
+      : "application/octet-stream";
+    res.writeHead(200, { "Content-Type": contentType });
+    res.end(content);
   }
 
   /**

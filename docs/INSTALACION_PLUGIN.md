@@ -544,10 +544,10 @@ Los siguientes usuarios están disponibles para pruebas inmediatas:
 
 | Email | Contraseña | Rol | Perfil |
 |-------|-----------|-----|--------|
-| `admin@cybervault.test` | `Admin2024!` | Admin | Acceso completo |
-| `user@cybervault.test` | `User2024!` | Usuario | Acceso estándar |
-| `dev@cybervault.test` | `Dev2024!` | Desarrollador | Acceso de desarrollo |
-| `test@cybervault.local` | `TestPass123!` | Test | Pruebas automatizadas |
+| `admin@cybervault.test` | `CyberVault#2026!` | Admin | Acceso completo |
+| `user@cybervault.test` | `UserTest#2026!` | Usuario | Acceso estándar |
+| `dev@cybervault.test` | `DevSecure#2026!` | Desarrollador | Acceso de desarrollo |
+| `test@cybervault.local` | `TestEnv#2026!` | Test | Pruebas automatizadas |
 
 ### 14.2 Autenticación vía API
 
@@ -555,7 +555,7 @@ Los siguientes usuarios están disponibles para pruebas inmediatas:
 # Login — obtener token JWT + refresh token
 curl -s -X POST http://localhost:3010/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@cybervault.test","password":"Admin2024!"}'
+  -d '{"email":"admin@cybervault.test","password":"CyberVault#2026!"}'
 
 # Respuesta esperada:
 # {
@@ -640,6 +640,58 @@ curl -s -X POST http://localhost:3010/api/v1/auth/register \
 | `/api/v1/auth/register` | POST | Registro de usuario |
 | `/api/v1/auth/refresh` | POST | Renovación de tokens |
 | `/api/v1/auth/verify` | GET | Verificar token válido |
+
+---
+
+## 16. Página de Prueba del Plugin
+
+### 16.1 Acceso
+
+```
+http://localhost:3010/test-plugin.html
+```
+
+### 16.2 Categorías de Prueba
+
+| Categoría | Cantidad | Resultado Esperado |
+|-----------|----------|-------------------|
+| ✅ Dominios Legítimos | 15 | Sin alerta |
+| 🚨 Typosquatting | 14 | Alerta PHISHING |
+| 🚨 Homograph/Unicode | 6 | Alerta HOMOGRAPH |
+| ⚠️ Subdomain Abuse | 6 | Alerta SUBDOMAIN |
+| 🚨 Real-World Phishing | 8 | Alerta PHISHING |
+
+### 16.3 Dominios de Prueba (resumen)
+
+**Legítimos (NO alertar):**
+- `google.com`, `accounts.google.com`, `mail.google.com`
+- `github.com`, `github.com/login`
+- `amazon.com`, `facebook.com`, `twitter.com`
+- `linkedin.com`, `paypal.com`, `dropbox.com`
+- `netflix.com`, `slack.com`, `outlook.office365.com`
+
+**Typosquatting (DEBE alertar):**
+- `g00gle.com`, `goog1e.com`, `gooogle.com`, `gogle.com`
+- `amazn.com`, `amazzon.com`
+- `githubh.com`, `gitbub.com`
+- `faceb00k.com`, `faccebook.com`
+- `twiter.com`, `linkedln.com`
+- `paypa1.com`, `outlookk.com`
+
+**Homograph (DEBE alertar):**
+- `exаmple.com` (Cyrillic а)
+- `ɡoogle.com` (Greek ɡ)
+- `gооgle.com` (Cyrillic о)
+- `аррӏе.com` (Cyrillic)
+- `payрal.com` (Cyrillic р)
+- `gіthub.com` (Cyrillic і)
+
+**Subdomain Abuse (DEBE alertar):**
+- `google.com.evil-site.com`
+- `login.amazon.com.phishing.tk`
+- `secure-paypal.com.evil.com`
+- `github.com.login.fake-site.com`
+- `facebook.com.secure-login.ru`
 
 ---
 

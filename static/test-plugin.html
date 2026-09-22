@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberVault — Test Page for Plugin</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f0f23; color: #e0e0e0; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: #7c8aff; margin-bottom: 10px; }
+    h2 { color: #aaa; font-size: 14px; margin-bottom: 30px; }
+    h3 { color: #7c8aff; margin: 20px 0 10px; border-bottom: 1px solid #333; padding-bottom: 5px; }
+    .section { background: rgba(20,20,40,0.95); border: 1px solid rgba(100,100,255,0.15); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    .category { color: #888; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    .test-item { background: rgba(30,30,60,0.6); border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+    .test-item .url { font-family: monospace; color: #e0e0e0; flex: 1; }
+    .test-item .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-safe { background: #1a4a2a; color: #4ade80; }
+    .badge-danger { background: #4a1a1a; color: #f87171; }
+    .badge-warning { background: #4a3a1a; color: #fbbf24; }
+    .form-section { margin-top: 30px; }
+    .form-group { margin-bottom: 15px; }
+    .form-group label { display: block; color: #aaa; font-size: 13px; margin-bottom: 5px; }
+    .form-group input { width: 100%; padding: 10px; background: rgba(30,30,60,0.8); border: 1px solid rgba(100,100,255,0.2); border-radius: 6px; color: #e0e0e0; font-size: 14px; }
+    .form-group input:focus { outline: none; border-color: #7c8aff; }
+    button { padding: 10px 20px; background: #7c8aff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #6b7aef; }
+    .instructions { background: rgba(100,100,255,0.1); border-left: 3px solid #7c8aff; padding: 15px; margin-bottom: 20px; font-size: 13px; line-height: 1.6; }
+    code { background: rgba(100,100,255,0.15); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔐 CyberVault — Plugin Test Page</h1>
+    <h2>Página de prueba para el Chrome Extension — Validación de dominios y detección de phishing</h2>
+
+    <div class="instructions">
+      <strong>Instrucciones:</strong><br>
+      1. Instala el plugin Chrome desde <code>dist/</code><br>
+      2. Abre esta página en Chrome<br>
+      3. Activa el plugin y observa las alertas por cada sección<br>
+      4. Los dominios legítimos NO deben generar alerta<br>
+      5. Los dominios maliciosos DEBEN generar alerta de phishing
+    </div>
+
+    <!-- ============================================ -->
+    <!-- DOMINIOS LEGÍTIMOS (NO debe alertar) -->
+    <!-- ============================================ -->
+    <div class="section">
+      <div class="category">✅ SAFE — Dominios Legítimos</div>
+      <h3>Dominios que el plugin DEBE aceptar (sin alerta)</h3>
+
+      <div class="test-item">
+        <span class="url">https://www.google.com</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://accounts.google.com</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://mail.google.com</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://github.com/login</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://github.com/login/oauth</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://outlook.office365.com</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://amazon.com</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.amazon.com/signin</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://facebook.com/login</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://twitter.com/i/flow/login</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://linkedin.com/login</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://paypal.com/signin</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://dropbox.com/login</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://slack.com/signin</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://netflix.com/login</span>
+        <span class="badge badge-safe">SAFE</span>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- TYPOSQUATTING (DEBE detectar) -->
+    <!-- ============================================ -->
+    <div class="section">
+      <div class="category">🚨 DANGER — Typosquatting</div>
+      <h3>Dominios con errores ortográficos que el plugin DEBE bloquear</h3>
+
+      <div class="test-item">
+        <span class="url">https://www.g00gle.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.goog1e.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.gooogle.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.gogle.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.amazn.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.amazzon.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.githubh.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.gitbub.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.faceb00k.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.faccebook.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.twiter.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.linkedln.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.paypa1.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.outlookk.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- HOMOGRAPH ATTACKS (DEBE detectar) -->
+    <!-- ============================================ -->
+    <div class="section">
+      <div class="category">🚨 DANGER — Homograph / Unicode Attacks</div>
+      <h3>Dominios con caracteres confusibles (Cyrillic, Greek) que el plugin DEBE bloquear</h3>
+
+      <div class="test-item">
+        <span class="url">https://www.exаmple.com</span>
+        <span class="badge badge-danger">HOMOGRAPH</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.ɡoogle.com</span>
+        <span class="badge badge-danger">HOMOGRAPH</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.gооgle.com</span>
+        <span class="badge badge-danger">HOMOGRAPH</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.аррӏе.com</span>
+        <span class="badge badge-danger">HOMOGRAPH</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.payрal.com</span>
+        <span class="badge badge-danger">HOMOGRAPH</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://www.gіthub.com</span>
+        <span class="badge badge-danger">HOMOGRAPH</span>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- SUBDOMAIN ABUSE (DEBE detectar) -->
+    <!-- ============================================ -->
+    <div class="section">
+      <div class="category">⚠️ WARNING — Subdomain Abuse</div>
+      <h3>Dominios que abusan de subdominios legítimos</h3>
+
+      <div class="test-item">
+        <span class="url">https://google.com.evil-site.com</span>
+        <span class="badge badge-danger">SUBDOMAIN</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://login.amazon.com.phishing.tk</span>
+        <span class="badge badge-danger">SUBDOMAIN</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://secure-paypal.com.evil.com</span>
+        <span class="badge badge-danger">SUBDOMAIN</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://github.com.login.fake-site.com</span>
+        <span class="badge badge-danger">SUBDOMAIN</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://outlook.office365.phishing.com</span>
+        <span class="badge badge-danger">SUBDOMAIN</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://facebook.com.secure-login.ru</span>
+        <span class="badge badge-danger">SUBDOMAIN</span>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- PHISHING REAL-WORLD (DEBE detectar) -->
+    <!-- ============================================ -->
+    <div class="section">
+      <div class="category">🚨 DANGER — Real-World Phishing Patterns</div>
+      <h3>Patrones de phishing documentados en campañas reales</h3>
+
+      <div class="test-item">
+        <span class="url">https://secure-bankofamerica.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://verify-paypal-account.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://update-your-apple-id.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://login-microsoftonline.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://amazon-security-alert.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://netflix-billing-update.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://facebook-security-check.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+      <div class="test-item">
+        <span class="url">https://google-verify-account.com</span>
+        <span class="badge badge-danger">PHISHING</span>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- FORMULARIOS DE PRUEBA -->
+    <!-- ============================================ -->
+    <div class="section form-section">
+      <div class="category">📝 TEST — Formularios de Login</div>
+      <h3>Formularios para probar la inyección del plugin</h3>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <!-- Form 1: Login genérico -->
+        <div style="background: rgba(30,30,60,0.6); padding: 15px; border-radius: 8px;">
+          <h4 style="color: #7c8aff; margin-bottom: 10px;">Login Genérico</h4>
+          <form id="login-form-1" action="/submit" method="POST">
+            <div class="form-group">
+              <label for="email1">Email</label>
+              <input type="email" id="email1" name="email" placeholder="user@example.com" autocomplete="email" />
+            </div>
+            <div class="form-group">
+              <label for="password1">Contraseña</label>
+              <input type="password" id="password1" name="password" placeholder="••••••••" autocomplete="current-password" />
+            </div>
+            <button type="submit">Iniciar Sesión</button>
+          </form>
+        </div>
+
+        <!-- Form 2: Registro -->
+        <div style="background: rgba(30,30,60,0.6); padding: 15px; border-radius: 8px;">
+          <h4 style="color: #7c8aff; margin-bottom: 10px;">Registro</h4>
+          <form id="register-form" action="/register" method="POST">
+            <div class="form-group">
+              <label for="email2">Email</label>
+              <input type="email" id="email2" name="email" placeholder="nuevo@ejemplo.com" autocomplete="email" />
+            </div>
+            <div class="form-group">
+              <label for="password2">Contraseña</label>
+              <input type="password" id="password2" name="password" placeholder="Mínimo 8 caracteres" autocomplete="new-password" />
+            </div>
+            <div class="form-group">
+              <label for="confirm2">Confirmar Contraseña</label>
+              <input type="password" id="confirm2" name="confirm" placeholder="Repetir contraseña" autocomplete="new-password" />
+            </div>
+            <button type="submit">Crear Cuenta</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Form 3: Password-only (simulaOAuth) -->
+      <div style="background: rgba(30,30,60,0.6); padding: 15px; border-radius: 8px; margin-top: 20px;">
+        <h4 style="color: #7c8aff; margin-bottom: 10px;">Password-Only Form (simulaOAuth)</h4>
+        <form id="oauth-form" action="/oauth/authorize" method="POST">
+          <div class="form-group">
+            <label for="username3">Usuario o Email</label>
+            <input type="text" id="username3" name="username" placeholder="admin" autocomplete="username" />
+          </div>
+          <div class="form-group">
+            <label for="password3">Contraseña</label>
+            <input type="password" id="password3" name="password" placeholder="••••••••" autocomplete="current-password" />
+          </div>
+          <button type="submit">Autorizar</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- INSTRUCCIONES API -->
+    <!-- ============================================ -->
+    <div class="section">
+      <div class="category">🔧 API — Endpoints de Prueba</div>
+      <h3>Comandos curl para probar la API directamente</h3>
+
+      <div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px; line-height: 1.8; overflow-x: auto;">
+        <div style="color: #888;"># Login</div>
+        <div style="color: #4ade80;">curl -X POST http://localhost:3010/api/v1/auth/login \<br>&nbsp;&nbsp;-H "Content-Type: application/json" \<br>&nbsp;&nbsp;-d '{"email":"admin@cybervault.test","password":"CyberVault#2026!"}'</div>
+        <br>
+        <div style="color: #888;"># Generar credenciales</div>
+        <div style="color: #4ade80;">curl -X POST http://localhost:3010/api/v1/credentials/generate \<br>&nbsp;&nbsp;-H "Authorization: Bearer &lt;TOKEN&gt;" \<br>&nbsp;&nbsp;-H "Content-Type: application/json" \<br>&nbsp;&nbsp;-d '{"domain":"example.com"}'</div>
+        <br>
+        <div style="color: #888;"># Health check</div>
+        <div style="color: #4ade80;">curl http://localhost:3010/health</div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // Prevenir envío real de formularios
+    document.querySelectorAll('form').forEach(form => {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const btn = form.querySelector('button[type="submit"]');
+        const originalText = btn.textContent;
+        btn.textContent = '✅ Enviado!';
+        btn.style.background = '#16a34a';
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.background = '';
+        }, 2000);
+      });
+    });
+  </script>
+</body>
+</html>

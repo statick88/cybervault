@@ -3,6 +3,8 @@
  *
  * Communicates with the service worker via chrome.runtime.sendMessage
  * and persists vault state in chrome.storage.local / chrome.storage.session.
+ *
+ * Flow: Login -> Unlock -> Manage credentials
  */
 
 (function() {
@@ -13,6 +15,8 @@
 const VAULT_KEY = "vault_data";
 const SETTINGS_KEY = "cybervault_settings";
 const UNLOCK_STATE_KEY = "cybervault_unlock_state";
+const AUTH_TOKEN_KEY = "cybervault_token";
+const USER_ID_KEY = "cybervault_userId";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -23,7 +27,7 @@ interface CredentialPlain {
   vaultId: string;
   title: string;
   username: string;
-  encryptedPassword: string;
+  password: string;
   url?: string;
   notes?: string;
   tags: string[];
@@ -50,6 +54,14 @@ interface BackgroundResponse<T = unknown> {
   error?: string;
 }
 
+interface LoginResponse {
+  userId: string;
+  email: string;
+  token: string;
+  refreshToken: string;
+  message: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  DOM References                                                     */
 /* ------------------------------------------------------------------ */
@@ -57,13 +69,26 @@ interface BackgroundResponse<T = unknown> {
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) =>
   document.querySelector<T>(sel)!;
 
+// Views
+const loginView = $<HTMLDivElement>("#login-view");
 const lockedView = $<HTMLDivElement>("#locked-view");
 const unlockedView = $<HTMLDivElement>("#unlocked-view");
+
+// Login form
+const loginForm = $<HTMLFormElement>("#login-form");
+const loginEmail = $<HTMLInputElement>("#login-email");
+const loginPassword = $<HTMLInputElement>("#login-password");
+const loginBtn = $<HTMLButtonElement>("#login-btn");
+const loginError = $<HTMLParagraphElement>("#login-error");
+
+// Lock/Unlock
 const passphraseInput = $<HTMLInputElement>("#passphrase-input");
 const unlockBtn = $<HTMLButtonElement>("#unlock-btn");
 const lockError = $<HTMLParagraphElement>("#lock-error");
 const lockToggle = $<HTMLButtonElement>("#lock-toggle");
 const lockIcon = $<HTMLSpanElement>("#lock-icon");
+
+// Credentials
 const searchInput = $<HTMLInputElement>("#search-input");
 const addBtn = $<HTMLButtonElement>("#add-btn");
 const credentialList = $<HTMLUListElement>("#credential-list");
@@ -83,10 +108,13 @@ const optionsLink = $<HTMLAnchorElement>("#options-link");
 
 let isUnlocked = false;
 let credentials: CredentialPlain[] = [];
+let authToken: string | null | undefined = null;
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+const API_BASE = "http://localhost:3010";
 
 async function sendMessage<T = unknown>(
   message: Record<string, unknown>,
@@ -102,6 +130,273 @@ async function readStorage<T>(key: string): Promise<T | undefined> {
 async function writeStorage(data: Record<string, unknown>): Promise<void> {
   await chrome.storage.local.set(data);
 }
+
+/* ------------------------------------------------------------------ */
+/*  PBKDF2 Key Derivation (same as EncryptionService)                  */
+/* ------------------------------------------------------------------ */
+
+const ENCRYPTION_CONFIG = {
+  AES: { ALGORITHM: "AES-GCM" as const, KEY_LENGTH: 256, IV_LENGTH: 12, TAG_LENGTH: 128 },
+  PBKDF2: { ALGORITHM: "PBKDF2" as const, HASH: "SHA-512" as const, ITERATIONS: 600000, SALT_LENGTH: 16 }
+};
+
+function base64ToBinary(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decryptVault(encryptedData: string, masterKey: string): Promise<string> {
+  const combined = base64ToBinary(encryptedData);
+  const saltLength = ENCRYPTION_CONFIG.PBKDF2.SALT_LENGTH;
+  const ivLength = ENCRYPTION_CONFIG.AES.IV_LENGTH;
+
+  const salt = combined.slice(0, saltLength);
+  const iv = combined.slice(saltLength, saltLength + ivLength);
+  const ciphertextWithTag = combined.slice(saltLength + ivLength);
+
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(masterKey),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+
+  const aesKey = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: salt as unknown as BufferSource,
+      iterations: ENCRYPTION_CONFIG.PBKDF2.ITERATIONS,
+      hash: ENCRYPTION_CONFIG.PBKDF2.HASH,
+    },
+    keyMaterial,
+    { name: ENCRYPTION_CONFIG.AES.ALGORITHM, length: ENCRYPTION_CONFIG.AES.KEY_LENGTH },
+    false,
+    ["decrypt"]
+  );
+
+  const decryptedBuffer = await crypto.subtle.decrypt(
+    {
+      name: ENCRYPTION_CONFIG.AES.ALGORITHM,
+      iv: iv as unknown as BufferSource,
+      tagLength: ENCRYPTION_CONFIG.AES.TAG_LENGTH,
+    },
+    aesKey,
+    ciphertextWithTag as unknown as BufferSource
+  );
+
+  return new TextDecoder().decode(decryptedBuffer);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Login                                                              */
+/* ------------------------------------------------------------------ */
+
+async function handleLogin(e: Event): Promise<void> {
+  e.preventDefault();
+  loginError.hidden = true;
+
+  const email = loginEmail.value.trim();
+  const password = loginPassword.value;
+
+  if (!email || !password) {
+    loginError.textContent = "Email y contraseña requeridos";
+    loginError.hidden = false;
+    return;
+  }
+
+  loginBtn.disabled = true;
+  loginBtn.textContent = "Ingresando...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+
+    const data = await res.json();
+
+    if (res.ok && data.token) {
+      // Store auth data
+      authToken = data.token;
+      await writeStorage({
+        [AUTH_TOKEN_KEY]: data.token,
+        [USER_ID_KEY]: data.userId,
+        "cybervault_email": email
+      });
+
+      // Show locked view
+      showView("locked");
+      passphraseInput.focus();
+    } else {
+      loginError.textContent = data.error || "Credenciales incorrectas";
+      loginError.hidden = false;
+    }
+  } catch (err) {
+    loginError.textContent = `Error de conexión: ${err instanceof Error ? err.message : err}`;
+    loginError.hidden = false;
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = "Iniciar Sesión";
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  View Management                                                    */
+/* ------------------------------------------------------------------ */
+
+function showView(view: "login" | "locked" | "unlocked"): void {
+  loginView.hidden = view !== "login";
+  lockedView.hidden = view !== "locked";
+  unlockedView.hidden = view !== "unlocked";
+  lockToggle.hidden = view === "login";
+
+  if (view === "unlocked") {
+    lockIcon.textContent = "🔓";
+    lockToggle.setAttribute("aria-label", "Lock vault");
+  } else {
+    lockIcon.textContent = "🔒";
+    lockToggle.setAttribute("aria-label", "Unlock vault");
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Vault Lock / Unlock                                                */
+/* ------------------------------------------------------------------ */
+
+async function checkAuthState(): Promise<void> {
+  authToken = await readStorage<string>(AUTH_TOKEN_KEY);
+  const unlockState = await chrome.storage.session.get([UNLOCK_STATE_KEY]);
+  const state = unlockState[UNLOCK_STATE_KEY] as { expiresAt: number } | undefined;
+
+  if (state && Date.now() < state.expiresAt) {
+    // Already unlocked in this session
+    showView("unlocked");
+    await loadCredentials();
+  } else if (authToken) {
+    // Authenticated but vault locked
+    showView("locked");
+  } else {
+    // Not authenticated
+    showView("login");
+  }
+}
+
+async function handleUnlock(): Promise<void> {
+  const passphrase = passphraseInput.value.trim();
+  if (!passphrase) {
+    lockError.textContent = "Passphrase required";
+    lockError.hidden = false;
+    return;
+  }
+
+  lockError.hidden = true;
+  unlockBtn.disabled = true;
+  unlockBtn.textContent = "Descifrando...";
+
+  try {
+    // Fetch vault list from API
+    const vaultRes = await fetch(`${API_BASE}/api/v1/vaults`, {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+
+    if (vaultRes.status === 401) {
+      // Token expired, go back to login
+      await writeStorage({ [AUTH_TOKEN_KEY]: null });
+      authToken = null;
+      showView("login");
+      return;
+    }
+
+    const vaultData = await vaultRes.json();
+
+    if (!vaultData.vaults || vaultData.vaults.length === 0) {
+      lockError.textContent = "No vault found. Create one in the web app first.";
+      lockError.hidden = false;
+      return;
+    }
+
+    const vault = vaultData.vaults[0];
+
+    // Get encrypted data
+    const unlockRes = await fetch(`${API_BASE}/api/v1/vaults/${vault.id}/unlock`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${authToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!unlockRes.ok) {
+      throw new Error("Failed to fetch vault data");
+    }
+
+    const unlockData = await unlockRes.json();
+
+    // Decrypt locally with passphrase
+    const decrypted = await decryptVault(unlockData.encryptedData, passphrase);
+    const parsedCredentials = JSON.parse(decrypted);
+
+    // Store decrypted credentials temporarily
+    await writeStorage({ [VAULT_KEY]: { ...vault, metadata: { credentials: parsedCredentials } } });
+
+    // Set unlock session (30 min)
+    await chrome.storage.session.set({
+      [UNLOCK_STATE_KEY]: {
+        vaultId: vault.id,
+        unlockedAt: Date.now(),
+        expiresAt: Date.now() + 30 * 60 * 1000,
+      },
+    });
+
+    // Show unlocked view
+    showView("unlocked");
+    passphraseInput.value = "";
+    await loadCredentials();
+
+  } catch (err) {
+    console.error("Unlock failed:", err);
+    lockError.textContent = "Frase maestra incorrecta o error al descifrar";
+    lockError.hidden = false;
+  } finally {
+    unlockBtn.disabled = false;
+    unlockBtn.textContent = "Unlock";
+  }
+}
+
+async function handleLock(): Promise<void> {
+  await chrome.storage.session.remove(UNLOCK_STATE_KEY);
+  await chrome.storage.local.remove(VAULT_KEY);
+  isUnlocked = false;
+  credentials = [];
+  credentialList.innerHTML = "";
+  showView("locked");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Credential Loading                                                 */
+/* ------------------------------------------------------------------ */
+
+async function loadCredentials(): Promise<void> {
+  const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
+  if (!vaultData?.metadata?.credentials) {
+    credentials = [];
+    renderCredentialList([]);
+    return;
+  }
+
+  credentials = vaultData.metadata.credentials as CredentialPlain[];
+  renderCredentialList(credentials);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Credential Rendering                                               */
+/* ------------------------------------------------------------------ */
 
 function renderCredentialList(items: CredentialPlain[]): void {
   credentialList.innerHTML = "";
@@ -145,9 +440,7 @@ function renderCredentialList(items: CredentialPlain[]): void {
     copyPassBtn.className = "credential-item__btn";
     copyPassBtn.textContent = "🔑";
     copyPassBtn.title = "Copy password";
-    copyPassBtn.addEventListener("click", () =>
-      copyToClipboard("[encrypted]", copyPassBtn),
-    );
+    copyPassBtn.addEventListener("click", () => copyToClipboard(cred.password, copyPassBtn));
 
     actions.appendChild(copyUserBtn);
     actions.appendChild(copyPassBtn);
@@ -164,7 +457,6 @@ async function copyToClipboard(text: string, btn: HTMLButtonElement): Promise<vo
     btn.classList.add("credential-item__btn--copied");
     setTimeout(() => btn.classList.remove("credential-item__btn--copied"), 1200);
   } catch {
-    // Fallback for environments without clipboard API
     const textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.style.position = "fixed";
@@ -176,95 +468,6 @@ async function copyToClipboard(text: string, btn: HTMLButtonElement): Promise<vo
     btn.classList.add("credential-item__btn--copied");
     setTimeout(() => btn.classList.remove("credential-item__btn--copied"), 1200);
   }
-}
-
-/* ------------------------------------------------------------------ */
-/*  Vault Lock / Unlock                                                */
-/* ------------------------------------------------------------------ */
-
-async function checkLockState(): Promise<void> {
-  const session = await chrome.storage.session.get([UNLOCK_STATE_KEY]);
-  const state = session[UNLOCK_STATE_KEY] as
-    | { expiresAt: number }
-    | undefined;
-
-  if (state && Date.now() < state.expiresAt) {
-    setUnlocked(true);
-  } else {
-    setUnlocked(false);
-  }
-}
-
-function setUnlocked(unlocked: boolean): void {
-  isUnlocked = unlocked;
-  lockedView.hidden = unlocked;
-  unlockedView.hidden = !unlocked;
-  lockIcon.textContent = unlocked ? "🔓" : "🔒";
-  lockToggle.setAttribute(
-    "aria-label",
-    unlocked ? "Lock vault" : "Unlock vault",
-  );
-}
-
-async function handleUnlock(): Promise<void> {
-  const passphrase = passphraseInput.value.trim();
-  if (!passphrase) {
-    lockError.textContent = "Passphrase required";
-    lockError.hidden = false;
-    return;
-  }
-
-  lockError.hidden = true;
-
-  // In a full implementation, the passphrase would derive a key that decrypts
-  // vault data. Here we store the unlock session via the service worker.
-  const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
-  if (!vaultData) {
-    lockError.textContent = "No vault found. Create one in Settings.";
-    lockError.hidden = false;
-    return;
-  }
-
-  const resp = await sendMessage<{ unlocked: boolean }>({
-    type: "UNLOCK_VAULT",
-    vaultId: vaultData.id,
-    passphrase,
-  });
-
-  if (resp.ok) {
-    setUnlocked(true);
-    passphraseInput.value = "";
-    await loadCredentials();
-  } else {
-    lockError.textContent = resp.error || "Unlock failed";
-    lockError.hidden = false;
-  }
-}
-
-async function handleLock(): Promise<void> {
-  await chrome.storage.session.remove(UNLOCK_STATE_KEY);
-  setUnlocked(false);
-  credentials = [];
-  credentialList.innerHTML = "";
-}
-
-/* ------------------------------------------------------------------ */
-/*  Credential Loading                                                 */
-/* ------------------------------------------------------------------ */
-
-async function loadCredentials(): Promise<void> {
-  // Credentials are embedded in vault metadata as an array of plain objects.
-  // In a production build the Vault entity would manage this; here we read
-  // directly from storage for simplicity.
-  const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
-  if (!vaultData?.metadata?.credentials) {
-    credentials = [];
-    renderCredentialList([]);
-    return;
-  }
-
-  credentials = vaultData.metadata.credentials as CredentialPlain[];
-  renderCredentialList(credentials);
 }
 
 /* ------------------------------------------------------------------ */
@@ -321,7 +524,7 @@ async function handleAddCredential(): Promise<void> {
     vaultId: "",
     title,
     username,
-    encryptedPassword: btoa(password), // placeholder — real encryption in vault domain
+    password,
     url: url || undefined,
     tags: [],
     favorite: false,
@@ -329,7 +532,6 @@ async function handleAddCredential(): Promise<void> {
     updatedAt: new Date().toISOString(),
   };
 
-  // Update vault metadata in storage
   const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
   if (vaultData) {
     const existing = (vaultData.metadata?.credentials as CredentialPlain[]) || [];
@@ -355,6 +557,7 @@ function openOptions(): void {
 /*  Event Binding                                                      */
 /* ------------------------------------------------------------------ */
 
+loginForm.addEventListener("submit", handleLogin);
 unlockBtn.addEventListener("click", handleUnlock);
 passphraseInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") handleUnlock();
@@ -363,7 +566,7 @@ passphraseInput.addEventListener("keydown", (e) => {
 lockToggle.addEventListener("click", () => {
   if (isUnlocked) handleLock();
   else {
-    setUnlocked(false);
+    showView("locked");
     passphraseInput.focus();
   }
 });
@@ -381,6 +584,6 @@ optionsLink.addEventListener("click", (e) => {
 /*  Init                                                               */
 /* ------------------------------------------------------------------ */
 
-checkLockState();
+checkAuthState();
 
 })();

@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberVault — Vault</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0d0d1f 100%);
+      min-height: 100vh;
+      color: #e0e0e0;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      background: rgba(20, 20, 40, 0.95);
+      border-bottom: 1px solid rgba(100, 100, 255, 0.15);
+    }
+
+    .header h1 {
+      font-size: 20px;
+      color: #7c8aff;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .user-email {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #5a6aff, #7c8aff);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #4a5aef, #6c7aef);
+    }
+
+    .btn-danger {
+      background: rgba(255, 80, 80, 0.2);
+      color: #ff6b6b;
+      border: 1px solid rgba(255, 80, 80, 0.3);
+    }
+
+    .btn-danger:hover {
+      background: rgba(255, 80, 80, 0.3);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: #888;
+      border: 1px solid rgba(100, 100, 255, 0.2);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(100, 100, 255, 0.1);
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 24px;
+    }
+
+    /* Lock View */
+    .lock-view {
+      text-align: center;
+      padding: 60px 20px;
+    }
+
+    .lock-icon {
+      font-size: 64px;
+      margin-bottom: 24px;
+    }
+
+    .lock-view h2 {
+      font-size: 24px;
+      color: #7c8aff;
+      margin-bottom: 8px;
+    }
+
+    .lock-view p {
+      color: #888;
+      margin-bottom: 32px;
+    }
+
+    .passphrase-form {
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+      text-align: left;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #aaa;
+      margin-bottom: 6px;
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 12px 14px;
+      background: rgba(30, 30, 60, 0.8);
+      border: 1px solid rgba(100, 100, 255, 0.2);
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+
+    .form-group input:focus {
+      outline: none;
+      border-color: #7c8aff;
+      box-shadow: 0 0 0 3px rgba(124, 138, 255, 0.15);
+    }
+
+    .unlock-btn {
+      width: 100%;
+      padding: 14px;
+      font-size: 15px;
+    }
+
+    /* Vault View */
+    .vault-view {
+      display: none;
+    }
+
+    .vault-view.active {
+      display: block;
+    }
+
+    .vault-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+
+    .vault-header h2 {
+      font-size: 22px;
+      color: #7c8aff;
+    }
+
+    .credential-count {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .search-bar {
+      width: 100%;
+      padding: 12px 14px;
+      background: rgba(30, 30, 60, 0.8);
+      border: 1px solid rgba(100, 100, 255, 0.2);
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+
+    .search-bar:focus {
+      outline: none;
+      border-color: #7c8aff;
+    }
+
+    .credential-card {
+      background: rgba(20, 20, 40, 0.95);
+      border: 1px solid rgba(100, 100, 255, 0.15);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+      transition: border-color 0.2s;
+    }
+
+    .credential-card:hover {
+      border-color: rgba(100, 100, 255, 0.3);
+    }
+
+    .credential-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #7c8aff;
+      margin-bottom: 12px;
+    }
+
+    .credential-field {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(100, 100, 255, 0.1);
+    }
+
+    .credential-field:last-child {
+      border-bottom: none;
+    }
+
+    .field-label {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .field-value {
+      font-size: 14px;
+      color: #e0e0e0;
+      font-family: 'Monaco', 'Menlo', monospace;
+      max-width: 60%;
+      text-align: right;
+      word-break: break-all;
+    }
+
+    .field-value.masked {
+      color: #666;
+    }
+
+    .copy-btn {
+      background: none;
+      border: none;
+      color: #7c8aff;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .copy-btn:hover {
+      background: rgba(100, 100, 255, 0.1);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #888;
+    }
+
+    .empty-state p {
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    .alert {
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    .alert-error {
+      background: rgba(255, 80, 80, 0.15);
+      border: 1px solid rgba(255, 80, 80, 0.3);
+      color: #ff6b6b;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #888;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid rgba(100, 100, 255, 0.2);
+      border-top-color: #7c8aff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-bottom: 12px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>🔐 CyberVault</h1>
+    <div class="header-actions">
+      <span class="user-email" id="user-email"></span>
+      <button class="btn btn-danger" id="logout-btn">Cerrar Sesión</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- Alert -->
+    <div id="alert" class="alert"></div>
+
+    <!-- Lock View -->
+    <div id="lock-view" class="lock-view">
+      <div class="lock-icon">🔒</div>
+      <h2>Vault Bloqueado</h2>
+      <p>Ingresa tu frase maestra para descifrar tus credenciales</p>
+
+      <form class="passphrase-form" id="unlock-form">
+        <div class="form-group">
+          <label for="passphrase">Frase Maestra</label>
+          <input
+            type="password"
+            id="passphrase"
+            placeholder="Tu frase maestra secreta"
+            required
+            autocomplete="off"
+          />
+        </div>
+        <button type="submit" class="btn btn-primary unlock-btn" id="unlock-btn">
+          Desbloquear Vault
+        </button>
+      </form>
+    </div>
+
+    <!-- Vault View -->
+    <div id="vault-view" class="vault-view">
+      <div class="vault-header">
+        <h2>Mis Credenciales</h2>
+        <span class="credential-count" id="credential-count"></span>
+      </div>
+
+      <input
+        type="search"
+        class="search-bar"
+        id="search-input"
+        placeholder="Buscar credenciales..."
+      />
+
+      <div id="credentials-list"></div>
+
+      <div id="empty-state" class="empty-state" hidden>
+        <p>No hay credenciales guardadas</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin.includes('localhost')
+      ? 'http://localhost:3010'
+      : window.location.origin;
+
+    // State
+    let token = localStorage.getItem('cybervault_token');
+    let userId = localStorage.getItem('cybervault_userId');
+    let email = localStorage.getItem('cybervault_email');
+    let vaultData = null;
+    let decryptedCredentials = [];
+
+    // Check authentication
+    if (!token || !userId) {
+      window.location.href = '/auth.html';
+    }
+
+    // Display user email
+    document.getElementById('user-email').textContent = email || userId;
+
+    // Show/hide alerts
+    function showAlert(message, type = 'error') {
+      const alert = document.getElementById('alert');
+      alert.textContent = message;
+      alert.className = `alert alert-${type}`;
+      alert.style.display = 'block';
+    }
+
+    function hideAlert() {
+      document.getElementById('alert').style.display = 'none';
+    }
+
+    // PBKDF2 key derivation (same as EncryptionService)
+    const ENCRYPTION_CONFIG = {
+      AES: { ALGORITHM: 'AES-GCM', KEY_LENGTH: 256, IV_LENGTH: 12, TAG_LENGTH: 128 },
+      PBKDF2: { ALGORITHM: 'PBKDF2', HASH: 'SHA-512', ITERATIONS: 600000, SALT_LENGTH: 16 }
+    };
+
+    function base64ToBinary(base64) {
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    async function decrypt(encryptedData, masterKey) {
+      const combined = base64ToBinary(encryptedData);
+      const saltLength = ENCRYPTION_CONFIG.PBKDF2.SALT_LENGTH;
+      const ivLength = ENCRYPTION_CONFIG.AES.IV_LENGTH;
+
+      const salt = combined.slice(0, saltLength);
+      const iv = combined.slice(saltLength, saltLength + ivLength);
+      const ciphertextWithTag = combined.slice(saltLength + ivLength);
+
+      const keyMaterial = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(masterKey),
+        'PBKDF2',
+        false,
+        ['deriveKey']
+      );
+
+      const aesKey = await crypto.subtle.deriveKey(
+        {
+          name: 'PBKDF2',
+          salt: salt,
+          iterations: ENCRYPTION_CONFIG.PBKDF2.ITERATIONS,
+          hash: ENCRYPTION_CONFIG.PBKDF2.HASH,
+        },
+        keyMaterial,
+        { name: ENCRYPTION_CONFIG.AES.ALGORITHM, length: ENCRYPTION_CONFIG.AES.KEY_LENGTH },
+        false,
+        ['decrypt']
+      );
+
+      const decryptedBuffer = await crypto.subtle.decrypt(
+        {
+          name: ENCRYPTION_CONFIG.AES.ALGORITHM,
+          iv: iv,
+          tagLength: ENCRYPTION_CONFIG.AES.TAG_LENGTH,
+        },
+        aesKey,
+        ciphertextWithTag
+      );
+
+      return new TextDecoder().decode(decryptedBuffer);
+    }
+
+    // Fetch vault data
+    async function fetchVault() {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/vaults`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.href = '/auth.html';
+          return;
+        }
+
+        const data = await res.json();
+        if (data.vaults && data.vaults.length > 0) {
+          vaultData = data.vaults[0];
+          return true;
+        }
+        return false;
+      } catch (err) {
+        console.error('Failed to fetch vault:', err);
+        return false;
+      }
+    }
+
+    // Unlock vault
+    document.getElementById('unlock-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideAlert();
+
+      const passphrase = document.getElementById('passphrase').value;
+      const btn = document.getElementById('unlock-btn');
+
+      btn.disabled = true;
+      btn.textContent = 'Descifrando...';
+
+      try {
+        // First fetch vault list
+        const hasVault = await fetchVault();
+
+        if (!hasVault) {
+          showAlert('No se encontró bóveda. Crea una credenciales primero.', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Desbloquear Vault';
+          return;
+        }
+
+        // Get encrypted data
+        const unlockRes = await fetch(`${API_BASE}/api/v1/vaults/${vaultData.id}/unlock`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!unlockRes.ok) {
+          throw new Error('Failed to fetch vault data');
+        }
+
+        const unlockData = await unlockRes.json();
+
+        // Decrypt locally with passphrase
+        const decrypted = await decrypt(unlockData.encryptedData, passphrase);
+
+        // Parse credentials
+        decryptedCredentials = JSON.parse(decrypted);
+
+        // Show vault view
+        document.getElementById('lock-view').style.display = 'none';
+        document.getElementById('vault-view').classList.add('active');
+
+        // Render credentials
+        renderCredentials(decryptedCredentials);
+
+      } catch (err) {
+        console.error('Unlock failed:', err);
+        showAlert('Frase maestra incorrecta o error al descifrar', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Desbloquear Vault';
+      }
+    });
+
+    // Render credentials
+    function renderCredentials(credentials) {
+      const list = document.getElementById('credentials-list');
+      const emptyState = document.getElementById('empty-state');
+      const count = document.getElementById('credential-count');
+
+      if (!credentials || credentials.length === 0) {
+        list.innerHTML = '';
+        emptyState.hidden = false;
+        count.textContent = '0 credenciales';
+        return;
+      }
+
+      emptyState.hidden = true;
+      count.textContent = `${credentials.length} credenciale${credentials.length !== 1 ? 's' : ''}`;
+
+      list.innerHTML = credentials.map((cred, index) => `
+        <div class="credential-card" data-index="${index}">
+          <div class="credential-title">${cred.title || 'Sin título'}</div>
+          ${cred.username ? `
+            <div class="credential-field">
+              <span class="field-label">Usuario</span>
+              <span class="field-value">${cred.username}</span>
+              <button class="copy-btn" onclick="copyToClipboard('${cred.username}')">Copiar</button>
+            </div>
+          ` : ''}
+          ${cred.password ? `
+            <div class="credential-field">
+              <span class="field-label">Contraseña</span>
+              <span class="field-value masked" id="pwd-${index}">••••••••</span>
+              <button class="copy-btn" onclick="togglePassword(${index})">Mostrar</button>
+              <button class="copy-btn" onclick="copyToClipboard('${cred.password.replace(/'/g, "\\'")}')">Copiar</button>
+            </div>
+          ` : ''}
+          ${cred.url ? `
+            <div class="credential-field">
+              <span class="field-label">URL</span>
+              <span class="field-value">${cred.url}</span>
+              <button class="copy-btn" onclick="window.open('${cred.url}', '_blank')">Abrir</button>
+            </div>
+          ` : ''}
+        </div>
+      `).join('');
+    }
+
+    // Toggle password visibility
+    function togglePassword(index) {
+      const el = document.getElementById(`pwd-${index}`);
+      if (el.textContent === '••••••••') {
+        el.textContent = decryptedCredentials[index].password;
+        el.classList.remove('masked');
+      } else {
+        el.textContent = '••••••••';
+        el.classList.add('masked');
+      }
+    }
+
+    // Copy to clipboard
+    async function copyToClipboard(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showAlert('Copiado al portapapeles', 'success');
+        setTimeout(hideAlert, 2000);
+      } catch {
+        showAlert('Error al copiar', 'error');
+      }
+    }
+
+    // Search credentials
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      const query = e.target.value.toLowerCase();
+      const filtered = decryptedCredentials.filter(cred =>
+        (cred.title || '').toLowerCase().includes(query) ||
+        (cred.username || '').toLowerCase().includes(query) ||
+        (cred.url || '').toLowerCase().includes(query)
+      );
+      renderCredentials(filtered);
+    });
+
+    // Logout
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      // Clear sensitive data from memory
+      token = null;
+      userId = null;
+      email = null;
+      vaultData = null;
+      decryptedCredentials = [];
+
+      // Clear storage
+      localStorage.clear();
+
+      // Redirect to login
+      window.location.href = '/auth.html';
+    });
+
+    // Auto-lock after 30 minutes
+    let lockTimeout;
+    function resetLockTimer() {
+      clearTimeout(lockTimeout);
+      lockTimeout = setTimeout(() => {
+        token = null;
+        vaultData = null;
+        decryptedCredentials = [];
+        localStorage.removeItem('cybervault_token');
+        window.location.href = '/auth.html';
+      }, 30 * 60 * 1000);
+    }
+
+    document.addEventListener('mousemove', resetLockTimer);
+    document.addEventListener('keypress', resetLockTimer);
+    resetLockTimer();
+  </script>
+</body>
+</html>

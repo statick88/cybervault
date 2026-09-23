@@ -838,6 +838,45 @@ export class ApiServer {
   }
 
   /**
+   * Handler para obtener encryptedData de un vault (para descifrado client-side)
+   * NOTA: El passphrase NUNCA se envía al backend. El descifrado es local.
+   */
+  private async handleVaultUnlock(
+    req: IncomingMessage,
+    res: ServerResponse,
+    vaultId: string,
+  ): Promise<void> {
+    try {
+      const userId = (req as AuthenticatedRequest).userId;
+      if (!userId) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication required" }));
+        return;
+      }
+      const vault = await this.vaultRepository.findByVaultIdAndOwnerId(vaultId, userId);
+      if (!vault) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Vault not found" }));
+        return;
+      }
+      // Return encrypted data — client will decrypt with passphrase locally
+      const body = JSON.stringify({
+        vaultId: vault.id.toString(),
+        name: vault.name,
+        encryptedData: vault.encryptedData,
+        encryptionKeyId: vault.encryptionKeyId,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+    } catch {
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to unlock vault" }));
+      }
+    }
+  }
+
+  /**
    * Handler para eliminar un vault
    */
   private async handleVaultDelete(
@@ -1184,6 +1223,22 @@ export class ApiServer {
           }
           break;
 
+        // Vault unlock - returns encryptedData for client-side decryption
+        case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+\/unlock$/)?.input:
+          if (req.method === "POST") {
+            if (JWT_SECRET) {
+              authenticate(req, res, () => {
+                this.handleVaultUnlock(req, res, url.pathname.split("/")[4]);
+              });
+            } else {
+              await this.handleVaultUnlock(req, res, url.pathname.split("/")[4]);
+            }
+          } else {
+            res.writeHead(405, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          break;
+
         // Credentials list
         case "/api/v1/credentials":
           if (JWT_SECRET) {
@@ -1233,7 +1288,7 @@ export class ApiServer {
     const { join, extname } = await import("path");
 
     // Security: only serve specific static files
-    const allowedFiles = ["/auth.html", "/test-plugin.html"];
+    const allowedFiles = ["/auth.html", "/vault.html", "/test-plugin.html"];
     if (!allowedFiles.includes(pathname)) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not found" }));

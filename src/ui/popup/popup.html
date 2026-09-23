@@ -9,12 +9,40 @@
 <body>
   <header class="header">
     <h1 class="header__title">CyberVault</h1>
-    <button id="lock-toggle" class="header__lock" type="button" aria-label="Lock vault">
+    <button id="lock-toggle" class="header__lock" type="button" aria-label="Lock vault" hidden>
       <span class="icon" id="lock-icon">🔒</span>
     </button>
   </header>
 
-  <section id="locked-view" class="view">
+  <!-- Login View -->
+  <section id="login-view" class="view">
+    <div class="login-view">
+      <p class="login-view__label">Iniciar Sesión</p>
+      <form id="login-form">
+        <input
+          type="email"
+          id="login-email"
+          class="login-view__input"
+          placeholder="Email"
+          aria-label="Email"
+          required
+        />
+        <input
+          type="password"
+          id="login-password"
+          class="login-view__input"
+          placeholder="Contraseña"
+          aria-label="Password"
+          required
+        />
+        <button type="submit" class="btn btn--primary" id="login-btn">Iniciar Sesión</button>
+      </form>
+      <p id="login-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- Locked View -->
+  <section id="locked-view" class="view" hidden>
     <div class="lock-view">
       <p class="lock-view__label">Vault is locked</p>
       <input
@@ -30,6 +58,7 @@
     </div>
   </section>
 
+  <!-- Unlocked View -->
   <section id="unlocked-view" class="view" hidden>
     <div class="toolbar">
       <input

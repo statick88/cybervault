@@ -317,13 +317,17 @@
         const data = await res.json();
 
         if (res.ok && data.token) {
-          showAlert(`✅ Login exitoso — userId: ${data.userId}`, 'success');
-          showToken(data.token);
+          showAlert(`✅ Login exitoso — redirigiendo...`, 'success');
 
-          // Store in localStorage for convenience
+          // Store in localStorage for vault access
           localStorage.setItem('cybervault_token', data.token);
           localStorage.setItem('cybervault_userId', data.userId);
           localStorage.setItem('cybervault_email', data.email);
+
+          // Redirect to vault after short delay
+          setTimeout(() => {
+            window.location.href = '/vault.html';
+          }, 800);
         } else {
           showAlert(data.error || 'Error al iniciar sesión');
         }
@@ -363,13 +367,17 @@
         const data = await res.json();
 
         if (res.ok && data.token) {
-          showAlert(`✅ Registro exitoso — userId: ${data.userId}`, 'success');
-          showToken(data.token);
+          showAlert(`✅ Registro exitoso — redirigiendo...`, 'success');
 
           // Store in localStorage
           localStorage.setItem('cybervault_token', data.token);
           localStorage.setItem('cybervault_userId', data.userId);
           localStorage.setItem('cybervault_email', data.email);
+
+          // Redirect to vault after short delay
+          setTimeout(() => {
+            window.location.href = '/vault.html';
+          }, 800);
         } else {
           showAlert(data.error || 'Error al registrar');
         }

@@ -19,3 +19,4 @@ cybervault-plugin.tar.gz
 # Temporary files
 *.tmp
 *.log
+pentest-reports/

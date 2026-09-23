@@ -622,6 +622,39 @@ suggestionContainer.innerHTML = `
 
 ---
 
+## Vault Flows Implementation (2026-09-23)
+
+### Implementación completa de flujos de vault
+
+Se implementaron los flujos completos de vault para Web App y Chrome Extension:
+
+#### Estado de vault
+- **UNAUTHENTICATED** → **AUTHENTICATED_LOCKED** → **VAULT_UNLOCKED**
+- Passphrase NUNCA se envía al backend (descifrado client-side)
+
+#### Seguridad
+- PBKDF2: 600,000 iteraciones, SHA-512, 16-byte salt
+- AES-GCM-256 encryption para datos de vault
+- Auto-lock después de 30 minutos de inactividad
+
+#### Endpoints
+- `POST /api/v1/vaults/:id/unlock` — retorna encryptedData para descifrado client-side
+
+#### Archivos modificados
+- `src/infrastructure/api/server.ts` — endpoint unlock
+- `static/auth.html` — redirect a vault.html post-login
+- `static/vault.html` — nueva página de vault con descifrado PBKDF2 + AES-GCM-256
+- `src/ui/popup/popup.ts` — login + vault unlock + visualización de credenciales
+- `src/ui/popup/popup.html` — vista de login
+- `src/ui/popup/popup.css` — estilos de login
+
+#### Verificación
+- ✅ RDD Review: APROBADO (0 findings en 4 lenses)
+- ✅ Commit: `b4d444e`
+- ✅ Authority: burned
+
+---
+
 ## Checklist final de revisión
 
 - [ ] Abstract actualizado (3 crypto, zero-knowledge parcial)

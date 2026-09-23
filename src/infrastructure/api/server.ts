@@ -129,6 +129,13 @@ export class ApiServer {
    */
   private async parseJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
     const MAX_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
+
+    // Validate Content-Type header
+    const contentType = req.headers["content-type"] || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error("Invalid Content-Type: expected application/json");
+    }
+
     return new Promise((resolve, reject) => {
       let body = "";
       let totalBytes = 0;
@@ -564,11 +571,27 @@ export class ApiServer {
         }),
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      // Handle Content-Type validation errors with 400
+      if (message.includes("Invalid Content-Type")) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid Content-Type: expected application/json" }));
+        return;
+      }
+
+      // Handle JSON parse errors with 400
+      if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON in request body" }));
+        return;
+      }
+
       logger.error(
         "Error registering user",
         "ApiServer",
         undefined,
-        error instanceof Error ? error.message : String(error),
+        message,
       );
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));
@@ -660,11 +683,27 @@ export class ApiServer {
         }),
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      // Handle Content-Type validation errors with 400
+      if (message.includes("Invalid Content-Type")) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid Content-Type: expected application/json" }));
+        return;
+      }
+
+      // Handle JSON parse errors with 400
+      if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON in request body" }));
+        return;
+      }
+
       logger.error(
         "Error logging in",
         "ApiServer",
         undefined,
-        error instanceof Error ? error.message : String(error),
+        message,
       );
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));
@@ -1265,11 +1304,27 @@ export class ApiServer {
           await this.handleStaticFile(req, res, url.pathname);
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      // Handle Content-Type validation errors with 400
+      if (message.includes("Invalid Content-Type")) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid Content-Type: expected application/json" }));
+        return;
+      }
+
+      // Handle JSON parse errors with 400
+      if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON in request body" }));
+        return;
+      }
+
       logger.error(
         "Error handling request",
         "ApiServer",
         undefined,
-        error instanceof Error ? error.message : String(error),
+        message,
       );
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));

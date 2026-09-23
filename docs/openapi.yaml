@@ -173,11 +173,21 @@ paths:
                   message:
                     type: string
         "400":
-          description: Validation error
+          description: Validation error or invalid Content-Type
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_fields:
+                  value:
+                    error: "Email and password required"
+                invalid_content_type:
+                  value:
+                    error: "Invalid Content-Type: expected application/json"
+                invalid_json:
+                  value:
+                    error: "Invalid JSON in request body"
         "503":
           description: Authentication not configured
           content:
@@ -214,17 +224,40 @@ paths:
                 token: "eyJhbGciOiJIUzI1NiIs..."
                 message: "Login successful"
         "400":
-          description: Missing fields
+          description: Missing fields or invalid Content-Type
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_fields:
+                  value:
+                    error: "Email and password required"
+                invalid_content_type:
+                  value:
+                    error: "Invalid Content-Type: expected application/json"
+                invalid_json:
+                  value:
+                    error: "Invalid JSON in request body"
         "401":
           description: Invalid credentials
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Too many failed login attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Too many failed attempts. Try again later."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying
+              schema:
+                type: integer
         "503":
           description: Authentication not configured
           content:

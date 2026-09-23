@@ -105,6 +105,14 @@
 - [x] Security headers verified (CSP, HSTS, X-Frame-Options, CORS)
 - [x] Report: docs/RDD-REPORT-2026-09-22.md
 
+## DAST & SAST Analysis (2026-09-23)
+- [x] SAST — 0 CRITICAL, 0 HIGH, 1 MEDIUM, 2 LOW findings
+- [x] DAST — 0 CRITICAL, 0 HIGH, 1 MEDIUM, 0 LOW findings
+- [x] All attack vectors blocked (SQL injection, XSS, IDOR, path traversal, rate limiting, CORS, JWT validation)
+- [x] innerHTML mitigated by textContent usage for user data
+- [x] Report: docs/DAST-SAST-REPORT-2026-09-23.md
+- [x] Fixed LOW-1: Content-Type validation in auth endpoints (returns 400 instead of 500)
+
 ## Paper v2 Corrections
 - [x] Crear correcciones.md con 22 mejoras por sección del paper
 - [x] Incluir benchmarks reales vs paper v1
@@ -155,6 +163,39 @@
 - [ ] Apply — Track A bloqueado (Chrome), Track B parcial
 - [ ] Verify
 - [ ] Archive
+
+## Vault Flows Implementation (2026-09-23)
+- [x] FASE 1: Explorar estado actual del código
+- [x] FASE 2: Definir contrato de estados (UNAUTHENTICATED → AUTHENTICATED_LOCKED → VAULT_UNLOCKED)
+- [x] FASE 3: Web App — redirección post-login + vault unlock
+- [x] FASE 4: Plugin — login + vault unlock + sync
+- [x] FASE 5: Verificación y pruebas
+- [ ] FASE 6: Cierre — limpieza, gitignore, documentación
+
+### Archivos Implementados
+- src/infrastructure/api/server.ts — POST /api/v1/vaults/:id/unlock endpoint
+- static/auth.html — Redirect to vault.html after login
+- static/vault.html — NEW: Vault page with PBKDF2 + AES-GCM-256 decryption
+- src/ui/popup/popup.html — Added login view
+- src/ui/popup/popup.css — Added login-view styles
+- src/ui/popup/popup.ts — Full login + vault unlock + credential display
+- odd/tasks/vault-flows.md — Implementation plan
+
+### Seguridad
+- Passphrase NUNCA se envía al backend (descifrado client-side)
+- PBKDF2: 600k iteraciones, SHA-512, 16-byte salt
+- AES-GCM-256 encryption
+- Token en chrome.storage.local
+- Unlock state en chrome.storage.session (30 min TTL)
+- Auto-lock después de 30 min de inactividad
+
+### RDD Review (2026-09-23)
+- [x] R1 Risk — 0 findings
+- [x] R4 Resilience — 0 findings
+- [x] R2 Readability — 0 findings
+- [x] R3 Reliability — 0 findings
+- [x] Estado: APROBADO
+- [x] Authority: burned (commit autorizado)
 
 ## Pendiente para 100/100
 - [ ] **CI Pipeline** — Crear GitHub Actions workflow con setup-chrome

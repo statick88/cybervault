@@ -5,3 +5,17 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
+
+# Session state
+.progress
+.agents
+
+# ODD task tracking
+odd/
+
+# Packaged artifacts
+cybervault-plugin.tar.gz
+
+# Temporary files
+*.tmp
+*.log

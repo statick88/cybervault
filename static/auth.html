@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CyberVault — Login / Registro</title>
+  <title>CyberVault — Login / Registro | ISCD Ecuador</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0d0d1f 100%);
+      background: linear-gradient(135deg, #0a1628 0%, #1a2d4a 50%, #0d1f3c 100%);
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -24,11 +24,11 @@
     }
 
     .card {
-      background: rgba(20, 20, 40, 0.95);
-      border: 1px solid rgba(100, 100, 255, 0.15);
+      background: rgba(15, 25, 50, 0.95);
+      border: 1px solid rgba(0, 150, 255, 0.2);
       border-radius: 16px;
       padding: 40px 32px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     }
 
     .logo {
@@ -36,22 +36,36 @@
       margin-bottom: 32px;
     }
 
+    .logo-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
     .logo h1 {
       font-size: 28px;
       font-weight: 700;
-      color: #7c8aff;
+      color: #00a8ff;
       letter-spacing: -0.5px;
     }
 
-    .logo p {
-      font-size: 13px;
-      color: #888;
+    .logo .subtitle {
+      font-size: 12px;
+      color: #6a9fd8;
       margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .logo .brand {
+      font-size: 11px;
+      color: #4a7ab5;
+      margin-top: 8px;
+      font-weight: 500;
     }
 
     .tabs {
       display: flex;
-      border-bottom: 1px solid rgba(100, 100, 255, 0.15);
+      border-bottom: 1px solid rgba(0, 150, 255, 0.2);
       margin-bottom: 28px;
     }
 
@@ -62,7 +76,7 @@
       cursor: pointer;
       font-size: 14px;
       font-weight: 600;
-      color: #666;
+      color: #6a9fd8;
       border-bottom: 2px solid transparent;
       transition: all 0.2s;
       background: none;
@@ -71,11 +85,11 @@
       border-right: none;
     }
 
-    .tab:hover { color: #aaa; }
+    .tab:hover { color: #00a8ff; }
 
     .tab.active {
-      color: #7c8aff;
-      border-bottom-color: #7c8aff;
+      color: #00a8ff;
+      border-bottom-color: #00a8ff;
     }
 
     .form-group {
@@ -86,15 +100,15 @@
       display: block;
       font-size: 13px;
       font-weight: 500;
-      color: #aaa;
+      color: #6a9fd8;
       margin-bottom: 6px;
     }
 
     .form-group input {
       width: 100%;
       padding: 12px 14px;
-      background: rgba(30, 30, 60, 0.8);
-      border: 1px solid rgba(100, 100, 255, 0.2);
+      background: rgba(20, 35, 65, 0.8);
+      border: 1px solid rgba(0, 150, 255, 0.25);
       border-radius: 8px;
       color: #e0e0e0;
       font-size: 14px;
@@ -103,12 +117,12 @@
 
     .form-group input:focus {
       outline: none;
-      border-color: #7c8aff;
-      box-shadow: 0 0 0 3px rgba(124, 138, 255, 0.15);
+      border-color: #00a8ff;
+      box-shadow: 0 0 0 3px rgba(0, 168, 255, 0.15);
     }
 
     .form-group input::placeholder {
-      color: #555;
+      color: #4a6a8a;
     }
 
     .btn {
@@ -123,14 +137,14 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, #5a6aff, #7c8aff);
+      background: linear-gradient(135deg, #0066cc, #00a8ff);
       color: white;
     }
 
     .btn-primary:hover {
-      background: linear-gradient(135deg, #4a5aef, #6c7aef);
+      background: linear-gradient(135deg, #0055aa, #0090dd);
       transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(100, 120, 255, 0.3);
+      box-shadow: 0 4px 12px rgba(0, 168, 255, 0.3);
     }
 
     .btn-primary:disabled {
@@ -190,7 +204,16 @@
       text-align: center;
       margin-top: 20px;
       font-size: 12px;
-      color: #555;
+      color: #4a6a8a;
+    }
+
+    .footer a {
+      color: #00a8ff;
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
     }
   </style>
 </head>
@@ -198,8 +221,10 @@
   <div class="container">
     <div class="card">
       <div class="logo">
-        <h1>🔐 CyberVault</h1>
-        <p>Zero-Knowledge Credential Manager</p>
+        <div class="logo-icon">🛡️</div>
+        <h1>CyberVault</h1>
+        <div class="subtitle">Zero-Knowledge Credential Manager</div>
+        <div class="brand">ISCD Ecuador — Ciberseguridad</div>
       </div>
 
       <!-- Tabs -->

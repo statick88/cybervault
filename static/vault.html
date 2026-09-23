@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CyberVault — Vault</title>
+  <title>CyberVault — Vault | ISCD Ecuador</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0d0d1f 100%);
+      background: linear-gradient(135deg, #0a1628 0%, #1a2d4a 50%, #0d1f3c 100%);
       min-height: 100vh;
       color: #e0e0e0;
     }
@@ -19,13 +19,19 @@
       justify-content: space-between;
       align-items: center;
       padding: 16px 24px;
-      background: rgba(20, 20, 40, 0.95);
-      border-bottom: 1px solid rgba(100, 100, 255, 0.15);
+      background: rgba(15, 25, 50, 0.95);
+      border-bottom: 1px solid rgba(0, 150, 255, 0.2);
     }
 
     .header h1 {
       font-size: 20px;
-      color: #7c8aff;
+      color: #00a8ff;
+    }
+
+    .header-brand {
+      font-size: 11px;
+      color: #4a7ab5;
+      margin-top: 2px;
     }
 
     .header-actions {
@@ -36,7 +42,7 @@
 
     .user-email {
       font-size: 13px;
-      color: #888;
+      color: #6a9fd8;
     }
 
     .btn {
@@ -50,12 +56,12 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, #5a6aff, #7c8aff);
+      background: linear-gradient(135deg, #0066cc, #00a8ff);
       color: white;
     }
 
     .btn-primary:hover {
-      background: linear-gradient(135deg, #4a5aef, #6c7aef);
+      background: linear-gradient(135deg, #0055aa, #0090dd);
     }
 
     .btn-danger {
@@ -70,12 +76,12 @@
 
     .btn-ghost {
       background: transparent;
-      color: #888;
-      border: 1px solid rgba(100, 100, 255, 0.2);
+      color: #6a9fd8;
+      border: 1px solid rgba(0, 150, 255, 0.25);
     }
 
     .btn-ghost:hover {
-      background: rgba(100, 100, 255, 0.1);
+      background: rgba(0, 150, 255, 0.1);
     }
 
     .container {
@@ -97,12 +103,12 @@
 
     .lock-view h2 {
       font-size: 24px;
-      color: #7c8aff;
+      color: #00a8ff;
       margin-bottom: 8px;
     }
 
     .lock-view p {
-      color: #888;
+      color: #6a9fd8;
       margin-bottom: 32px;
     }
 
@@ -120,15 +126,15 @@
       display: block;
       font-size: 13px;
       font-weight: 500;
-      color: #aaa;
+      color: #6a9fd8;
       margin-bottom: 6px;
     }
 
     .form-group input {
       width: 100%;
       padding: 12px 14px;
-      background: rgba(30, 30, 60, 0.8);
-      border: 1px solid rgba(100, 100, 255, 0.2);
+      background: rgba(20, 35, 65, 0.8);
+      border: 1px solid rgba(0, 150, 255, 0.25);
       border-radius: 8px;
       color: #e0e0e0;
       font-size: 14px;
@@ -137,8 +143,8 @@
 
     .form-group input:focus {
       outline: none;
-      border-color: #7c8aff;
-      box-shadow: 0 0 0 3px rgba(124, 138, 255, 0.15);
+      border-color: #00a8ff;
+      box-shadow: 0 0 0 3px rgba(0, 168, 255, 0.15);
     }
 
     .unlock-btn {
@@ -165,12 +171,12 @@
 
     .vault-header h2 {
       font-size: 22px;
-      color: #7c8aff;
+      color: #00a8ff;
     }
 
     .credential-count {
       font-size: 13px;
-      color: #888;
+      color: #6a9fd8;
     }
 
     .search-bar {
@@ -244,7 +250,7 @@
     .copy-btn {
       background: none;
       border: none;
-      color: #7c8aff;
+      color: #00a8ff;
       cursor: pointer;
       font-size: 12px;
       padding: 4px 8px;
@@ -253,13 +259,13 @@
     }
 
     .copy-btn:hover {
-      background: rgba(100, 100, 255, 0.1);
+      background: rgba(0, 150, 255, 0.1);
     }
 
     .empty-state {
       text-align: center;
       padding: 60px 20px;
-      color: #888;
+      color: #6a9fd8;
     }
 
     .empty-state p {
@@ -284,15 +290,15 @@
     .loading {
       text-align: center;
       padding: 40px;
-      color: #888;
+      color: #6a9fd8;
     }
 
     .spinner {
       display: inline-block;
       width: 24px;
       height: 24px;
-      border: 3px solid rgba(100, 100, 255, 0.2);
-      border-top-color: #7c8aff;
+      border: 3px solid rgba(0, 150, 255, 0.2);
+      border-top-color: #00a8ff;
       border-radius: 50%;
       animation: spin 1s linear infinite;
       margin-bottom: 12px;
@@ -305,7 +311,10 @@
 </head>
 <body>
   <header class="header">
-    <h1>🔐 CyberVault</h1>
+    <div>
+      <h1>🛡️ CyberVault</h1>
+      <div class="header-brand">ISCD Ecuador — Ciberseguridad</div>
+    </div>
     <div class="header-actions">
       <span class="user-email" id="user-email"></span>
       <button class="btn btn-danger" id="logout-btn">Cerrar Sesión</button>

@@ -12,6 +12,7 @@ export default defineConfig({
       name: "chrome-extension",
       use: {
         browserName: "chromium",
+        channel: "chrome",
       },
     },
   ],

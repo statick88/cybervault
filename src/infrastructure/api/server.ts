@@ -215,20 +215,23 @@ export class ApiServer {
     database: string;
     ipfs: string;
   }> {
-    const database =
-      process.env.USE_POSTGRES === "true"
-        ? (await this.checkDatabaseHealth()) === true
-          ? "ok"
-          : "error"
-        : "not_configured";
-
-    const ipfs = process.env.IPFS_API_URL
-      ? (await this.checkIpfsHealth()) === true
-        ? "ok"
-        : "error"
-      : "not_configured";
+    const [database, ipfs] = await Promise.all([
+      this.evaluateHealthCheck(
+        process.env.USE_POSTGRES === "true",
+        this.checkDatabaseHealth,
+      ),
+      this.evaluateHealthCheck(
+        !!process.env.IPFS_API_URL,
+        this.checkIpfsHealth,
+      ),
+    ]);
 
     return { database, ipfs };
+  }
+
+  private evaluateHealthCheck(enabled: boolean, checkFn: () => Promise<boolean>): Promise<string> {
+    if (!enabled) return Promise.resolve("not_configured");
+    return checkFn().then((result) => (result === true ? "ok" : "error"));
   }
 
   /**
@@ -251,12 +254,7 @@ export class ApiServer {
   ): Promise<void> {
     const checks = await this.runDependencyChecks();
 
-    const status =
-      checks.database === "error"
-        ? "unhealthy"
-        : checks.ipfs === "error"
-          ? "degraded"
-          : "healthy";
+    const status = this.computeHealthStatus(checks);
 
     // Resumen de métricas para el health check
     const requestSeries = metrics.series("http_requests_total");
@@ -282,6 +280,12 @@ export class ApiServer {
         },
       }),
     );
+  }
+
+  private computeHealthStatus(checks: { database: string; ipfs: string }): string {
+    if (checks.database === "error") return "unhealthy";
+    if (checks.ipfs === "error") return "degraded";
+    return "healthy";
   }
 
   /**
@@ -1423,16 +1427,30 @@ export class ApiServer {
  * Función de conveniencia para iniciar el servidor con dependencias por defecto
  * Puede aceptar dependencias personalizadas para testing
  */
-export async function startServer(
-  port: number = 3000,
-  vaultRepository?: IVaultRepository,
-  encryptionService?: EncryptionService,
-  hashingService?: HashingService,
-  signatureService?: SignatureService,
-  keyManagementService?: KeyManagementService,
-  credentialsGenerator?: CredentialsGenerator,
-  credentialRepository?: ICredentialRepository,
-) {
+export interface StartServerOptions {
+  port?: number;
+  vaultRepository?: IVaultRepository;
+  encryptionService?: EncryptionService;
+  hashingService?: HashingService;
+  signatureService?: SignatureService;
+  keyManagementService?: KeyManagementService;
+  credentialsGenerator?: CredentialsGenerator;
+  credentialRepository?: ICredentialRepository;
+}
+
+export async function startServer(options: StartServerOptions = {}): Promise<
+  Server<typeof IncomingMessage, typeof ServerResponse>
+> {
+  const {
+    port = 3000,
+    vaultRepository,
+    encryptionService,
+    hashingService,
+    signatureService,
+    keyManagementService,
+    credentialsGenerator,
+    credentialRepository,
+  } = options;
   const usePostgres = process.env.USE_POSTGRES === "true";
   const vaultRepo =
     vaultRepository ||
@@ -1468,7 +1486,7 @@ if (require.main === module) {
 
   connectRedis().catch(() => {});
 
-  startServer(port).catch((err) =>
+  startServer({ port }).catch((err) =>
     logger.error(
       "Server startup failed",
       "ApiServer",

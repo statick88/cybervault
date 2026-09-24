@@ -30,62 +30,75 @@ const MAX_TRUST_STORE_ENTRIES = 10_000;
  * Must not start or end with hyphen or dot.
  */
 function validateDomain(domain: string): string {
-  // First, check raw input for dangerous characters that normalization might hide
-  // Control characters (ASCII 0-31, 127)
-  if (/[\x00-\x1F\x7F]/.test(domain)) {
-    throw new Error("Invalid domain: contains control characters");
-  }
-
-  // Check for HTML/script injection attempts in raw input
-  if (/[<>"'&]/.test(domain)) {
-    throw new Error("Invalid domain: contains dangerous characters");
-  }
-
-  // Check for null bytes
-  if (domain.includes("\0")) {
-    throw new Error("Invalid domain: contains null byte");
-  }
+  checkControlCharacters(domain);
+  checkDangerousCharacters(domain);
+  checkNullByte(domain);
 
   const normalized = dnsNormalize(domain);
 
-  // Check for empty after normalization
+  checkEmptyAfterNormalization(normalized);
+  checkInvalidCharacters(normalized);
+  checkLeadingTrailingChars(normalized);
+  checkConsecutiveDots(normalized);
+  checkLabels(normalized);
+
+  return normalized;
+}
+
+function checkControlCharacters(domain: string): void {
+  // Check for control characters (ASCII 0-31, 127) without using literal control chars in regex
+  // \x00-\x1F = 0-31, \x7F = 127 (DEL)
+  if (/[\u0000-\u001F\u007F]/.test(domain)) {
+    throw new Error("Invalid domain: contains control characters");
+  }
+}
+
+function checkDangerousCharacters(domain: string): void {
+  if (/[<>"'&]/.test(domain)) {
+    throw new Error("Invalid domain: contains dangerous characters");
+  }
+}
+
+function checkNullByte(domain: string): void {
+  if (domain.includes("\0")) {
+    throw new Error("Invalid domain: contains null byte");
+  }
+}
+
+function checkEmptyAfterNormalization(normalized: string): void {
   if (!normalized) {
     throw new Error("Invalid domain: empty after normalization");
   }
+}
 
-  // Check for invalid characters (only alphanumeric, hyphen, dot allowed)
-  // This regex allows: a-z, 0-9, hyphen, dot
+function checkInvalidCharacters(normalized: string): void {
   if (!/^[a-z0-9.-]+$/.test(normalized)) {
     throw new Error("Invalid domain: contains invalid characters");
   }
+}
 
-  // Check for leading/trailing hyphen or dot
+function checkLeadingTrailingChars(normalized: string): void {
   if (normalized.startsWith("-") || normalized.startsWith(".") ||
       normalized.endsWith("-") || normalized.endsWith(".")) {
     throw new Error("Invalid domain: cannot start or end with hyphen or dot");
   }
+}
 
-  // Check for consecutive dots (invalid in domain names)
+function checkConsecutiveDots(normalized: string): void {
   if (normalized.includes("..")) {
     throw new Error("Invalid domain: consecutive dots not allowed");
   }
+}
 
-  // Check each label (part between dots) for validity
+function checkLabels(normalized: string): void {
   const labels = normalized.split(".");
   for (const label of labels) {
-    if (label.length === 0) {
-      throw new Error("Invalid domain: empty label");
-    }
-    if (label.length > 63) {
-      throw new Error("Invalid domain: label too long (max 63 chars)");
-    }
-    // Label cannot start or end with hyphen
+    if (label.length === 0) throw new Error("Invalid domain: empty label");
+    if (label.length > 63) throw new Error("Invalid domain: label too long (max 63 chars)");
     if (label.startsWith("-") || label.endsWith("-")) {
       throw new Error("Invalid domain: label cannot start or end with hyphen");
     }
   }
-
-  return normalized;
 }
 
 /**

@@ -17,6 +17,19 @@ const DEFAULT_RETRY_OPTIONS: RetryOptions = {
   backoffMultiplier: 2,
 };
 
+function isErrorRetryable(error: Error, retryableErrors?: string[]): boolean {
+  if (!retryableErrors || retryableErrors.length === 0) return true;
+  return retryableErrors.some((pattern) => error.message.includes(pattern));
+}
+
+function calculateDelay(attempt: number, opts: RetryOptions): number {
+  const delay = Math.min(
+    opts.baseDelayMs * Math.pow(opts.backoffMultiplier, attempt - 1),
+    opts.maxDelayMs,
+  );
+  return delay * (0.5 + Math.random() * 0.5);
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options?: Partial<RetryOptions>,
@@ -32,21 +45,9 @@ export async function withRetry<T>(
 
       if (attempt === opts.maxAttempts) break;
 
-      // Check if error is retryable
-      if (opts.retryableErrors && opts.retryableErrors.length > 0) {
-        const isRetryable = opts.retryableErrors.some(
-          (pattern) => lastError!.message.includes(pattern),
-        );
-        if (!isRetryable) break;
-      }
+      if (!isErrorRetryable(lastError, opts.retryableErrors)) break;
 
-      // Exponential backoff with jitter
-      const delay = Math.min(
-        opts.baseDelayMs * Math.pow(opts.backoffMultiplier, attempt - 1),
-        opts.maxDelayMs,
-      );
-      const jitter = delay * (0.5 + Math.random() * 0.5);
-      await new Promise((resolve) => setTimeout(resolve, jitter));
+      await new Promise((resolve) => setTimeout(resolve, calculateDelay(attempt, opts)));
     }
   }
 

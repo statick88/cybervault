@@ -54,6 +54,31 @@ class MetricsCollector {
     return `{${sorted}}`;
   }
 
+  private formatHistogram(key: string, baseName: string, metric: MetricEntry, lines: string[]): void {
+    const hist = this.histograms.get(key);
+    if (!hist || hist.values.length === 0) return;
+
+    const sorted = [...hist.values].sort((a, b) => a - b);
+    const sum = sorted.reduce((a, b) => a + b, 0);
+    const count = sorted.length;
+    const base = baseName;
+    const labelPrefix = this.labelStr(metric.labels);
+
+    for (const bucket of hist.buckets) {
+      const le = sorted.filter((v) => v <= bucket).length;
+      const labels = labelPrefix
+        ? `${labelPrefix.slice(0, -1)},le="${bucket}"}`
+        : `{le="${bucket}"}`;
+      lines.push(`${base}_bucket${labels} ${le}`);
+    }
+    const infLabels = labelPrefix
+      ? `${labelPrefix.slice(0, -1)},le="+Inf"}`
+      : `{le="+Inf"}`;
+    lines.push(`${base}_bucket${infLabels} ${count}`);
+    lines.push(`${base}_sum${labelPrefix} ${sum.toFixed(6)}`);
+    lines.push(`${base}_count${labelPrefix} ${count}`);
+  }
+
   formatPrometheus(): string {
     const lines: string[] = [];
     const seenHelp = new Set<string>();
@@ -67,30 +92,7 @@ class MetricsCollector {
       }
 
       if (metric.type === "histogram") {
-        const hist = this.histograms.get(key);
-        if (hist && hist.values.length > 0) {
-          const sorted = [...hist.values].sort((a, b) => a - b);
-          const sum = sorted.reduce((a, b) => a + b, 0);
-          const count = sorted.length;
-          const base = baseName;
-          const labelPrefix = this.labelStr(metric.labels);
-
-          // The `le` label must be merged into the existing label set
-          // (single `{...}` group) to keep valid Prometheus text format
-          for (const bucket of hist.buckets) {
-            const le = sorted.filter((v) => v <= bucket).length;
-            const labels = labelPrefix
-              ? `${labelPrefix.slice(0, -1)},le="${bucket}"}`
-              : `{le="${bucket}"}`;
-            lines.push(`${base}_bucket${labels} ${le}`);
-          }
-          const infLabels = labelPrefix
-            ? `${labelPrefix.slice(0, -1)},le="+Inf"}`
-            : `{le="+Inf"}`;
-          lines.push(`${base}_bucket${infLabels} ${count}`);
-          lines.push(`${base}_sum${labelPrefix} ${sum.toFixed(6)}`);
-          lines.push(`${base}_count${labelPrefix} ${count}`);
-        }
+        this.formatHistogram(key, baseName, metric, lines);
       } else {
         lines.push(`${key} ${metric.value}`);
       }

@@ -90,24 +90,50 @@ class IPFSAdapter implements IIPFSService {
    * Verifica que el nodo IPFS esté accesible
    */
   async isHealthy(): Promise<boolean> {
-    // Circuit OPEN → node is failing; report unhealthy without probing
-    if (this.circuitBreaker.getState() === "open") {
-      return false;
-    }
-
+    if (this.circuitBreaker.getState() === "open") return false;
     const client = await this.getClient();
-    if (!client) {
-      return false;
-    }
-
+    if (!client) return false;
     try {
-      // Health check runs through the breaker so failures also count toward
-      // opening the circuit
       await this.circuitBreaker.execute(() => client.id());
       return true;
     } catch {
       return false;
     }
+  }
+
+  private async fetchFromIPFS(cid: string, client: IPFSClient): Promise<string> {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of client.cat(cid)) chunks.push(chunk);
+    const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+    const merged = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return new TextDecoder().decode(merged);
+  }
+
+  private async fetchWithFallback(cid: string, client: IPFSClient): Promise<string> {
+    try {
+      return await this.circuitBreaker.execute(() =>
+        withRetry(
+          async () => this.fetchFromIPFS(cid, client),
+          { maxAttempts: 3, retryableErrors: IPFS_RETRYABLE_ERRORS },
+        ),
+      );
+    } catch {
+      const stored = this.memoryStore.get(cid);
+      if (!stored) throw new Error("Data not found");
+      return stored;
+    }
+  }
+
+  private async decryptIfNeeded(cid: string, data: string, decrypt: boolean): Promise<string> {
+    if (!decrypt) return data;
+    const key = this.keyByCid.get(cid);
+    if (!key) return data;
+    return this.encryptionService.decrypt(data, key);
   }
 
   async upload(
@@ -168,60 +194,14 @@ class IPFSAdapter implements IIPFSService {
 
   async download(cid: string, decrypt: boolean = true): Promise<string> {
     const client = await this.getClient();
-    let data: string;
-
-    if (!client) {
-      const stored = this.memoryStore.get(cid);
-      if (!stored) {
-        throw new Error("Data not found");
-      }
-      data = stored;
-    } else {
-      try {
-        data = await this.circuitBreaker.execute(() =>
-          withRetry(
-            async () => {
-              const chunks: Uint8Array[] = [];
-              for await (const chunk of client.cat(cid)) {
-                chunks.push(chunk);
-              }
-
-              const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-              const merged = new Uint8Array(totalLength);
-              let offset = 0;
-              for (const chunk of chunks) {
-                merged.set(chunk, offset);
-                offset += chunk.length;
-              }
-
-              return new TextDecoder().decode(merged);
-            },
-            { maxAttempts: 3, retryableErrors: IPFS_RETRYABLE_ERRORS },
-          ),
-        );
-      } catch {
-        // Fallback: leer desde memoria si el nodo IPFS no responde tras los
-        // reintentos o si el circuit breaker está OPEN (degradación controlada)
-        const stored = this.memoryStore.get(cid);
-        if (!stored) {
-          throw new Error("Data not found");
-        }
-        data = stored;
-      }
-    }
-
-    if (decrypt) {
-      const key = this.keyByCid.get(cid);
-      if (key) {
-        return this.encryptionService.decrypt(data, key);
-      }
-      // No key available for this CID — data was either uploaded without
-      // encryption or encrypted by a different process. Return as-is rather
-      // than corrupting it with a wrong-key decrypt attempt.
-      return data;
-    }
-
-    return data;
+    const data = client
+      ? await this.fetchWithFallback(cid, client)
+      : (() => {
+          const stored = this.memoryStore.get(cid);
+          if (!stored) throw new Error("Data not found");
+          return stored;
+        })();
+    return this.decryptIfNeeded(cid, data, decrypt);
   }
 
   async delete(cid: string): Promise<boolean> {

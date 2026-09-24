@@ -20,9 +20,7 @@ const MAX_LENGTH = 100;
  */
 export function levenshteinSimilarity(a: string, b: string): number {
   if (a.length > MAX_LENGTH || b.length > MAX_LENGTH) {
-    throw new Error(
-      `Input length exceeds hard limit (${MAX_LENGTH})`,
-    );
+    throw new Error(`Input length exceeds hard limit (${MAX_LENGTH})`);
   }
 
   const m = a.length;
@@ -42,19 +40,17 @@ export function levenshteinSimilarity(a: string, b: string): number {
   for (let i = 1; i <= m; i++) {
     curr[0] = i;
     const aChar = a[i - 1];
-
-    for (let j = 1; j <= n; j++) {
-      if (aChar === b[j - 1]) {
-        curr[j] = prev[j - 1];
-      } else {
-        curr[j] = 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
-      }
-    }
-
+    computeRow(aChar, b, prev, curr, n);
     // Swap rows
     for (let j = 0; j <= n; j++) prev[j] = curr[j];
   }
 
   const distance = prev[n];
   return 1.0 - distance / maxLen;
+}
+
+function computeRow(aChar: string, b: string, prev: number[], curr: number[], n: number): void {
+  for (let j = 1; j <= n; j++) {
+    curr[j] = aChar === b[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+  }
 }

@@ -1,6 +1,6 @@
 # CyberVault — Progress Checklist
 # Se actualiza al final de cada sesión
-# Última actualización: 2026-09-22
+# Última actualización: 2026-09-23
 
 ## Code Review
 - [x] Explorar estructura del proyecto
@@ -117,7 +117,15 @@
 - [x] Crear correcciones.md con 22 mejoras por sección del paper
 - [x] Incluir benchmarks reales vs paper v1
 - [x] Incluir threat model, limitaciones, referencias nuevas
-- [ ] Aplicar correcciones al documento Word
+- [x] Aplicar 25 correcciones automatizadas via python-docx (2026-09-23)
+  - Abstract: latency 0.003/0.005ms, zero false negatives
+  - Typosquatting: 95% -> 100% (3 locations)
+  - Performance: 0.19ms -> 0.005ms, 33,000x -> 35x
+  - Conclusions: Argon2id -> PBKDF2 600K
+  - Table 0: 99.1% -> 100% accuracy
+  - Table 2: 95% -> 100% typosquatting, ZK Yes -> Partial
+  - Table 3: Complete metrics update (0.0030ms, 0.0054ms, 328K/s, 185K/s)
+- [ ] 18 correcciones estructurales pendientes (nuevas secciones, tablas, figuras, referencias) — requieren edición manual Word/LibreOffice
 
 ## Redis Integration
 - [x] Instalar ioredis
@@ -129,6 +137,7 @@
 
 ## Chrome Extension E2E
 - [x] Crear playwright.config.ts
+- [x] Fix playwright.config.ts: add channel: 'chrome' (2026-09-23)
 - [x] Crear extension-fixture.ts (launchPersistentContext + --load-extension)
 - [x] Crear popup.spec.ts (9 tests)
 - [x] Crear content-scripts.spec.ts (8 tests)
@@ -160,7 +169,8 @@
 - [x] Design — architecture decisions, file changes, testing strategy
 - [x] Specs — e2e-test-execution, paper-v2-corrections
 - [x] Tasks — 16 tasks across 4 phases
-- [ ] Apply — Track A bloqueado (Chrome), Track B parcial
+- [x] Apply — Track A: playwright.config.ts fixed (channel: 'chrome'), CI workflow ready
+- [x] Apply — Track B: 25/43 corrections applied via python-docx, 18 structural pending
 - [ ] Verify
 - [ ] Archive
 
@@ -198,8 +208,8 @@
 - [x] Authority: burned (commit autorizado)
 
 ## Pendiente para 100/100
-- [ ] **CI Pipeline** — Crear GitHub Actions workflow con setup-chrome
-- [ ] **Paper v2** — Aplicar 15 correcciones restantes al Word
+- [x] **CI Pipeline** — GitHub Actions workflow con setup-chrome creado
+- [ ] **Paper v2** — 18 correcciones estructurales restantes (nuevas secciones, tablas, figuras, referencias) — edición manual Word/LibreOffice
 - [ ] **E2E Tests** — Ejecutar 22 tests en CI con Chrome real
 
 ## Archivos Clave Actualizados

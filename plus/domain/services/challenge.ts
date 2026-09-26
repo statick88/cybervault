@@ -1,0 +1,363 @@
+/**
+ * Challenge Service — Step-Up Authentication Flow for CyberVault Plus
+ *
+ * Implements the third factor authentication flow:
+ * 1. Risk engine triggers challenge (or pestillo STEP_UP forces it)
+ * 2. Plus creates challenge with random nonce, sends single-use URL via email
+ * 3. User clicks URL, enters PIN
+ * 4. Plus verifies PIN (HMAC), issues capability with assurance level 3
+ * 5. Challenge consumed (one-time use)
+ */
+
+import { logger } from "@/shared/logger";
+import { secureZero } from "@/infrastructure/crypto/secure-memory";
+import { binaryToBase64, base64ToBinary } from "@/shared/utils";
+import type { CapabilityOperation, CapabilityPayload, SignedCapability } from "@/infrastructure/crypto/ed25519-capability";
+import { signCapability, createCapabilityPayload, verifyCapability, loadEd25519PrivateKey } from "@/infrastructure/crypto/ed25519-capability";
+import { verifyAndConsumeJti } from "@/infrastructure/crypto/jti-store";
+import type { PlusUser } from "../entities/user";
+import type { Resource } from "../entities/resource";
+import type { PestilloState } from "../entities/entitlement";
+import { getRiskEngine } from "./risk-engine";
+import type { IChallengeRepository as ChallengeRepo } from "../repositories";
+import type { IEmailService as EmailSvc } from "../services/email-service";
+
+/** Challenge types */
+export type ChallengeType = "step_up" | "risk_based" | "forced";
+
+/** Challenge status */
+export type ChallengeStatus = "pending" | "email_sent" | "url_accessed" | "completed" | "expired" | "failed";
+
+/** Challenge entity */
+export interface ChallengeProps {
+  id: string; // UUID
+  userId: string;
+  resourceId: string;
+  operation: CapabilityOperation;
+  secretRef: string;
+  deviceId?: string;
+  type: ChallengeType;
+  status: ChallengeStatus;
+  nonce: string; // Base64 encoded random nonce
+  pinHmac: string; // HMAC-SHA256 of PIN (never store plaintext PIN)
+  pinSalt: string; // Salt for PIN derivation
+  emailSentAt?: number; // Unix ms
+  accessedAt?: number; // Unix ms
+  completedAt?: number; // Unix ms
+  expiresAt: number; // Unix ms
+  attempts: number;
+  maxAttempts: number;
+  riskScore?: number; // Risk score that triggered challenge
+  riskReasons?: string[]; // Risk factor reasons
+  assuranceLevel: 3; // Third factor = assurance 3
+  createdAt: number;
+  updatedAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+/** Challenge creation input */
+export interface ChallengeCreateInput {
+  userId: string;
+  resourceId: string;
+  operation: CapabilityOperation;
+  secretRef: string;
+  deviceId?: string;
+  type: ChallengeType;
+  riskScore?: number;
+  riskReasons?: string[];
+  ttlMinutes?: number; // Default 10 minutes
+  maxAttempts?: number; // Default 3
+}
+
+/** PIN verification input */
+export interface PinVerifyInput {
+  challengeId: string;
+  pin: string;
+  deviceId?: string;
+}
+
+/** PIN verification result */
+export interface PinVerifyResult {
+  success: boolean;
+  capabilityToken?: SignedCapability;
+  error?: string;
+  attemptsRemaining?: number;
+}
+
+/** Challenge repository interface */
+export interface IChallengeRepository {
+  save(challenge: ChallengeProps): Promise<ChallengeProps>;
+  findById(id: string): Promise<ChallengeProps | null>;
+  findByUserId(userId: string): Promise<ChallengeProps[]>;
+  findPendingByUserId(userId: string): Promise<ChallengeProps[]>;
+  update(challenge: ChallengeProps): Promise<ChallengeProps>;
+  delete(id: string): Promise<boolean>;
+  cleanupExpired(): Promise<number>;
+}
+
+/** Email service interface */
+export interface IEmailService {
+  sendChallengeEmail(email: string, challengeUrl: string, expiresInMinutes: number): Promise<void>;
+}
+
+/** Challenge Service */
+export class ChallengeService {
+  private challengeRepo: IChallengeRepository;
+  private emailService: IEmailService;
+  private baseUrl: string; // Base URL for challenge links (e.g., https://plus.company.com)
+  private plusPrivateKey: Uint8Array; // Ed25519 private key for signing capabilities
+
+  constructor(
+    challengeRepo: IChallengeRepository,
+    emailService: IEmailService,
+    baseUrl: string,
+    plusPrivateKeyBase64: string,
+  ) {
+    this.challengeRepo = challengeRepo;
+    this.emailService = emailService;
+    this.baseUrl = baseUrl.replace(/\/$/, ""); // Remove trailing slash
+    this.plusPrivateKey = loadEd25519PrivateKey(plusPrivateKeyBase64);
+  }
+
+  /**
+   * Create a new challenge and send email
+   */
+  async createChallenge(input: ChallengeCreateInput): Promise<{ challengeId: string; expiresAt: number }> {
+    const now = Date.now();
+    const ttlMinutes = input.ttlMinutes ?? 10;
+    const maxAttempts = input.maxAttempts ?? 3;
+
+    // Generate cryptographic nonce
+    const nonce = crypto.getRandomValues(new Uint8Array(32));
+    const nonceBase64 = binaryToBase64(nonce);
+
+    // Generate challenge ID (use nonce as base)
+    const challengeId = binaryToBase64(crypto.getRandomValues(new Uint8Array(16)))
+      .replace(/[+/=]/g, "")
+      .substring(0, 24);
+
+    // PIN will be generated by user via UI - we store HMAC of PIN
+    // For now, we generate a random PIN for the user (in production, user sets it)
+    const pin = this.generateRandomPin();
+    const pinSalt = crypto.getRandomValues(new Uint8Array(32));
+    const pinHmac = await this.computePinHmac(pin, binaryToBase64(pinSalt));
+
+    // Create challenge
+    const challenge: ChallengeProps = {
+      id: challengeId,
+      userId: input.userId,
+      resourceId: input.resourceId,
+      operation: input.operation,
+      secretRef: input.secretRef,
+      deviceId: input.deviceId,
+      type: input.type,
+      status: "pending",
+      nonce: nonceBase64,
+      pinHmac,
+      pinSalt: binaryToBase64(pinSalt),
+      expiresAt: now + ttlMinutes * 60 * 1000,
+      attempts: 0,
+      maxAttempts,
+      riskScore: input.riskScore,
+      riskReasons: input.riskReasons,
+      assuranceLevel: 3,
+      createdAt: now,
+      updatedAt: now,
+      metadata: {
+        generatedPin: pin, // In production, this would NOT be stored - user sets their own PIN
+      },
+    };
+
+    await this.challengeRepo.save(challenge);
+
+    // Send challenge email
+    const challengeUrl = `${this.baseUrl}/challenge/${challengeId}`;
+    await this.emailService.sendChallengeEmail(
+      // Email would be fetched from user repository
+      "user@example.com", // Placeholder
+      challengeUrl,
+      ttlMinutes,
+    );
+
+    // Update status
+    challenge.status = "email_sent";
+    challenge.emailSentAt = now;
+    challenge.updatedAt = now;
+    await this.challengeRepo.update(challenge);
+
+    logger.info(`Challenge created: ${challengeId} for user ${input.userId}`, "ChallengeService");
+
+    // Secure cleanup
+    secureZero(nonce);
+    secureZero(pinSalt);
+
+    return { challengeId, expiresAt: challenge.expiresAt };
+  }
+
+  /**
+   * Verify PIN and issue capability token
+   */
+  async verifyPin(input: PinVerifyInput): Promise<PinVerifyResult> {
+    const challenge = await this.challengeRepo.findById(input.challengeId);
+    if (!challenge) {
+      return { success: false, error: "Challenge not found" };
+    }
+
+    // Check status
+    if (challenge.status !== "email_sent" && challenge.status !== "url_accessed") {
+      return { success: false, error: `Challenge not in valid state: ${challenge.status}` };
+    }
+
+    // Check expiry
+    if (Date.now() > challenge.expiresAt) {
+      challenge.status = "expired";
+      challenge.updatedAt = Date.now();
+      await this.challengeRepo.update(challenge);
+      return { success: false, error: "Challenge expired" };
+    }
+
+    // Check max attempts
+    if (challenge.attempts >= challenge.maxAttempts) {
+      challenge.status = "failed";
+      challenge.updatedAt = Date.now();
+      await this.challengeRepo.update(challenge);
+      return { success: false, error: "Maximum attempts exceeded" };
+    }
+
+    // Verify PIN HMAC
+    const providedHmac = await this.computePinHmac(input.pin, challenge.pinSalt);
+    if (providedHmac !== challenge.pinHmac) {
+      challenge.attempts++;
+      challenge.updatedAt = Date.now();
+      await this.challengeRepo.update(challenge);
+      return {
+        success: false,
+        error: "Invalid PIN",
+        attemptsRemaining: challenge.maxAttempts - challenge.attempts,
+      };
+    }
+
+    // PIN correct - mark as accessed if first time
+    if (challenge.status === "email_sent") {
+      challenge.status = "url_accessed";
+      challenge.accessedAt = Date.now();
+    }
+
+    // Issue capability token
+    const capabilityPayload = createCapabilityPayload({
+      userId: challenge.userId,
+      resourceId: challenge.resourceId,
+      operation: challenge.operation,
+      secretRef: challenge.secretRef,
+      deviceId: challenge.deviceId ?? input.deviceId,
+      assurance: 3,
+      ttlSeconds: 300, // 5 minutes for capability
+    });
+
+    const signedCapability = await signCapability(capabilityPayload, this.plusPrivateKey);
+
+    // Verify the capability we just signed (defense in depth)
+    const verifyResult = await verifyCapability(signedCapability, this.plusPrivateKey.slice(32));
+    if (!verifyResult.valid) {
+      logger.error("Self-verification of signed capability failed", "ChallengeService");
+      return { success: false, error: "Internal error: capability signing failed" };
+    }
+
+    // Consume challenge (mark completed)
+    challenge.status = "completed";
+    challenge.completedAt = Date.now();
+    challenge.updatedAt = Date.now();
+    await this.challengeRepo.update(challenge);
+
+    // Verify and consume JTI for replay protection
+    const jtiResult = await verifyAndConsumeJti(
+      capabilityPayload.jti,
+      Math.floor((capabilityPayload.exp - capabilityPayload.iat)),
+    );
+    if (!jtiResult.allowed) {
+      logger.warn(`JTI replay detected for capability: ${capabilityPayload.jti}`, "ChallengeService");
+    }
+
+    logger.info(`Challenge completed: ${challenge.id} for user ${challenge.userId}`, "ChallengeService");
+
+    // Secure cleanup - best effort for string
+    input.pin = "";
+
+    return {
+      success: true,
+      capabilityToken: signedCapability,
+    };
+  }
+
+  /**
+   * Get challenge by ID (for status checking)
+   */
+  async getChallenge(id: string): Promise<ChallengeProps | null> {
+    return this.challengeRepo.findById(id);
+  }
+
+  /**
+   * List pending challenges for a user
+   */
+  async getPendingChallenges(userId: string): Promise<ChallengeProps[]> {
+    return this.challengeRepo.findPendingByUserId(userId);
+  }
+
+  /**
+   * Generate random 6-digit PIN
+   */
+  private generateRandomPin(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  /**
+   * Compute HMAC-SHA256 of PIN with salt
+   */
+  private async computePinHmac(pin: string, saltBase64: string): Promise<string> {
+    const salt = base64ToBinary(saltBase64);
+    const pinKey = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(pin),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign("HMAC", pinKey, this.toArrayBuffer(salt));
+    return binaryToBase64(new Uint8Array(signature));
+  }
+
+  /**
+   * Convert Uint8Array to ArrayBuffer for Web Crypto API
+   */
+  private toArrayBuffer(data: Uint8Array): ArrayBuffer {
+    const buf = new ArrayBuffer(data.byteLength);
+    new Uint8Array(buf).set(data);
+    return buf;
+  }
+
+  /**
+   * Cleanup expired challenges (cron job)
+   */
+  async cleanupExpired(): Promise<number> {
+    return this.challengeRepo.cleanupExpired();
+  }
+}
+
+/** Singleton getter */
+let _challengeService: ChallengeService | null = null;
+
+export function getChallengeService(
+  challengeRepo: IChallengeRepository,
+  emailService: IEmailService,
+  baseUrl: string,
+  plusPrivateKeyBase64: string,
+): ChallengeService {
+  if (!_challengeService) {
+    _challengeService = new ChallengeService(challengeRepo, emailService, baseUrl, plusPrivateKeyBase64);
+  }
+  return _challengeService;
+}
+
+export function setChallengeService(service: ChallengeService | null): void {
+  _challengeService = service;
+}

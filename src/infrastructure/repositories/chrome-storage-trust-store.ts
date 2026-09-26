@@ -32,7 +32,6 @@ const MAX_TRUST_STORE_ENTRIES = 10_000;
 function validateDomain(domain: string): string {
   checkControlCharacters(domain);
   checkDangerousCharacters(domain);
-  checkNullByte(domain);
 
   const normalized = dnsNormalize(domain);
 
@@ -46,10 +45,14 @@ function validateDomain(domain: string): string {
 }
 
 function checkControlCharacters(domain: string): void {
-  // Check for control characters (ASCII 0-31, 127) without regex to avoid SonarQube false positives
+  // Rejects ASCII 0-31 and DEL 127. Written as a numeric scan rather than a
+  // regex so no control character ever appears as a literal in this file.
+  // This also subsumes the old checkNullByte(): charCodeAt never returns a
+  // negative value, so U+0000 was already rejected here, one line above where
+  // the null-byte check used to run. That made it unreachable dead code.
   for (let i = 0; i < domain.length; i++) {
     const code = domain.charCodeAt(i);
-    if ((code >= 0 && code <= 31) || code === 127) {
+    if (code <= 31 || code === 127) {
       throw new Error("Invalid domain: contains control characters");
     }
   }
@@ -58,12 +61,6 @@ function checkControlCharacters(domain: string): void {
 function checkDangerousCharacters(domain: string): void {
   if (/[<>"'&]/.test(domain)) {
     throw new Error("Invalid domain: contains dangerous characters");
-  }
-}
-
-function checkNullByte(domain: string): void {
-  if (domain.includes("\u0000")) {
-    throw new Error("Invalid domain: contains null byte");
   }
 }
 

@@ -422,7 +422,7 @@ function removeIndicator(): void {
   document.getElementById(INDICATOR_ID)?.remove();
 }
 
-function showIndicator(count: number, onFill: () => void): void {
+function showIndicator(count: number, onFill: () => void | Promise<void>): void {
   removeIndicator();
   if (count <= 0) return;
 
@@ -451,7 +451,12 @@ function showIndicator(count: number, onFill: () => void): void {
   badge.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    void onFill();
+    // onFill is `attemptFill`, which is async and can reject (sendMessage, the
+    // release round trip). The previous `void onFill()` discarded the promise,
+    // so a failed fill became an unhandled rejection. Promise.resolve() accepts
+    // both shapes and the catch keeps the original intent: fail closed and stay
+    // silent, matching start(), so the page learns nothing from the failure.
+    Promise.resolve(onFill()).catch(() => {});
     removeIndicator();
   });
 

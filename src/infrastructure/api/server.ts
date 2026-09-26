@@ -59,6 +59,10 @@ import {
   InMemoryReleaseShareStore,
 } from "../../infrastructure/repositories";
 import { loadReleaseShareKekSecret } from "../../infrastructure/crypto/release-share-kek";
+import { secureZero } from "../../infrastructure/crypto/secure-memory";
+import { base64ToBinary } from "../../shared/utils";
+import { Credential } from "../../domain/entities/credential";
+import type { ManagedAuthoringRejection } from "../../application/use-cases/managed-authoring.use-case";
 
 // Tipos fuertes para credenciales
 import { CredentialsTypeFactory } from "../../domain/services/autocompletado/credentials-types";
@@ -1017,6 +1021,162 @@ export class ApiServer {
   }
 
   /**
+   * Handler for managed credential authoring (ODD "Option C").
+   *
+   * Mirrors `handleVaultManagedRelease`: same auth/ownership checks, same
+   * shape, same store and the same Release Share KEK secret, so a share
+   * written here resolves there for the same `secretRef`.
+   *
+   * SECURITY — the domain index (`domain/services/autofill/domain-index.ts`)
+   * exists so the backend never learns which origins a user has credentials
+   * for: that list is a map of their infrastructure. The use case returns
+   * `record.origin` for ExactMatch binding, and this handler persists the
+   * credential WITHOUT `url`/origin — the origin leaves Core only in this
+   * response. `Credential.username` receives the redacted hint, never the
+   * plaintext username.
+   *
+   * The session VEK comes from the caller: Core has no VEK of its own (vault
+   * unlock returns ciphertext only), so a missing `vek` fails closed with the
+   * use case's `VEK_MISSING` — this handler never generates or derives one.
+   */
+  private async handleVaultManagedCredential(
+    req: IncomingMessage,
+    res: ServerResponse,
+    vaultId: string,
+  ): Promise<void> {
+    try {
+      const userId = (req as AuthenticatedRequest).userId;
+      if (!userId) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication required" }));
+        return;
+      }
+
+      // Verify vault ownership
+      const vault = await this.vaultRepository.findByVaultIdAndOwnerId(vaultId, userId);
+      if (!vault) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Vault not found" }));
+        return;
+      }
+
+      // Refuse BEFORE authoring: without a repository the wrapped share would
+      // be written and the credential row would not exist.
+      if (!this.credentialRepository) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Credential repository not configured" }));
+        return;
+      }
+
+      // Parse authoring input from the request body
+      const data = await this.parseJsonBody(req);
+
+      // The session VEK is supplied by the only party that holds it. Decode
+      // it here; an undecodable value is a malformed body, and an absent one
+      // is left null so the use case refuses with VEK_MISSING.
+      let vek: Uint8Array | null = null;
+      if (typeof data.vek === "string" && data.vek.trim() !== "") {
+        try {
+          vek = base64ToBinary(data.vek.trim());
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "vek must be base64-encoded" }));
+          return;
+        }
+        if (vek.byteLength === 0) vek = null;
+      }
+
+      try {
+        // Same store instance and same KEK secret as the release route.
+        const { ManagedAuthoringUseCase } = await import(
+          "../../application/use-cases/managed-authoring.use-case"
+        );
+        const useCase = new ManagedAuthoringUseCase(
+          this.releaseShareStore,
+          this.releaseShareKekSecret,
+        );
+
+        const result = await useCase.execute({
+          origin: typeof data.origin === "string" ? data.origin : "",
+          username: typeof data.username === "string" ? data.username : "",
+          password: typeof data.password === "string" ? data.password : "",
+          title: typeof data.title === "string" ? data.title : "",
+          totpSeedBase32:
+            typeof data.totpSeedBase32 === "string" ? data.totpSeedBase32 : undefined,
+          secretRef: typeof data.secretRef === "string" ? data.secretRef : "",
+          vek,
+        });
+
+        if (!result.ok) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: this.managedAuthoringError(result.reason, result.detail),
+              reason: result.reason,
+              detail: result.detail,
+            }),
+          );
+          return;
+        }
+
+        // SECURITY: build the row from the record and drop the origin —
+        // no `url`, no `origin` field exists on the entity at all. Username
+        // is the redacted hint; the plaintext lives only inside ciphertext.
+        const credential = Credential.fromPlainObject({
+          id: result.record.id,
+          vaultId,
+          title: result.record.title,
+          username: result.record.usernameHint,
+          encryptedPassword: result.record.encryptedSecret,
+          mode: "managed",
+          salt: result.record.salt,
+          version: result.record.version,
+          releaseShareRef: result.record.releaseShareRef as string,
+          tags: [],
+          favorite: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+
+        const persisted = await this.credentialRepository.save(credential);
+
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            success: true,
+            credentialId: persisted.id.toString(),
+            // The canonical origin travels ONLY here, so the client can bind
+            // ExactMatch; it is never written to the credential row.
+            record: result.record,
+            lookupToken: result.lookupToken,
+            index: result.index,
+          }),
+        );
+      } finally {
+        // The caller (this request) owns the decoded VEK copy.
+        if (vek) secureZero(vek);
+      }
+    } catch (error) {
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to process managed authoring" }));
+      }
+    }
+  }
+
+  /**
+   * Refusal message for managed authoring. A missing Release Share KEK names
+   * the environment variable that is actually missing, so the operator sees
+   * the real blocker instead of a generic failure.
+   */
+  private managedAuthoringError(reason: ManagedAuthoringRejection, detail: string): string {
+    if (reason === "RELEASE_SHARE_KEK_INVALID") {
+      return `${detail} — RELEASE_SHARE_KEK_SECRET (base64 of 32 random bytes) must be configured`;
+    }
+    return detail;
+  }
+
+  /**
    * Handler para eliminar un vault
    */
   private async handleVaultDelete(
@@ -1224,6 +1384,11 @@ export class ApiServer {
         await this.routeVaultManagedRelease(req, res, url);
         break;
 
+      // Vault managed credential authoring (Option C)
+      case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+\/managed-credentials$/)?.input:
+        await this.routeVaultManagedCredential(req, res, url);
+        break;
+
       // Credentials list
       case "/api/v1/credentials":
         await this.routeCredentialsList(req, res);
@@ -1306,6 +1471,15 @@ export class ApiServer {
     const vaultId = url.pathname.split("/")[4];
     if (req.method === "POST") {
       await this.handleAuthRoute(req, res, () => this.handleVaultManagedRelease(req, res, vaultId));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeVaultManagedCredential(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const vaultId = url.pathname.split("/")[4];
+    if (req.method === "POST") {
+      await this.handleAuthRoute(req, res, () => this.handleVaultManagedCredential(req, res, vaultId));
     } else {
       this.sendError(res, 405, "Method not allowed");
     }

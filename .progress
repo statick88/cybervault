@@ -243,3 +243,13 @@
 - [x] Suite completa: 47/47 suites, 836 passed / 846 total (baseline 46/817/827)
 - [x] `npx tsc --noEmit`: salida idéntica al baseline (0 errores nuevos)
 - [x] ODD doc: fila O5.8 -> done, D1 -> FIXED, D1b registrado
+
+## ODD — Phase O5.9 (2026-09-26)
+- [x] Route `POST /api/v1/vaults/{vaultId}/managed-credentials` in `src/infrastructure/api/server.ts` (mirrors `managed-release`: auth, 404 vault, 405 method, 403 on use-case refusal)
+- [x] Wired to the SAME `InMemoryReleaseShareStore` instance and `RELEASE_SHARE_KEK_SECRET` as the release route
+- [x] Credential row persisted WITHOUT `origin`/`url`; username = redacted hint; origin returned in the HTTP response only
+- [x] Fail closed: unset `RELEASE_SHARE_KEK_SECRET` -> 403 `RELEASE_SHARE_KEK_INVALID` naming the env var; missing VEK -> `VEK_MISSING` (never generated/derived)
+- [x] Tests: `tests/integration/managed-authoring-route.test.ts` — 9 tests (row redaction, origin codes, KEK fail-closed, VEK refusal, shared-store release, HTTP round trip, auth)
+- [x] Suite: 48/48 suites, 845 passed / 855 total (baseline 47/836/846 preserved)
+- [x] `npx tsc --noEmit`: 809 errors in 15 files — identical to baseline; `server.ts` and new test clean
+- [ ] ODD doc row O5.9 -> done (orchestrator)

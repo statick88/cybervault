@@ -79,6 +79,12 @@ function cleanupRateLimits(): void {
 
 export function _clearRateLimitForTests(): void {
   requestCounts.clear();
+  // The validation limiter is separate module state. It was not cleared here,
+  // which is invisible until the limiter is actually wired into a route: the
+  // counters then accumulate across test files in one Jest process and a suite
+  // that exercises the endpoint more than VALIDATE_RATE_LIMIT_MAX times starts
+  // receiving 429s depending on execution order.
+  validateRequestCounts.clear();
 }
 
 const _rateLimitCleanupInterval = setInterval(

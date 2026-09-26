@@ -298,10 +298,30 @@ export class ChallengeService {
   }
 
   /**
-   * Generate random 6-digit PIN
+   * Generate a random 6-digit PIN for a step-up challenge.
+   *
+   * This is a third authentication factor, so the source of randomness is a
+   * security boundary, not a convenience. The previous implementation used
+   * `Math.random()`, which is a non-cryptographic PRNG: its internal state is
+   * recoverable from observed outputs, so an attacker able to trigger their own
+   * challenges could reconstruct the state and predict the PIN issued to a
+   * victim. Every other secret in this file already used `crypto.getRandomValues`.
+   *
+   * `100000 + x % 900000` is used rather than a direct modulo of a 32-bit draw
+   * so the PIN space is exactly 6 digits, and the single rejection below
+   * removes the residual modulo bias of mapping 2^32 onto 900000 values.
    */
   private generateRandomPin(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    const MAX = 900_000;
+    // Largest multiple of MAX that fits in a uint32; values at or above this
+    // are discarded rather than reduced, which is what removes the bias.
+    const limit = Math.floor(0x1_0000_0000 / MAX) * MAX;
+    for (;;) {
+      const draw = crypto.getRandomValues(new Uint32Array(1))[0];
+      if (draw < limit) {
+        return (100_000 + (draw % MAX)).toString();
+      }
+    }
   }
 
   /**

@@ -184,6 +184,160 @@ function randomId(): string {
   return crypto.randomUUID();
 }
 
+/* ------------------------------------------------------------------ */
+/*  Input validation (extracted from authorCredential, order intact)   */
+/* ------------------------------------------------------------------ */
+
+type OriginValidation =
+  | { readonly ok: true; readonly canonical: string }
+  | { readonly ok: false; readonly reason: AuthoringRejection; readonly detail: string };
+
+type FieldValidation =
+  | { readonly ok: true; readonly title: string }
+  | { readonly ok: false; readonly reason: AuthoringRejection; readonly detail: string };
+
+/**
+ * Validate the origin BEFORE anything else.
+ *
+ * EXTRACTED VERBATIM from `authorCredential` step 1: same checks, same
+ * order, same rejection codes and detail strings.
+ */
+function validateAuthoringOrigin(origin: string | null | undefined): OriginValidation {
+  if (origin === null || origin === undefined || origin.trim() === "") {
+    return { ok: false, reason: "ORIGIN_MISSING", detail: "an origin is required" };
+  }
+
+  const trimmedOrigin = origin.trim();
+  // A bare host such as "github.com" is not an origin. Refusing it here is
+  // better than guessing a scheme, because guessing http for an https site
+  // would produce a permanently unfillable credential.
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedOrigin)) {
+    return {
+      ok: false,
+      reason: "ORIGIN_NOT_ABSOLUTE",
+      detail: `origin must be absolute (scheme://host[:port]); got "${trimmedOrigin}"`,
+    };
+  }
+
+  const parsed = parseAbsoluteOrigin(trimmedOrigin);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      reason:
+        parsed.reason === "UNSUPPORTED_SCHEME" ? "ORIGIN_SCHEME_NOT_ALLOWED" : "ORIGIN_NOT_ABSOLUTE",
+      detail: `origin rejected (${parsed.reason})`,
+    };
+  }
+  return { ok: true, canonical: parsed.origin.serialized };
+}
+
+/**
+ * Validate username, password and title.
+ *
+ * EXTRACTED VERBATIM from `authorCredential` step 2: same checks, same order,
+ * same rejection codes. Returns the effective title (which defaults to the
+ * username) so the caller stores exactly what was validated.
+ */
+function validateAuthoringFields(
+  input: AuthorCredentialInput,
+  username: string,
+): FieldValidation {
+  if (username === "") {
+    return { ok: false, reason: "USERNAME_REQUIRED", detail: "a username is required" };
+  }
+  if (!input.password) {
+    return { ok: false, reason: "PASSWORD_REQUIRED", detail: "a password is required" };
+  }
+  const title = input.title?.trim() || username;
+  if (title === "") {
+    return { ok: false, reason: "TITLE_REQUIRED", detail: "a title is required" };
+  }
+  return { ok: true, title };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Sealing + opaque index registration                               */
+/* ------------------------------------------------------------------ */
+
+interface SealContext {
+  /** Session VEK. Zeroized on every failure path, exactly as before. */
+  vek: Uint8Array;
+  input: AuthorCredentialInput;
+  username: string;
+  title: string;
+  canonicalOrigin: string;
+  credentialId: string;
+  salt: Uint8Array;
+  existingIndex: OpaqueIndex | null;
+}
+
+/**
+ * Derive the per-entry key, seal the envelope and register the lookup token.
+ *
+ * EXTRACTED from `authorCredential` step 3–4 together with its try/catch/
+ * finally: the failure messages, the `secureZero` calls and their timing are
+ * unchanged. Returns the full success shape or the same rejection the inline
+ * code produced.
+ */
+async function sealAndRegisterCredential(ctx: SealContext): Promise<AuthoringResult> {
+  const { vek, input, username, title, canonicalOrigin, credentialId, salt, existingIndex } = ctx;
+  let keyBytes: Uint8Array | null = null;
+
+  try {
+    const derived = await derivePersonalEntryKey(vek, salt, credentialId, 1);
+    keyBytes = base64ToBinary(derived.keyBase64);
+
+    const envelope: SecretEnvelope = { u: username, p: input.password };
+    const encryptedSecret = await seal(JSON.stringify(envelope), keyBytes, salt);
+
+    let encryptedTotpSecret: string | undefined;
+    if (input.totpSeedBase32) {
+      const seedBytes = base32ToBytes(input.totpSeedBase32);
+      if (seedBytes.length === 0) {
+        secureZero(vek);
+        if (keyBytes) secureZero(keyBytes);
+        return reject("PASSWORD_REQUIRED", "TOTP seed contained no usable characters");
+      }
+      encryptedTotpSecret = await seal(binaryToBase64(seedBytes), keyBytes, salt);
+      secureZero(seedBytes);
+    }
+
+    /* Register the opaque lookup token. */
+    const indexKey = await deriveDomainIndexKey(vek);
+    const token = await computeLookupToken(canonicalOrigin, indexKey);
+    if (!token.ok) {
+      secureZero(vek);
+      if (keyBytes) secureZero(keyBytes);
+      return reject("ORIGIN_NOT_ABSOLUTE", "could not derive a lookup token");
+    }
+
+    const nextIndex = addToIndex(
+      existingIndex ?? { version: 1, byToken: {} },
+      token.token,
+      credentialId,
+    );
+
+    const record: AuthoredCredentialRecord = {
+      id: credentialId,
+      mode: "personal",
+      encryptedSecret,
+      encryptedTotpSecret,
+      salt: binaryToBase64(salt),
+      version: 1,
+      usernameHint: redactUsername(username),
+      title,
+      origin: canonicalOrigin,
+    };
+
+    return { ok: true, record, index: nextIndex, lookupToken: token.token };
+  } catch {
+    secureZero(vek);
+    return reject("ORIGIN_NOT_ABSOLUTE", "unexpected failure while authoring");
+  } finally {
+    if (keyBytes) secureZero(keyBytes);
+  }
+}
+
 /**
  * Author a credential and register it in the opaque index.
  *
@@ -198,48 +352,20 @@ export async function authorCredential(
   if (!vek) return reject("VAULT_LOCKED", "vault is locked");
 
   /* ---- 1. Validate the origin BEFORE anything else. ---- */
-  if (input.origin === null || input.origin === undefined || input.origin.trim() === "") {
+  const origin = validateAuthoringOrigin(input.origin);
+  if (!origin.ok) {
     secureZero(vek);
-    return reject("ORIGIN_MISSING", "an origin is required");
+    return reject(origin.reason, origin.detail);
   }
-
-  const trimmedOrigin = input.origin.trim();
-  // A bare host such as "github.com" is not an origin. Refusing it here is
-  // better than guessing a scheme, because guessing http for an https site
-  // would produce a permanently unfillable credential.
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedOrigin)) {
-    secureZero(vek);
-    return reject(
-      "ORIGIN_NOT_ABSOLUTE",
-      `origin must be absolute (scheme://host[:port]); got "${trimmedOrigin}"`,
-    );
-  }
-
-  const parsed = parseAbsoluteOrigin(trimmedOrigin);
-  if (!parsed.ok) {
-    secureZero(vek);
-    return reject(
-      parsed.reason === "UNSUPPORTED_SCHEME" ? "ORIGIN_SCHEME_NOT_ALLOWED" : "ORIGIN_NOT_ABSOLUTE",
-      `origin rejected (${parsed.reason})`,
-    );
-  }
-  const canonicalOrigin = parsed.origin.serialized;
 
   /* ---- 2. Validate the rest of the input. ---- */
   const username = input.username?.trim() ?? "";
-  if (username === "") {
+  const fields = validateAuthoringFields(input, username);
+  if (!fields.ok) {
     secureZero(vek);
-    return reject("USERNAME_REQUIRED", "a username is required");
+    return reject(fields.reason, fields.detail);
   }
-  if (!input.password) {
-    secureZero(vek);
-    return reject("PASSWORD_REQUIRED", "a password is required");
-  }
-  const title = input.title?.trim() || username;
-  if (title === "") {
-    secureZero(vek);
-    return reject("TITLE_REQUIRED", "a title is required");
-  }
+  const title = fields.title;
 
   const mode = input.mode ?? "personal";
   if (mode === "managed" && !input.releaseShareRef) {
@@ -287,62 +413,16 @@ export async function authorCredential(
     );
   }
 
-  /* ---- 3. Derive the per-entry key and encrypt. ---- */
-  const credentialId = input.id ?? randomId();
-  const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN));
-  let keyBytes: Uint8Array | null = null;
-
-  try {
-    const derived = await derivePersonalEntryKey(vek, salt, credentialId, 1);
-    keyBytes = base64ToBinary(derived.keyBase64);
-
-    const envelope: SecretEnvelope = { u: username, p: input.password };
-    const encryptedSecret = await seal(JSON.stringify(envelope), keyBytes, salt);
-
-    let encryptedTotpSecret: string | undefined;
-    if (input.totpSeedBase32) {
-      const seedBytes = base32ToBytes(input.totpSeedBase32);
-      if (seedBytes.length === 0) {
-        secureZero(vek);
-        if (keyBytes) secureZero(keyBytes);
-        return reject("PASSWORD_REQUIRED", "TOTP seed contained no usable characters");
-      }
-      encryptedTotpSecret = await seal(binaryToBase64(seedBytes), keyBytes, salt);
-      secureZero(seedBytes);
-    }
-
-    /* ---- 4. Register the opaque lookup token. ---- */
-    const indexKey = await deriveDomainIndexKey(vek);
-    const token = await computeLookupToken(canonicalOrigin, indexKey);
-    if (!token.ok) {
-      secureZero(vek);
-      if (keyBytes) secureZero(keyBytes);
-      return reject("ORIGIN_NOT_ABSOLUTE", "could not derive a lookup token");
-    }
-
-    const nextIndex = addToIndex(
-      existingIndex ?? { version: 1, byToken: {} },
-      token.token,
-      credentialId,
-    );
-
-    const record: AuthoredCredentialRecord = {
-      id: credentialId,
-      mode: "personal",
-      encryptedSecret,
-      encryptedTotpSecret,
-      salt: binaryToBase64(salt),
-      version: 1,
-      usernameHint: redactUsername(username),
-      title,
-      origin: canonicalOrigin,
-    };
-
-    return { ok: true, record, index: nextIndex, lookupToken: token.token };
-  } catch {
-    secureZero(vek);
-    return reject("ORIGIN_NOT_ABSOLUTE", "unexpected failure while authoring");
-  } finally {
-    if (keyBytes) secureZero(keyBytes);
-  }
+  /* ---- 3 + 4. Derive the per-entry key, encrypt, register the token.
+   *             (extracted verbatim into sealAndRegisterCredential) ---- */
+  return sealAndRegisterCredential({
+    vek,
+    input,
+    username,
+    title,
+    canonicalOrigin: origin.canonical,
+    credentialId: input.id ?? randomId(),
+    salt: crypto.getRandomValues(new Uint8Array(SALT_LEN)),
+    existingIndex,
+  });
 }

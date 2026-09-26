@@ -97,6 +97,12 @@ export type ManagedAuthoringResult =
     }
   | { readonly ok: false; readonly reason: ManagedAuthoringRejection; readonly detail: string };
 
+/**
+ * Session VEK as the caller hands it over: absent while the vault is locked.
+ * Named so the union is not repeated inline across the file (S4323).
+ */
+type SessionVek = Uint8Array | null | undefined;
+
 export interface ManagedAuthoringInput {
   /** Raw user-supplied origin. Validated, never trusted verbatim. */
   origin: string;
@@ -106,7 +112,7 @@ export interface ManagedAuthoringInput {
   /** Base32 or Base64 TOTP seed; encoded to bytes here. */
   totpSeedBase32?: string;
   /** Session VEK. Copied internally; the caller keeps ownership of this buffer. */
-  vek: Uint8Array | null | undefined;
+  vek: SessionVek;
   /** Fresh opaque reference this credential will be released under. */
   secretRef: string;
   /** Existing index to append to, when the caller already has one. */
@@ -117,6 +123,229 @@ export interface ManagedAuthoringInput {
 
 function reject(reason: ManagedAuthoringRejection, detail: string): ManagedAuthoringResult {
   return { ok: false, reason, detail };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Input validation (extracted from execute, order and codes intact)  */
+/* ------------------------------------------------------------------ */
+
+type ManagedOriginValidation =
+  | { readonly ok: true; readonly canonical: string }
+  | { readonly ok: false; readonly reason: ManagedAuthoringRejection; readonly detail: string };
+
+type ManagedFieldValidation =
+  | { readonly ok: true; readonly username: string; readonly title: string; readonly secretRef: string; readonly vek: Uint8Array }
+  | { readonly ok: false; readonly reason: ManagedAuthoringRejection; readonly detail: string };
+
+/**
+ * Validate the origin BEFORE anything else (client semantics, byte-for-byte).
+ */
+function validateManagedOrigin(origin: string | null | undefined): ManagedOriginValidation {
+  if (origin === null || origin === undefined || origin.trim() === "") {
+    return { ok: false, reason: "ORIGIN_MISSING", detail: "an origin is required" };
+  }
+
+  const trimmedOrigin = origin.trim();
+  // A bare host such as "github.com" is not an origin. Refusing it here is
+  // better than guessing a scheme, because guessing http for an https site
+  // would produce a permanently unfillable credential.
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedOrigin)) {
+    return {
+      ok: false,
+      reason: "ORIGIN_NOT_ABSOLUTE",
+      detail: `origin must be absolute (scheme://host[:port]); got "${trimmedOrigin}"`,
+    };
+  }
+
+  const parsed = parseAbsoluteOrigin(trimmedOrigin);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      reason:
+        parsed.reason === "UNSUPPORTED_SCHEME" ? "ORIGIN_SCHEME_NOT_ALLOWED" : "ORIGIN_NOT_ABSOLUTE",
+      detail: `origin rejected (${parsed.reason})`,
+    };
+  }
+  return { ok: true, canonical: parsed.origin.serialized };
+}
+
+/**
+ * Validate username, password, title, secretRef and VEK — same checks, same
+ * order, same codes as the inline code was. Returns the validated values so
+ * the caller stores exactly what was checked.
+ */
+function validateManagedFields(input: ManagedAuthoringInput): ManagedFieldValidation {
+  const username = input.username?.trim() ?? "";
+  if (username === "") {
+    return { ok: false, reason: "USERNAME_REQUIRED", detail: "a username is required" };
+  }
+  if (!input.password) {
+    return { ok: false, reason: "PASSWORD_REQUIRED", detail: "a password is required" };
+  }
+  const title = input.title?.trim() || username;
+  if (title === "") {
+    return { ok: false, reason: "TITLE_REQUIRED", detail: "a title is required" };
+  }
+  const secretRef = input.secretRef?.trim() ?? "";
+  if (secretRef === "") {
+    return {
+      ok: false,
+      reason: "SECRET_REF_REQUIRED",
+      detail: "a fresh opaque Release Share reference is required",
+    };
+  }
+  if (!input.vek || input.vek.byteLength === 0) {
+    return { ok: false, reason: "VEK_MISSING", detail: "vault is locked: no VEK supplied" };
+  }
+  return { ok: true, username, title, secretRef, vek: input.vek };
+}
+
+/**
+ * Derive the Release Share KEK. Fail closed, no default: a missing or short
+ * server secret is a typed rejection naming the real blocker.
+ */
+async function deriveReleaseShareKekOrReject(
+  secret: SessionVek,
+): Promise<
+  { readonly ok: true; readonly kek: Uint8Array } | { readonly ok: false; readonly rejection: ManagedAuthoringResult }
+> {
+  try {
+    const kek = await deriveReleaseShareKek(secret);
+    return { ok: true, kek };
+  } catch (error) {
+    const detail =
+      error instanceof ReleaseShareKekError ? error.message : "Release Share KEK unavailable";
+    return { ok: false, rejection: reject("RELEASE_SHARE_KEK_INVALID", detail) };
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Secret material produced during a single execute()                 */
+/* ------------------------------------------------------------------ */
+
+/** Key buffers owned by the caller's `finally`; zeroized there, as before. */
+interface ManagedSealBuffers {
+  keyBytes: Uint8Array | null;
+  seedBytes: Uint8Array | null;
+}
+
+type ManagedSealResult =
+  | {
+      readonly ok: true;
+      readonly encryptedSecret: string;
+      readonly encryptedTotpSecret?: string;
+      readonly index: OpaqueIndex;
+      readonly lookupToken: string;
+    }
+  | { readonly ok: false; readonly reason: ManagedAuthoringRejection; readonly detail: string };
+
+type ManagedPersistResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: ManagedAuthoringRejection; readonly detail: string };
+
+/**
+ * Steps 4–6 — derive the entry key, seal the envelopes, register the token.
+ *
+ * EXTRACTED VERBATIM from `execute`: same derivation inputs, same rejection
+ * codes, same index mutation. No try here on purpose — a throw must reach
+ * `execute`'s catch so it becomes the same INTERNAL_ERROR as before. The
+ * key/seed buffers are handed back through `buffers` for the caller's
+ * `finally` to zeroize, exactly where the inline code did it.
+ */
+async function sealManagedSecrets(args: {
+  vek: Uint8Array;
+  releaseShare: Uint8Array;
+  input: ManagedAuthoringInput;
+  username: string;
+  canonicalOrigin: string;
+  credentialId: string;
+  salt: Uint8Array;
+  existingIndex: OpaqueIndex | null | undefined;
+  buffers: ManagedSealBuffers;
+}): Promise<ManagedSealResult> {
+  const { vek, releaseShare, input, username, canonicalOrigin, credentialId, salt, buffers } =
+    args;
+
+  /* Step 4: EntryKey = HKDF(VEK || ReleaseShare, salt, context). */
+  const derived = await deriveManagedEntryKey(vek, releaseShare, salt, credentialId, ENTRY_VERSION);
+  const keyBytes = base64ToBinary(derived.keyBase64);
+  buffers.keyBytes = keyBytes;
+
+  /* Step 5: seal the {u, p} envelope (username travels with the password). */
+  const envelope = { u: username, p: input.password };
+  const encryptedSecret = await seal(JSON.stringify(envelope), keyBytes, salt);
+
+  let encryptedTotpSecret: string | undefined;
+  if (input.totpSeedBase32) {
+    const seedBytes = base32ToBytes(input.totpSeedBase32);
+    buffers.seedBytes = seedBytes;
+    if (seedBytes.length === 0) {
+      return { ok: false, reason: "TOTP_SEED_INVALID", detail: "TOTP seed contained no usable characters" };
+    }
+    encryptedTotpSecret = await seal(binaryToBase64(seedBytes), keyBytes, salt);
+  }
+
+  /* Step 6: opaque lookup token — origin is derived into, never stored. */
+  const indexKey = await deriveDomainIndexKey(vek);
+  const token = await computeLookupToken(canonicalOrigin, indexKey);
+  if (!token.ok) {
+    return { ok: false, reason: "ORIGIN_NOT_ABSOLUTE", detail: "could not derive a lookup token" };
+  }
+
+  const nextIndex = addToIndex(
+    args.existingIndex ?? { version: 1, byToken: {} },
+    token.token,
+    credentialId,
+  );
+
+  return { ok: true, encryptedSecret, encryptedTotpSecret, index: nextIndex, lookupToken: token.token };
+}
+
+/**
+ * Step 7 — wrap the Release Share and persist the opaque blob.
+ *
+ * EXTRACTED VERBATIM including its catch: a KEK failure still surfaces as
+ * RELEASE_SHARE_KEK_INVALID, anything else as RELEASE_SHARE_PERSIST_FAILED.
+ */
+async function wrapAndPersistShare(
+  kek: Uint8Array,
+  releaseShare: Uint8Array,
+  secretRef: string,
+  store: IReleaseShareStore,
+): Promise<ManagedPersistResult> {
+  try {
+    const wrappedShare = await wrapReleaseShare(kek, releaseShare, secretRef);
+    await store.save({ secretRef, wrappedShare, createdAt: new Date() });
+    return { ok: true };
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : "unknown failure";
+    const detail =
+      error instanceof ReleaseShareKekError
+        ? error.message
+        : `could not persist the wrapped Release Share: ${cause}`;
+    const reason: ManagedAuthoringRejection =
+      error instanceof ReleaseShareKekError ? "RELEASE_SHARE_KEK_INVALID" : "RELEASE_SHARE_PERSIST_FAILED";
+    return { ok: false, reason, detail };
+  }
+}
+
+/**
+ * Zeroize every buffer one execute() created — same set, same order as the
+ * inline `finally` (key and seed buffers first through their holders).
+ */
+function zeroizeManagedSecrets(parts: {
+  vekCopy: Uint8Array;
+  releaseShare: Uint8Array;
+  salt: Uint8Array;
+  buffers: ManagedSealBuffers;
+  kek: Uint8Array;
+}): void {
+  secureZero(parts.vekCopy);
+  secureZero(parts.releaseShare);
+  secureZero(parts.salt);
+  if (parts.buffers.keyBytes) secureZero(parts.buffers.keyBytes);
+  if (parts.buffers.seedBytes) secureZero(parts.buffers.seedBytes);
+  secureZero(parts.kek);
 }
 
 /**
@@ -155,160 +384,73 @@ export class ManagedAuthoringUseCase {
      * Raw 32-byte server secret backing the Release Share KEK. Never defaulted:
      * a missing/short value is a typed, fail-closed rejection.
      */
-    private releaseShareKekSecret: Uint8Array | null | undefined,
+    private releaseShareKekSecret: SessionVek,
   ) {}
 
   async execute(input: ManagedAuthoringInput): Promise<ManagedAuthoringResult> {
     /* ---- 1. Validate the origin BEFORE anything else (client semantics). ---- */
-    if (input.origin === null || input.origin === undefined || input.origin.trim() === "") {
-      return reject("ORIGIN_MISSING", "an origin is required");
-    }
-
-    const trimmedOrigin = input.origin.trim();
-    // A bare host such as "github.com" is not an origin. Refusing it here is
-    // better than guessing a scheme, because guessing http for an https site
-    // would produce a permanently unfillable credential.
-    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedOrigin)) {
-      return reject(
-        "ORIGIN_NOT_ABSOLUTE",
-        `origin must be absolute (scheme://host[:port]); got "${trimmedOrigin}"`,
-      );
-    }
-
-    const parsed = parseAbsoluteOrigin(trimmedOrigin);
-    if (!parsed.ok) {
-      return reject(
-        parsed.reason === "UNSUPPORTED_SCHEME" ? "ORIGIN_SCHEME_NOT_ALLOWED" : "ORIGIN_NOT_ABSOLUTE",
-        `origin rejected (${parsed.reason})`,
-      );
-    }
-    const canonicalOrigin = parsed.origin.serialized;
+    const origin = validateManagedOrigin(input.origin);
+    if (!origin.ok) return reject(origin.reason, origin.detail);
 
     /* ---- 2. Validate the rest of the input. ---- */
-    const username = input.username?.trim() ?? "";
-    if (username === "") {
-      return reject("USERNAME_REQUIRED", "a username is required");
-    }
-    if (!input.password) {
-      return reject("PASSWORD_REQUIRED", "a password is required");
-    }
-    const title = input.title?.trim() || username;
-    if (title === "") {
-      return reject("TITLE_REQUIRED", "a title is required");
-    }
-    const secretRef = input.secretRef?.trim() ?? "";
-    if (secretRef === "") {
-      return reject(
-        "SECRET_REF_REQUIRED",
-        "a fresh opaque Release Share reference is required",
-      );
-    }
-    if (!input.vek || input.vek.byteLength === 0) {
-      return reject("VEK_MISSING", "vault is locked: no VEK supplied");
-    }
+    const fields = validateManagedFields(input);
+    if (!fields.ok) return reject(fields.reason, fields.detail);
+    const { username, title, secretRef } = fields;
 
     /* ---- 3. Release Share KEK: fail closed, no default. ---- */
-    let kek: Uint8Array | null = null;
-    try {
-      kek = await deriveReleaseShareKek(this.releaseShareKekSecret);
-    } catch (error) {
-      const detail =
-        error instanceof ReleaseShareKekError ? error.message : "Release Share KEK unavailable";
-      return reject("RELEASE_SHARE_KEK_INVALID", detail);
-    }
+    const kekResult = await deriveReleaseShareKekOrReject(this.releaseShareKekSecret);
+    if (!kekResult.ok) return kekResult.rejection;
+    const kek = kekResult.kek;
 
     /* ------------------------------------------------------------------
      * Everything below creates secret material. It is all zeroized in the
      * `finally`, including the KEK and a private copy of the VEK.
      * ------------------------------------------------------------------ */
-    const vekCopy = new Uint8Array(input.vek);
+    const vekCopy = new Uint8Array(fields.vek);
     const releaseShare = crypto.getRandomValues(new Uint8Array(RELEASE_SHARE_LEN));
     const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN));
-    let keyBytes: Uint8Array | null = null;
-    let seedBytes: Uint8Array | null = null;
+    const buffers: ManagedSealBuffers = { keyBytes: null, seedBytes: null };
 
     try {
       const credentialId = input.id ?? crypto.randomUUID();
 
-      /* ---- 4. EntryKey = HKDF(VEK || ReleaseShare, salt, context). ---- */
-      const derived = await deriveManagedEntryKey(
-        vekCopy,
+      /* Steps 4–6 — entry key, envelope sealing, opaque lookup token. */
+      const sealed = await sealManagedSecrets({
+        vek: vekCopy,
         releaseShare,
+        input,
+        username,
+        canonicalOrigin: origin.canonical,
+        credentialId,
         salt,
-        credentialId,
-        ENTRY_VERSION,
-      );
-      keyBytes = base64ToBinary(derived.keyBase64);
+        existingIndex: input.existingIndex,
+        buffers,
+      });
+      if (!sealed.ok) return reject(sealed.reason, sealed.detail);
 
-      /* ---- 5. Seal the {u, p} envelope (username travels with the password). ---- */
-      const envelope = { u: username, p: input.password };
-      const encryptedSecret = await seal(JSON.stringify(envelope), keyBytes, salt);
-
-      let encryptedTotpSecret: string | undefined;
-      if (input.totpSeedBase32) {
-        seedBytes = base32ToBytes(input.totpSeedBase32);
-        if (seedBytes.length === 0) {
-          return reject("TOTP_SEED_INVALID", "TOTP seed contained no usable characters");
-        }
-        encryptedTotpSecret = await seal(binaryToBase64(seedBytes), keyBytes, salt);
-      }
-
-      /* ---- 6. Opaque lookup token: origin is derived into, never stored. ---- */
-      const indexKey = await deriveDomainIndexKey(vekCopy);
-      const token = await computeLookupToken(canonicalOrigin, indexKey);
-      if (!token.ok) {
-        return reject("ORIGIN_NOT_ABSOLUTE", "could not derive a lookup token");
-      }
-
-      const nextIndex = addToIndex(
-        input.existingIndex ?? { version: 1, byToken: {} },
-        token.token,
-        credentialId,
-      );
-
-      /* ---- 7. Wrap the Release Share and persist the opaque blob. ---- */
-      try {
-        const wrappedShare = await wrapReleaseShare(kek, releaseShare, secretRef);
-        await this.releaseShareStore.save({
-          secretRef,
-          wrappedShare,
-          createdAt: new Date(),
-        });
-      } catch (error) {
-        const cause = error instanceof Error ? error.message : "unknown failure";
-        const detail =
-          error instanceof ReleaseShareKekError
-            ? error.message
-            : `could not persist the wrapped Release Share: ${cause}`;
-        const reason: ManagedAuthoringRejection =
-          error instanceof ReleaseShareKekError ? "RELEASE_SHARE_KEK_INVALID" : "RELEASE_SHARE_PERSIST_FAILED";
-        return reject(reason, detail);
-      }
+      /* Step 7 — wrap the Release Share and persist the opaque blob. */
+      const persisted = await wrapAndPersistShare(kek, releaseShare, secretRef, this.releaseShareStore);
+      if (!persisted.ok) return reject(persisted.reason, persisted.detail);
 
       const record: AuthoredCredentialRecord = {
         id: credentialId,
         mode: "managed",
-        encryptedSecret,
-        encryptedTotpSecret,
+        encryptedSecret: sealed.encryptedSecret,
+        encryptedTotpSecret: sealed.encryptedTotpSecret,
         salt: binaryToBase64(salt),
         version: ENTRY_VERSION,
         releaseShareRef: secretRef,
         usernameHint: redactUsername(username),
         title,
-        origin: canonicalOrigin,
+        origin: origin.canonical,
       };
 
-      return { ok: true, record, index: nextIndex, lookupToken: token.token };
+      return { ok: true, record, index: sealed.index, lookupToken: sealed.lookupToken };
     } catch (error) {
       const detail = error instanceof Error ? error.message : "unknown failure";
       return reject("INTERNAL_ERROR", `unexpected failure while authoring: ${detail}`);
     } finally {
-      secureZero(vekCopy);
-      secureZero(releaseShare);
-      secureZero(salt);
-      if (keyBytes) secureZero(keyBytes);
-      if (seedBytes) secureZero(seedBytes);
-      if (kek) secureZero(kek);
+      zeroizeManagedSecrets({ vekCopy, releaseShare, salt, buffers, kek });
     }
   }
 }

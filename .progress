@@ -253,3 +253,16 @@
 - [x] Suite: 48/48 suites, 845 passed / 855 total (baseline 47/836/846 preserved)
 - [x] `npx tsc --noEmit`: 809 errors in 15 files — identical to baseline; `server.ts` and new test clean
 - [ ] ODD doc row O5.9 -> done (orchestrator)
+
+## SonarQube S3776 Cognitive Complexity Refactor (2026-09-26)
+- [x] Baseline verificado: 6 open S3776 (el prompt decía 16 — 10 ya estaban cerrados), Jest 48/845/855, tsc 809
+- [x] `autofill-guard.ts` `evaluateAutofill` (32) — extract `describeOriginParse`, `frameContextDecision`, `formSubmissionDecision`
+- [x] `credential-authoring.ts` `authorCredential` (29) — extract `validateAuthoringOrigin`, `validateAuthoringFields`, `sealAndRegisterCredential`
+- [x] `credential-release.ts` `releaseCredential` (26) — extract `prepareRelease`, `deriveEntryKey`, `decryptEnvelope`, `buildReleaseOutcome`
+- [x] `managed-authoring.use-case.ts` `execute` (37) — extract validations, KEK, seal, persist, zeroize helpers
+- [x] `auditor.ts` `requestCapability` (17) — extract `fetchPlusMaterial`
+- [x] `server.ts` `handleVaultManagedCredential` (20) — extract `decodeManagedVek` + `sendJson`/`sendError`
+- [x] Fix 2 regresiones propias (S4323 union `Uint8Array | null | undefined` ×3 → alias `SessionVek`; S1854 `title` sin usar en `sealManagedSecrets`)
+- [x] Verificación Sonar final: **open S3776 = 0**, 0 issues nuevas, solo 4 preexistentes no-S3776 (S125/S1871/S4624×2)
+- [x] Verificación final: Jest 48/48, 845 passed / 855 total; `tsc --noEmit` = 809 (idéntico al baseline)
+- [x] Orden de checks de seguridad y códigos de bloqueo intactos (tests del contrato sin tocar)

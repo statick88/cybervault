@@ -39,6 +39,7 @@ import {
   parseAbsoluteOrigin,
   resolveAgainstOrigin,
   type CanonicalOrigin,
+  type OriginParseResult,
 } from "./origin";
 
 /** Operations that may put a secret into a page. */
@@ -135,6 +136,124 @@ function block(
   return { allowed: false, reason, detail, checksPassed };
 }
 
+/** Human-readable outcome of an origin parse, for audit-safe detail strings. */
+function describeOriginParse(result: OriginParseResult): string {
+  return result.ok ? "ok" : result.reason;
+}
+
+/**
+ * Contract step 3: the frame context must be coherent, and authorized.
+ *
+ * EXTRACTED VERBATIM from `evaluateAutofill` — the checks, their order, the
+ * block reasons and every detail string are byte-for-byte what they were
+ * inline. Returns null when the frame context is acceptable (including when
+ * there is no frame context at all, i.e. a top-level document).
+ *
+ * A frame is authorized only when BOTH the frame and the top-level context are
+ * the credential origin. That second condition is the whole point: it stops
+ * `evil.example` from hosting an <iframe src="https://github.com/login"> and
+ * harvesting what we inject into it.
+ */
+function frameContextDecision(
+  request: AutofillGuardRequest,
+  credential: CanonicalOrigin,
+  passed: string[],
+): AutofillGuardBlock | null {
+  const hasFrame = request.frameOrigin !== null && request.frameOrigin !== undefined;
+  const hasTopLevel = request.topLevelOrigin !== null && request.topLevelOrigin !== undefined;
+
+  if (hasFrame !== hasTopLevel) {
+    return block(
+      "FRAME_CONTEXT_INCONSISTENT",
+      hasFrame
+        ? "frameOrigin supplied without topLevelOrigin; frame context cannot be trusted"
+        : "topLevelOrigin supplied without frameOrigin; frame context cannot be trusted",
+      passed,
+    );
+  }
+
+  if (hasFrame && hasTopLevel) {
+    const frame = parseAbsoluteOrigin(request.frameOrigin);
+    const topLevel = parseAbsoluteOrigin(request.topLevelOrigin);
+    if (!frame.ok || !topLevel.ok) {
+      return block(
+        "FRAME_CONTEXT_INCONSISTENT",
+        `frame context unusable (frame=${describeOriginParse(frame)}, topLevel=${describeOriginParse(topLevel)})`,
+        passed,
+      );
+    }
+    if (frame.origin.serialized !== credential.serialized) {
+      return block(
+        "UNAUTHORIZED_FRAME",
+        `frame origin ${frame.origin.serialized} is not the credential origin ${credential.serialized}`,
+        passed,
+      );
+    }
+    if (topLevel.origin.serialized !== credential.serialized) {
+      return block(
+        "UNAUTHORIZED_FRAME",
+        `top-level origin ${topLevel.origin.serialized} is not the credential origin ${credential.serialized}; refusing to release into an embedded frame`,
+        passed,
+      );
+    }
+    passed.push("frame-authorized");
+  }
+
+  return null;
+}
+
+/**
+ * Contract steps 5–6: the form's action, and any explicit submit target,
+ * must both resolve back to the credential origin.
+ *
+ * EXTRACTED VERBATIM from `evaluateAutofill`; order, block reasons and detail
+ * strings are unchanged. `passed` is appended to in place, exactly as before.
+ */
+function formSubmissionDecision(
+  request: AutofillGuardRequest,
+  credential: CanonicalOrigin,
+  document: CanonicalOrigin,
+  passed: string[],
+): AutofillGuardBlock | null {
+  /* 5. The form must post back to the credential origin.
+   *
+   * An absent or empty action means self-submit, which resolveAgainstOrigin
+   * handles. A present action pointing elsewhere is the classic
+   * "<form action=\"https://evil.example\">" credential harvester. */
+  const formTarget = resolveAgainstOrigin(request.formAction, document.serialized);
+  if (!formTarget.ok) {
+    return block(
+      "FORM_ACTION_UNRESOLVABLE",
+      `form action could not be resolved (${formTarget.reason})`,
+      passed,
+    );
+  }
+  const formMatch = compareAbsoluteOrigins(credential.serialized, formTarget.origin.serialized);
+  if (!formMatch.equal) {
+    return block(
+      "FORM_ACTION_ORIGIN_MISMATCH",
+      `form posts to ${formTarget.origin.serialized}, not the credential origin ${credential.serialized}`,
+      passed,
+    );
+  }
+  passed.push("form-action-origin");
+
+  /* 6. An explicit submit target (formaction) gets the same treatment. */
+  if (request.submitOrigin !== null && request.submitOrigin !== undefined) {
+    const submitMatch = compareAbsoluteOrigins(credential.serialized, request.submitOrigin);
+    if (!submitMatch.equal) {
+      return block(
+        "SUBMIT_ORIGIN_MISMATCH",
+        `submit target ${request.submitOrigin} is not the credential origin ${credential.serialized} (${submitMatch.reason})`,
+        passed,
+      );
+    }
+    passed.push("submit-origin");
+  }
+
+  return null;
+}
+
 /**
  * Evaluate whether a secret may be released into the described context.
  *
@@ -142,6 +261,12 @@ function block(
  * structural rejections come first, and the frame check runs before the
  * form-action check so that an iframe credential-harvest is reported as such
  * rather than as a confusing form mismatch.
+ *
+ * The frame and form checks live in `frameContextDecision` and
+ * `formSubmissionDecision`, extracted without altering their internal order;
+ * this function orchestrates them in the same sequence they ran inline:
+ * operation → credential origin → document origin → frame → exact match →
+ * form action → submit target.
  */
 export function evaluateAutofill(request: AutofillGuardRequest): AutofillDecision {
   const passed: string[] = [];
@@ -190,54 +315,9 @@ export function evaluateAutofill(request: AutofillGuardRequest): AutofillDecisio
   }
   passed.push("document-origin-valid");
 
-  /* 3. Frame context must be coherent, and authorized.
-   *
-   * A frame is authorized only when BOTH the frame and the top-level context are
-   * the credential origin. That second condition is the whole point: it stops
-   * `evil.example` from hosting an <iframe src="https://github.com/login"> and
-   * harvesting what we inject into it. */
-  const hasFrame = request.frameOrigin !== null && request.frameOrigin !== undefined;
-  const hasTopLevel =
-    request.topLevelOrigin !== null && request.topLevelOrigin !== undefined;
-
-  if (hasFrame !== hasTopLevel) {
-    return block(
-      "FRAME_CONTEXT_INCONSISTENT",
-      hasFrame
-        ? "frameOrigin supplied without topLevelOrigin; frame context cannot be trusted"
-        : "topLevelOrigin supplied without frameOrigin; frame context cannot be trusted",
-      passed,
-    );
-  }
-
-  if (hasFrame && hasTopLevel) {
-    const frame = parseAbsoluteOrigin(request.frameOrigin);
-    const topLevel = parseAbsoluteOrigin(request.topLevelOrigin);
-    if (!frame.ok || !topLevel.ok) {
-      return block(
-        "FRAME_CONTEXT_INCONSISTENT",
-        `frame context unusable (frame=${frame.ok ? "ok" : frame.reason}, topLevel=${
-          topLevel.ok ? "ok" : topLevel.reason
-        })`,
-        passed,
-      );
-    }
-    if (frame.origin.serialized !== credential.origin.serialized) {
-      return block(
-        "UNAUTHORIZED_FRAME",
-        `frame origin ${frame.origin.serialized} is not the credential origin ${credential.origin.serialized}`,
-        passed,
-      );
-    }
-    if (topLevel.origin.serialized !== credential.origin.serialized) {
-      return block(
-        "UNAUTHORIZED_FRAME",
-        `top-level origin ${topLevel.origin.serialized} is not the credential origin ${credential.origin.serialized}; refusing to release into an embedded frame`,
-        passed,
-      );
-    }
-    passed.push("frame-authorized");
-  }
+  /* 3. Frame context must be coherent, and authorized. */
+  const frameBlock = frameContextDecision(request, credential.origin, passed);
+  if (frameBlock) return frameBlock;
 
   /* 4. Absolute ExactMatch: the page itself must BE the credential origin. */
   const pageMatch = compareAbsoluteOrigins(
@@ -253,47 +333,9 @@ export function evaluateAutofill(request: AutofillGuardRequest): AutofillDecisio
   }
   passed.push("exact-match");
 
-  /* 5. The form must post back to the credential origin.
-   *
-   * An absent or empty action means self-submit, which resolveAgainstOrigin
-   * handles. A present action pointing elsewhere is the classic
-   * "<form action=\"https://evil.example\">" credential harvester. */
-  const formTarget = resolveAgainstOrigin(request.formAction, document.origin.serialized);
-  if (!formTarget.ok) {
-    return block(
-      "FORM_ACTION_UNRESOLVABLE",
-      `form action could not be resolved (${formTarget.reason})`,
-      passed,
-    );
-  }
-  const formMatch = compareAbsoluteOrigins(
-    credential.origin.serialized,
-    formTarget.origin.serialized,
-  );
-  if (!formMatch.equal) {
-    return block(
-      "FORM_ACTION_ORIGIN_MISMATCH",
-      `form posts to ${formTarget.origin.serialized}, not the credential origin ${credential.origin.serialized}`,
-      passed,
-    );
-  }
-  passed.push("form-action-origin");
-
-  /* 6. An explicit submit target (formaction) gets the same treatment. */
-  if (request.submitOrigin !== null && request.submitOrigin !== undefined) {
-    const submitMatch = compareAbsoluteOrigins(
-      credential.origin.serialized,
-      request.submitOrigin,
-    );
-    if (!submitMatch.equal) {
-      return block(
-        "SUBMIT_ORIGIN_MISMATCH",
-        `submit target ${request.submitOrigin} is not the credential origin ${credential.origin.serialized} (${submitMatch.reason})`,
-        passed,
-      );
-    }
-    passed.push("submit-origin");
-  }
+  /* 5–6. Form action and explicit submit target. */
+  const formBlock = formSubmissionDecision(request, credential.origin, document.origin, passed);
+  if (formBlock) return formBlock;
 
   return {
     allowed: true,

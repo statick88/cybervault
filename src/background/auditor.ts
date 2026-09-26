@@ -500,6 +500,84 @@ async function readSessionVek(): Promise<Uint8Array | null> {
   }
 }
 
+/** Success shape of the Plus capability + public-key round trip. */
+interface PlusMaterialSuccess {
+  readonly ok: true;
+  readonly capability: { success?: boolean; challengeRequired?: boolean; error?: string };
+  readonly plusPublicKey: string;
+}
+
+/**
+ * Failure shapes: a plain detail, or a step-up challenge. Matches the
+ * `ReleaseDeps['requestCapability']` contract so callers can pass them on.
+ */
+type PlusMaterialResult =
+  | PlusMaterialSuccess
+  | { readonly ok: false; readonly detail: string }
+  | { readonly ok: false; readonly challengeRequired: true };
+
+/**
+ * Plus round trip for a managed release: capability request, then public key.
+ *
+ * EXTRACTED VERBATIM from `buildReleaseDeps().requestCapability` — same
+ * endpoints, headers, request bodies, status handling, failure detail
+ * strings, and the same evaluation order (challenge check before success
+ * check, public key before release).
+ */
+async function fetchPlusMaterial(args: {
+  plusBase: string;
+  serviceSecret: string;
+  token: string;
+  userId: string;
+  secretRef: string;
+  operation: "AUTOFILL" | "VIEW" | "TOTP";
+  signal: AbortSignal;
+}): Promise<PlusMaterialResult> {
+  const capRes = await fetch(`${args.plusBase}/api/v1/capabilities/request`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Core-Service": "cybervault-core",
+      "X-Service-Secret": args.serviceSecret,
+      Authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({
+      userId: args.userId,
+      resourceId: args.secretRef,
+      operation: args.operation,
+      secretRef: args.secretRef,
+      assurance: 2,
+      context: { userAgent: "cybervault-extension", timestamp: Date.now() },
+    }),
+    signal: args.signal,
+  });
+
+  if (!capRes.ok) {
+    return { ok: false, detail: `capability request failed (${capRes.status})` };
+  }
+  const cap = (await capRes.json()) as PlusMaterialSuccess["capability"];
+  if (cap.challengeRequired) {
+    return { ok: false, challengeRequired: true };
+  }
+  if (cap.success === false) {
+    return { ok: false, detail: cap.error ?? "capability denied" };
+  }
+
+  const pubRes = await fetch(`${args.plusBase}/api/v1/crypto/public-key`, {
+    method: "GET",
+    signal: args.signal,
+  });
+  if (!pubRes.ok) {
+    return { ok: false, detail: `public key unavailable (${pubRes.status})` };
+  }
+  const pub = (await pubRes.json()) as { publicKey?: string };
+  if (!pub.publicKey) {
+    return { ok: false, detail: "public key missing" };
+  }
+
+  return { ok: true, capability: cap, plusPublicKey: pub.publicKey };
+}
+
 function buildReleaseDeps(): ReleaseDeps {
   return {
     getVek: readSessionVek,
@@ -549,51 +627,16 @@ function buildReleaseDeps(): ReleaseDeps {
       const timer = setTimeout(() => controller.abort(), 10_000);
 
       try {
-        const capRes = await fetch(`${plusBase}/api/v1/capabilities/request`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Core-Service": "cybervault-core",
-            "X-Service-Secret": serviceSecret,
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            userId,
-            resourceId: secretRef,
-            operation,
-            secretRef,
-            assurance: 2,
-            context: { userAgent: "cybervault-extension", timestamp: Date.now() },
-          }),
+        const plus = await fetchPlusMaterial({
+          plusBase,
+          serviceSecret,
+          token,
+          userId,
+          secretRef,
+          operation,
           signal: controller.signal,
         });
-
-        if (!capRes.ok) {
-          return { ok: false, detail: `capability request failed (${capRes.status})` };
-        }
-        const cap = (await capRes.json()) as {
-          success?: boolean;
-          challengeRequired?: boolean;
-          error?: string;
-        };
-        if (cap.challengeRequired) {
-          return { ok: false, challengeRequired: true };
-        }
-        if (cap.success === false) {
-          return { ok: false, detail: cap.error ?? "capability denied" };
-        }
-
-        const pubRes = await fetch(`${plusBase}/api/v1/crypto/public-key`, {
-          method: "GET",
-          signal: controller.signal,
-        });
-        if (!pubRes.ok) {
-          return { ok: false, detail: `public key unavailable (${pubRes.status})` };
-        }
-        const pub = (await pubRes.json()) as { publicKey?: string };
-        if (!pub.publicKey) {
-          return { ok: false, detail: "public key missing" };
-        }
+        if (!plus.ok) return plus;
 
         const relRes = await fetch(`${coreBase}/api/v1/managed/release`, {
           method: "POST",
@@ -603,8 +646,8 @@ function buildReleaseDeps(): ReleaseDeps {
           },
           body: JSON.stringify({
             credentialId,
-            capabilityToken: cap,
-            plusPublicKey: pub.publicKey,
+            capabilityToken: plus.capability,
+            plusPublicKey: plus.plusPublicKey,
           }),
           signal: controller.signal,
         });

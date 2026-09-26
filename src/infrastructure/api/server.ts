@@ -1054,6 +1054,28 @@ export class ApiServer {
    * unlock returns ciphertext only), so a missing `vek` fails closed with the
    * use case's `VEK_MISSING` — this handler never generates or derives one.
    */
+  /**
+   * Decode the caller-supplied session VEK from a managed-authoring body.
+   *
+   * EXTRACTED VERBATIM from `handleVaultManagedCredential`: an undecodable
+   * value is a malformed body, and an absent/empty one is left null so the
+   * use case refuses with VEK_MISSING.
+   */
+  private decodeManagedVek(
+    data: Record<string, unknown>,
+  ): { readonly vek: Uint8Array | null } | { readonly error: string } {
+    if (typeof data.vek === "string" && data.vek.trim() !== "") {
+      let vek: Uint8Array;
+      try {
+        vek = base64ToBinary(data.vek.trim());
+      } catch {
+        return { error: "vek must be base64-encoded" };
+      }
+      return { vek: vek.byteLength === 0 ? null : vek };
+    }
+    return { vek: null };
+  }
+
   private async handleVaultManagedCredential(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1062,44 +1084,34 @@ export class ApiServer {
     try {
       const userId = (req as AuthenticatedRequest).userId;
       if (!userId) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Authentication required" }));
+        this.sendError(res, 401, "Authentication required");
         return;
       }
 
       // Verify vault ownership
       const vault = await this.vaultRepository.findByVaultIdAndOwnerId(vaultId, userId);
       if (!vault) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Vault not found" }));
+        this.sendError(res, 404, "Vault not found");
         return;
       }
 
       // Refuse BEFORE authoring: without a repository the wrapped share would
       // be written and the credential row would not exist.
       if (!this.credentialRepository) {
-        res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Credential repository not configured" }));
+        this.sendError(res, 503, "Credential repository not configured");
         return;
       }
 
       // Parse authoring input from the request body
       const data = await this.parseJsonBody(req);
 
-      // The session VEK is supplied by the only party that holds it. Decode
-      // it here; an undecodable value is a malformed body, and an absent one
-      // is left null so the use case refuses with VEK_MISSING.
-      let vek: Uint8Array | null = null;
-      if (typeof data.vek === "string" && data.vek.trim() !== "") {
-        try {
-          vek = base64ToBinary(data.vek.trim());
-        } catch {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "vek must be base64-encoded" }));
-          return;
-        }
-        if (vek.byteLength === 0) vek = null;
+      // The session VEK is supplied by the only party that holds it.
+      const decodedVek = this.decodeManagedVek(data);
+      if ("error" in decodedVek) {
+        this.sendError(res, 400, decodedVek.error);
+        return;
       }
+      const vek = decodedVek.vek;
 
       try {
         // Same store instance and same KEK secret as the release route.
@@ -1123,14 +1135,11 @@ export class ApiServer {
         });
 
         if (!result.ok) {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              error: this.managedAuthoringError(result.reason, result.detail),
-              reason: result.reason,
-              detail: result.detail,
-            }),
-          );
+          this.sendJson(res, 403, {
+            error: this.managedAuthoringError(result.reason, result.detail),
+            reason: result.reason,
+            detail: result.detail,
+          });
           return;
         }
 
@@ -1155,26 +1164,22 @@ export class ApiServer {
 
         const persisted = await this.credentialRepository.save(credential);
 
-        res.writeHead(201, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            success: true,
-            credentialId: persisted.id.toString(),
-            // The canonical origin travels ONLY here, so the client can bind
-            // ExactMatch; it is never written to the credential row.
-            record: result.record,
-            lookupToken: result.lookupToken,
-            index: result.index,
-          }),
-        );
+        this.sendJson(res, 201, {
+          success: true,
+          credentialId: persisted.id.toString(),
+          // The canonical origin travels ONLY here, so the client can bind
+          // ExactMatch; it is never written to the credential row.
+          record: result.record,
+          lookupToken: result.lookupToken,
+          index: result.index,
+        });
       } finally {
         // The caller (this request) owns the decoded VEK copy.
         if (vek) secureZero(vek);
       }
     } catch (error) {
       if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Failed to process managed authoring" }));
+        this.sendError(res, 500, "Failed to process managed authoring");
       }
     }
   }

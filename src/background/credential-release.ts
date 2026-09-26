@@ -284,6 +284,11 @@ export interface ReleaseRequest {
 
 /**
  * Release a credential to a page, or refuse with a reason.
+ *
+ * Steps 1–3 (origin binding, record lookup, guard) are extracted verbatim
+ * into `prepareRelease`; step 4 into `deriveEntryKey`; step 5 into
+ * `decryptEnvelope`; the TOTP/credential assembly into `buildReleaseOutcome`.
+ * The order below is unchanged: binding proof → guard → key → decrypt.
  */
 export async function releaseCredential(
   request: ReleaseRequest,
@@ -299,138 +304,215 @@ export async function releaseCredential(
   let entryKeyBytes: Uint8Array | null = null;
 
   try {
-    const { deriveDomainIndexKey } = await import("../domain/services/autofill/domain-index");
-    const indexKey = await deriveDomainIndexKey(vek);
-
-    /* Step 1 — prove the origin binding. */
-    const token = await computeLookupToken(request.origin, indexKey);
-    if (!token.ok) return deny("ORIGIN_UNUSABLE", "requested origin is unusable");
-
-    const index = await deps.getIndex();
-    const bound = await indexEntryMatchesOrigin(
-      index,
-      token.token,
-      request.credentialId,
-      token.origin.serialized,
-      indexKey,
-    );
-    if (!bound) {
-      return deny(
-        "ORIGIN_NOT_BOUND",
-        "credential is not bound to the requested origin",
-      );
-    }
-
-    /* Step 2 — the record must exist and match the mode we expect. */
-    const record = await deps.getRecord(request.credentialId);
-    if (!record) return deny("CREDENTIAL_NOT_FOUND", "no such credential");
-
-    if (record.mode === "managed" && !record.releaseShareRef) {
-      return deny("MANAGED_REQUIRED", "managed credential has no Release Share reference");
-    }
-
-    /* Step 3 — the guard, before any decryption. */
-    const decision = evaluateAutofill({
-      operation: "AUTOFILL",
-      credentialOrigin: token.origin.serialized,
-      documentOrigin: request.documentOrigin,
-      topLevelOrigin: request.isFramed ? request.topLevelOrigin : null,
-      frameOrigin: request.isFramed ? request.documentOrigin : null,
-    });
-    if (!decision.allowed) {
-      return deny("GUARD_BLOCKED", `${decision.reason}: ${decision.detail}`);
-    }
+    /* Steps 1–3 — prove the origin binding, load the record, run the guard
+     * (before any decryption). */
+    const prep = await prepareRelease(request, deps, vek);
+    if (!prep.ok) return prep.denial;
 
     /* Step 4 — derive the per-entry key. */
-    const salt = base64ToBinary(record.salt);
-    let entryKeyBase64: string;
-
-    if (record.mode === "personal") {
-      const derived = await derivePersonalEntryKey(
-        vek,
-        salt,
-        record.id,
-        record.version,
-      );
-      entryKeyBase64 = derived.keyBase64;
-    } else {
-      const capability = await deps.requestCapability({
-        credentialId: record.id,
-        secretRef: record.releaseShareRef as string,
-        operation: "AUTOFILL",
-      });
-
-      if ("challengeRequired" in capability && capability.challengeRequired) {
-        // A step-up is required. That is a legitimate outcome, not an error,
-        // and it must NOT be reported to the page as a generic failure.
-        return deny(
-          "CHALLENGE_REQUIRED",
-          "policy requires a step-up challenge before release",
-        );
-      }
-      if (!capability.ok) {
-        return deny("CAPABILITY_DENIED", capability.detail);
-      }
-
-      const releaseShare = base64ToBinary(capability.releaseShare);
-      const derived = await deriveManagedEntryKey(
-        vek,
-        releaseShare,
-        salt,
-        record.id,
-        record.version,
-      );
-      secureZero(releaseShare);
-      entryKeyBase64 = derived.keyBase64;
-    }
-
-    entryKeyBytes = base64ToBinary(entryKeyBase64);
+    const salt = base64ToBinary(prep.record.salt);
+    const entryKey = await deriveEntryKey(prep.record, vek, salt, deps);
+    if (!entryKey.ok) return entryKey.denial;
+    entryKeyBytes = base64ToBinary(entryKey.keyBase64);
 
     /* Step 5 — decrypt the envelope. */
-    const envelopeRaw = await decryptBlob(record.encryptedSecret, entryKeyBytes);
-    if (envelopeRaw === null) {
-      return deny("DECRYPT_FAILED", "secret blob could not be decrypted");
-    }
+    const envelope = await decryptEnvelope(entryKeyBytes, prep.record.encryptedSecret);
+    if (!envelope.ok) return deny("DECRYPT_FAILED", envelope.detail);
 
-    let envelope: SecretEnvelope;
-    try {
-      const parsed = JSON.parse(envelopeRaw) as Partial<SecretEnvelope>;
-      if (typeof parsed?.u !== "string" || typeof parsed?.p !== "string") {
-        return deny("DECRYPT_FAILED", "secret envelope is malformed");
-      }
-      envelope = { u: parsed.u, p: parsed.p };
-    } catch {
-      return deny("DECRYPT_FAILED", "secret envelope is not valid JSON");
-    }
-
-    let totpSecret: string | undefined;
-    if (record.encryptedTotpSecret) {
-      const seed = await decryptBlob(record.encryptedTotpSecret, entryKeyBytes);
-      if (seed === null) {
-        // A broken TOTP seed must not block the password release; the seed is
-        // simply unavailable for this fill.
-        secureZero(entryKeyBytes);
-        return {
-          ok: true,
-          credential: { id: record.id, username: envelope.u, password: envelope.p },
-        };
-      }
-      totpSecret = seed;
-    }
-
-    return {
-      ok: true,
-      credential: {
-        id: record.id,
-        username: envelope.u,
-        password: envelope.p,
-        ...(totpSecret ? { totpSecret } : {}),
-      },
-    };
+    /* Step 6 — TOTP seed (best effort) and assemble the release. */
+    return await buildReleaseOutcome(prep.record, envelope.envelope, entryKeyBytes);
   } catch {
     return deny("DECRYPT_FAILED", "unexpected failure during release");
   } finally {
     secureZero(vek);
     if (entryKeyBytes) secureZero(entryKeyBytes);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  releaseCredential steps, extracted verbatim (order preserved)      */
+/* ------------------------------------------------------------------ */
+
+type PrepareResult =
+  | { readonly ok: true; readonly record: EncryptedCredentialRecord }
+  | { readonly ok: false; readonly denial: ReleaseOutcome };
+
+type EntryKeyResult =
+  | { readonly ok: true; readonly keyBase64: string }
+  | { readonly ok: false; readonly denial: ReleaseOutcome };
+
+type EnvelopeResult =
+  | { readonly ok: true; readonly envelope: SecretEnvelope }
+  | { readonly ok: false; readonly detail: string };
+
+/**
+ * Steps 1–3 — origin binding proof, record lookup and the guard.
+ *
+ * Nothing here decrypts: the guard runs first, exactly as before. Returns a
+ * typed denial (already shaped as a ReleaseOutcome) rather than throwing, so
+ * callers keep the original early-return semantics.
+ */
+async function prepareRelease(
+  request: ReleaseRequest,
+  deps: ReleaseDeps,
+  vek: Uint8Array,
+): Promise<PrepareResult> {
+  const { deriveDomainIndexKey } = await import("../domain/services/autofill/domain-index");
+  const indexKey = await deriveDomainIndexKey(vek);
+
+  /* Step 1 — prove the origin binding. */
+  const token = await computeLookupToken(request.origin, indexKey);
+  if (!token.ok) {
+    return { ok: false, denial: deny("ORIGIN_UNUSABLE", "requested origin is unusable") };
+  }
+
+  const index = await deps.getIndex();
+  const bound = await indexEntryMatchesOrigin(
+    index,
+    token.token,
+    request.credentialId,
+    token.origin.serialized,
+    indexKey,
+  );
+  if (!bound) {
+    return {
+      ok: false,
+      denial: deny("ORIGIN_NOT_BOUND", "credential is not bound to the requested origin"),
+    };
+  }
+
+  /* Step 2 — the record must exist and match the mode we expect. */
+  const record = await deps.getRecord(request.credentialId);
+  if (!record) {
+    return { ok: false, denial: deny("CREDENTIAL_NOT_FOUND", "no such credential") };
+  }
+
+  if (record.mode === "managed" && !record.releaseShareRef) {
+    return {
+      ok: false,
+      denial: deny("MANAGED_REQUIRED", "managed credential has no Release Share reference"),
+    };
+  }
+
+  /* Step 3 — the guard, before any decryption. */
+  const decision = evaluateAutofill({
+    operation: "AUTOFILL",
+    credentialOrigin: token.origin.serialized,
+    documentOrigin: request.documentOrigin,
+    topLevelOrigin: request.isFramed ? request.topLevelOrigin : null,
+    frameOrigin: request.isFramed ? request.documentOrigin : null,
+  });
+  if (!decision.allowed) {
+    return {
+      ok: false,
+      denial: deny("GUARD_BLOCKED", `${decision.reason}: ${decision.detail}`),
+    };
+  }
+
+  return { ok: true, record };
+}
+
+/**
+ * Step 4 — derive the per-entry key: directly for personal records, via an
+ * Ed25519 capability (possibly a step-up challenge) for managed ones.
+ */
+async function deriveEntryKey(
+  record: EncryptedCredentialRecord,
+  vek: Uint8Array,
+  salt: Uint8Array,
+  deps: ReleaseDeps,
+): Promise<EntryKeyResult> {
+  if (record.mode === "personal") {
+    const derived = await derivePersonalEntryKey(vek, salt, record.id, record.version);
+    return { ok: true, keyBase64: derived.keyBase64 };
+  }
+
+  const capability = await deps.requestCapability({
+    credentialId: record.id,
+    secretRef: record.releaseShareRef as string,
+    operation: "AUTOFILL",
+  });
+
+  if ("challengeRequired" in capability && capability.challengeRequired) {
+    // A step-up is required. That is a legitimate outcome, not an error,
+    // and it must NOT be reported to the page as a generic failure.
+    return {
+      ok: false,
+      denial: deny("CHALLENGE_REQUIRED", "policy requires a step-up challenge before release"),
+    };
+  }
+  if (!capability.ok) {
+    return { ok: false, denial: deny("CAPABILITY_DENIED", capability.detail) };
+  }
+
+  const releaseShare = base64ToBinary(capability.releaseShare);
+  const derived = await deriveManagedEntryKey(
+    vek,
+    releaseShare,
+    salt,
+    record.id,
+    record.version,
+  );
+  secureZero(releaseShare);
+  return { ok: true, keyBase64: derived.keyBase64 };
+}
+
+/**
+ * Step 5 — decrypt the secret envelope. Every failure collapses to a detail
+ * string; the caller maps it to the same `DECRYPT_FAILED` code as before.
+ */
+async function decryptEnvelope(
+  entryKeyBytes: Uint8Array,
+  encryptedSecret: string,
+): Promise<EnvelopeResult> {
+  const envelopeRaw = await decryptBlob(encryptedSecret, entryKeyBytes);
+  if (envelopeRaw === null) {
+    return { ok: false, detail: "secret blob could not be decrypted" };
+  }
+
+  try {
+    const parsed = JSON.parse(envelopeRaw) as Partial<SecretEnvelope>;
+    if (typeof parsed?.u !== "string" || typeof parsed?.p !== "string") {
+      return { ok: false, detail: "secret envelope is malformed" };
+    }
+    return { ok: true, envelope: { u: parsed.u, p: parsed.p } };
+  } catch {
+    return { ok: false, detail: "secret envelope is not valid JSON" };
+  }
+}
+
+/**
+ * Step 6 — best-effort TOTP seed, then assemble the released credential.
+ *
+ * A broken TOTP seed must not block the password release; the seed is simply
+ * unavailable for this fill (and the entry key is zeroized immediately, as it
+ * was inline).
+ */
+async function buildReleaseOutcome(
+  record: EncryptedCredentialRecord,
+  envelope: SecretEnvelope,
+  entryKeyBytes: Uint8Array,
+): Promise<ReleaseOutcome> {
+  let totpSecret: string | undefined;
+  if (record.encryptedTotpSecret) {
+    const seed = await decryptBlob(record.encryptedTotpSecret, entryKeyBytes);
+    if (seed === null) {
+      secureZero(entryKeyBytes);
+      return {
+        ok: true,
+        credential: { id: record.id, username: envelope.u, password: envelope.p },
+      };
+    }
+    totpSecret = seed;
+  }
+
+  return {
+    ok: true,
+    credential: {
+      id: record.id,
+      username: envelope.u,
+      password: envelope.p,
+      ...(totpSecret ? { totpSecret } : {}),
+    },
+  };
 }

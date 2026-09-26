@@ -3,7 +3,6 @@
  * Implementación del servicio de criptografía usando Web Crypto API
  */
 
-import type { ICryptoService } from "../../domain/ports/ICryptoService";
 import { secureZero, generateSecureSalt } from "./secure-memory";
 import { binaryToBase64, base64ToBinary } from "../../shared/utils";
 

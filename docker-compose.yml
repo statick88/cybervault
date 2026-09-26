@@ -185,10 +185,6 @@ networks:
 # =============================================================================
 volumes:
   postgres-data:
-    name: cybervault-postgres
   redis-data:
-    name: cybervault-redis
   ipfs-data:
-    name: cybervault-ipfs
   api-logs:
-    name: cybervault-logs

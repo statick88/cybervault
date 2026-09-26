@@ -54,12 +54,14 @@ class MockVaultRepository implements IVaultRepository {
   async delete() { return true; }
   async list() { return []; }
   async listByOwnerId() { return []; }
+  async updateMetadata(): Promise<void> { }
 }
 
 class MockCredentialRepository implements ICredentialRepository {
   async save(cred: any) { return cred; }
   async findById() { return null; }
   async findByVaultId() { return []; }
+  async findBySecretRef() { return null; }
   async delete() { return true; }
   async list() { return []; }
 }

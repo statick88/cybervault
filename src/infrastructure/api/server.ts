@@ -39,7 +39,6 @@ import { applyCorsHeaders } from "./middleware/cors";
 import { applySecurityHeaders } from "./middleware/security-headers";
 import {
   checkRateLimit,
-  checkValidateRateLimit,
   RATE_LIMIT_MAX,
   RATE_LIMIT_WINDOW,
   _clearRateLimitForTests,
@@ -242,6 +241,118 @@ export class ApiServer {
       "Content-Type": "text/plain; version=0.0.4; charset=utf-8",
     });
     res.end(metrics.formatPrometheus());
+  }
+
+  // Response helper methods to reduce cognitive complexity in handlers
+  private sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
+    res.writeHead(statusCode, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(data));
+  }
+
+  private sendError(res: ServerResponse, statusCode: number, error: string): void {
+    this.sendJson(res, statusCode, { error });
+  }
+
+  private sendSuccess(res: ServerResponse, statusCode: number, data: Record<string, unknown>): void {
+    this.sendJson(res, statusCode, data);
+  }
+
+  private handleJsonError(res: ServerResponse, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("Invalid Content-Type")) {
+      this.sendError(res, 400, "Invalid Content-Type: expected application/json");
+      return;
+    }
+    if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
+      this.sendError(res, 400, "Invalid JSON in request body");
+      return;
+    }
+
+    logger.error("Request error", "ApiServer", undefined, message);
+    this.sendError(res, 500, "Internal server error");
+  }
+
+  private validateRegistrationInput(email: string, password: string): string | null {
+    if (!email || !password) return "Email and password required";
+
+    const emailRegex =
+      /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+    if (!emailRegex.test(email)) return "Invalid email format";
+
+    if (password.length < 8) return "Password must be at least 8 characters";
+
+    return null;
+  }
+
+  private async createUserResponse(
+    res: ServerResponse,
+    user: { userId: string; email: string },
+  ): Promise<void> {
+    if (!JWT_SECRET) {
+      if (process.env.NODE_ENV === "production") {
+        this.sendError(res, 503, "Authentication not configured");
+        return;
+      }
+      this.sendSuccess(res, 201, {
+        userId: user.userId,
+        email: user.email,
+        message: "User registered successfully (no JWT — development mode)",
+      });
+      return;
+    }
+
+    const token = generateToken(user.userId, JWT_SECRET);
+    const refreshToken = generateRefreshToken(user.userId, JWT_SECRET);
+
+    this.sendSuccess(res, 201, {
+      userId: user.userId,
+      email: user.email,
+      token,
+      refreshToken,
+      message: "User registered successfully",
+    });
+  }
+
+  // Request routing helpers to reduce cognitive complexity in handleRequest
+  private setupRequestTracking(req: IncomingMessage, res: ServerResponse): { startTime: number; url: URL } {
+    const startTime = performance.now();
+    this.activeConnections++;
+    metrics.gauge("active_connections", "Current active connections", this.activeConnections, { service: "api" });
+
+    res.on("finish", () => {
+      this.activeConnections = Math.max(0, this.activeConnections - 1);
+      metrics.gauge("active_connections", "Current active connections", this.activeConnections, { service: "api" });
+      const duration = (performance.now() - startTime) / 1000;
+      metrics.counter("http_requests_total", "Total HTTP requests", {
+        method: req.method || "unknown",
+        path: url.pathname,
+        status: String(res.statusCode),
+      });
+      metrics.histogram("http_request_duration_seconds", "Request duration", duration, {
+        method: req.method || "unknown",
+        path: url.pathname,
+      });
+    });
+
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    return { startTime, url };
+  }
+
+  private checkRateLimitOrError(res: ServerResponse, ip: string): boolean {
+    if (!checkRateLimit(ip)) {
+      this.sendError(res, 429, "Rate limit exceeded");
+      return false;
+    }
+    return true;
+  }
+
+  private async handleAuthRoute(req: IncomingMessage, res: ServerResponse, handler: () => Promise<void>): Promise<void> {
+    if (JWT_SECRET) {
+      authenticate(req, res, handler);
+    } else {
+      await handler();
+    }
   }
 
   /**
@@ -512,93 +623,22 @@ export class ApiServer {
       const email = data.email as string;
       const password = data.password as string;
 
-      if (!email || !password) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Email and password required" }));
-        return;
-      }
-
-      const emailBasic =
-        /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
-      if (!emailBasic.test(email)) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid email format" }));
-        return;
-      }
-
-      if (password.length < 8) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({ error: "Password must be at least 8 characters" }),
-        );
+      const validationError = this.validateRegistrationInput(email, password);
+      if (validationError) {
+        this.sendError(res, 400, validationError);
         return;
       }
 
       if (await getUserByEmail(email)) {
         // Return 200 to prevent user enumeration (constant-time leak)
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ message: "Registration processed" }));
+        this.sendSuccess(res, 200, { message: "Registration processed" });
         return;
       }
 
       const user = await createUser(email, password);
-
-      if (!JWT_SECRET) {
-        if (process.env.NODE_ENV === "production") {
-          res.writeHead(503, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Authentication not configured" }));
-          return;
-        }
-        // Development mode: return user without token
-        res.writeHead(201, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            userId: user.userId,
-            email: user.email,
-            message: "User registered successfully (no JWT — development mode)",
-          }),
-        );
-        return;
-      }
-
-      const token = generateToken(user.userId, JWT_SECRET);
-      const refreshToken = generateRefreshToken(user.userId, JWT_SECRET);
-
-      res.writeHead(201, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          userId: user.userId,
-          email: user.email,
-          token,
-          refreshToken,
-          message: "User registered successfully",
-        }),
-      );
+      await this.createUserResponse(res, user);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      // Handle Content-Type validation errors with 400
-      if (message.includes("Invalid Content-Type")) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid Content-Type: expected application/json" }));
-        return;
-      }
-
-      // Handle JSON parse errors with 400
-      if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON in request body" }));
-        return;
-      }
-
-      logger.error(
-        "Error registering user",
-        "ApiServer",
-        undefined,
-        message,
-      );
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Internal server error" }));
+      this.handleJsonError(res, error);
     }
   }
 
@@ -615,34 +655,30 @@ export class ApiServer {
       const password = data.password as string;
 
       if (!email || !password) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Email and password required" }));
+        this.sendError(res, 400, "Email and password required");
         return;
       }
 
       // Brute-force protection: check if email is locked out
       const lockout = loginRateLimiter.isLocked(email);
       if (lockout.locked) {
-        res.writeHead(429, {
-          "Content-Type": "application/json",
-          "Retry-After": String(Math.ceil((lockout.retryAfterMs ?? 60_000) / 1000)),
+        this.sendJson(res, 429, {
+          error: "Too many failed attempts. Try again later.",
+          retryAfter: Math.ceil((lockout.retryAfterMs ?? 60_000) / 1000),
         });
-        res.end(JSON.stringify({ error: "Too many failed attempts. Try again later." }));
         return;
       }
 
       const user = await getUserByEmail(email);
       if (!user) {
         loginRateLimiter.recordFailure(email);
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid email or password" }));
+        this.sendError(res, 401, "Invalid email or password");
         return;
       }
 
       if (!verifyPassword(password, user.hash, user.salt)) {
         loginRateLimiter.recordFailure(email);
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid email or password" }));
+        this.sendError(res, 401, "Invalid email or password");
         return;
       }
 
@@ -651,23 +687,16 @@ export class ApiServer {
 
       if (!JWT_SECRET) {
         if (process.env.NODE_ENV === "production") {
-          res.writeHead(503, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Authentication not configured" }));
+          this.sendError(res, 503, "Authentication not configured");
           return;
         }
         // Development mode: return user without token
-        metrics.counter(
-          "cybervault_logins_total",
-          "Total successful logins",
-        );
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            userId: user.userId,
-            email: user.email,
-            message: "Login successful (no JWT — development mode)",
-          }),
-        );
+        metrics.counter("cybervault_logins_total", "Total successful logins");
+        this.sendSuccess(res, 200, {
+          userId: user.userId,
+          email: user.email,
+          message: "Login successful (no JWT — development mode)",
+        });
         return;
       }
 
@@ -676,41 +705,15 @@ export class ApiServer {
 
       metrics.counter("cybervault_logins_total", "Total successful logins");
 
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          userId: user.userId,
-          email: user.email,
-          token,
-          refreshToken,
-          message: "Login successful",
-        }),
-      );
+      this.sendSuccess(res, 200, {
+        userId: user.userId,
+        email: user.email,
+        token,
+        refreshToken,
+        message: "Login successful",
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      // Handle Content-Type validation errors with 400
-      if (message.includes("Invalid Content-Type")) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid Content-Type: expected application/json" }));
-        return;
-      }
-
-      // Handle JSON parse errors with 400
-      if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON in request body" }));
-        return;
-      }
-
-      logger.error(
-        "Error logging in",
-        "ApiServer",
-        undefined,
-        message,
-      );
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Internal server error" }));
+      this.handleJsonError(res, error);
     }
   }
 
@@ -771,7 +774,7 @@ export class ApiServer {
   /**
    * Handler para verificar token
    */
-  private handleVerifyToken(req: IncomingMessage, res: ServerResponse): void {
+  private async handleVerifyToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const authReq = req as AuthenticatedRequest;
 
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -786,7 +789,7 @@ export class ApiServer {
   /**
    * Handler para información de la API
    */
-  private handleApiInfo(_req: IncomingMessage, res: ServerResponse): void {
+  private async handleApiInfo(_req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -920,6 +923,77 @@ export class ApiServer {
   }
 
   /**
+   * Handler para managed release (Core↔Plus bridge)
+   * Verifies capability token from Plus and returns ReleaseShare for managed credential
+   */
+  private async handleVaultManagedRelease(
+    req: IncomingMessage,
+    res: ServerResponse,
+    vaultId: string,
+  ): Promise<void> {
+    try {
+      const userId = (req as AuthenticatedRequest).userId;
+      if (!userId) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication required" }));
+        return;
+      }
+
+      // Verify vault ownership
+      const vault = await this.vaultRepository.findByVaultIdAndOwnerId(vaultId, userId);
+      if (!vault) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Vault not found" }));
+        return;
+      }
+
+      // Parse capability token from request body
+      const data = await this.parseJsonBody(req);
+      const capabilityToken = data.capabilityToken as {
+        payload: any;
+        signature: string;
+        protectedHeader: string;
+      };
+      const plusPublicKey = data.plusPublicKey as string;
+
+      if (!capabilityToken || !capabilityToken.payload || !capabilityToken.signature || !plusPublicKey) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "capabilityToken and plusPublicKey required" }));
+        return;
+      }
+
+      // Use the managed release use case
+      // Note: In production, this would be injected via constructor
+      const { ManagedReleaseUseCase } = await import("../../application/use-cases/managed-release.use-case");
+      const useCase = new ManagedReleaseUseCase(this.credentialRepository!);
+
+      const result = await useCase.execute({
+        capabilityToken,
+        plusPublicKey,
+      });
+
+      if (!result.success) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: result.error }));
+        return;
+      }
+
+      const body = JSON.stringify({
+        success: true,
+        releaseShare: result.releaseShare,
+        credentialId: result.credentialId,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+    } catch (error) {
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Failed to process managed release" }));
+      }
+    }
+  }
+
+  /**
    * Handler para eliminar un vault
    */
   private async handleVaultDelete(
@@ -1038,7 +1112,6 @@ export class ApiServer {
     applyCorsHeaders(res);
 
     // Timeout de petición: 30 segundos → 504 Gateway Timeout
-    // Sin listener de error, escrituras tardías tras destruir el socket podrían crashear el proceso
     res.on("error", () => {});
     req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       if (!res.headersSent) {
@@ -1050,288 +1123,180 @@ export class ApiServer {
       req.destroy();
     });
 
-    const url = new URL(req.url || "", `http://${req.headers.host}`);
-
     // Swagger docs — served before rate limiting and metrics
     if (swaggerMiddleware(req, res)) return;
 
-    // Métricas: inicio del trackeo de la petición
-    const startTime = performance.now();
-    this.activeConnections++;
-    metrics.gauge(
-      "active_connections",
-      "Current active connections",
-      this.activeConnections,
-      { service: "api" },
-    );
-
-    // Registrar métricas cuando la respuesta termine
-    res.on("finish", () => {
-      this.activeConnections = Math.max(0, this.activeConnections - 1);
-      metrics.gauge(
-        "active_connections",
-        "Current active connections",
-        this.activeConnections,
-        { service: "api" },
-      );
-      const duration = (performance.now() - startTime) / 1000;
-      metrics.counter("http_requests_total", "Total HTTP requests", {
-        method: req.method || "unknown",
-        path: url.pathname,
-        status: String(res.statusCode),
-      });
-      metrics.histogram(
-        "http_request_duration_seconds",
-        "Request duration",
-        duration,
-        { method: req.method || "unknown", path: url.pathname },
-      );
-    });
+    // Setup request tracking and get URL
+    const { url } = this.setupRequestTracking(req, res);
 
     // Aplicar rate limiting a todos los endpoints
     const ip = req.socket?.remoteAddress || "unknown";
-    if (!checkRateLimit(ip)) {
-      res.writeHead(429, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Rate limit exceeded" }));
-      return;
-    }
+    if (!this.checkRateLimitOrError(res, ip)) return;
 
     try {
-      switch (url.pathname) {
-        case "/health":
-          await this.handleHealth(req, res);
-          break;
-
-        case "/ready":
-          await this.handleReady(req, res);
-          break;
-
-        case "/metrics":
-          this.handleMetrics(req, res);
-          break;
-
-        case "/api/v1/vaults":
-          if (req.method === "POST") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleCreateVault(req, res);
-              });
-            } else {
-              await this.handleCreateVault(req, res);
-            }
-          } else if (req.method === "GET") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleVaultsList(req, res);
-              });
-            } else {
-              await this.handleVaultsList(req, res);
-            }
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        case "/api/v1/credentials/generate":
-          if (req.method === "POST") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleGenerateCredentials(req, res);
-              });
-            } else {
-              await this.handleGenerateCredentials(req, res);
-            }
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        case "/api/v1/credentials/extract":
-          if (req.method === "POST") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleExtractCredentials(req, res);
-              });
-            } else {
-              await this.handleExtractCredentials(req, res);
-            }
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        case "/api/v1/credentials/validate":
-          if (req.method === "POST") {
-            // Dedicated rate limiter for this public endpoint (browser extension flow)
-            const validateIp = req.socket?.remoteAddress || "unknown";
-            if (!checkValidateRateLimit(validateIp)) {
-              logger.warn(
-                `Rate limit exceeded for /credentials/validate from ${validateIp}`,
-                "ApiServer",
-              );
-              metrics.counter(
-                "cybervault_validate_rate_limited_total",
-                "Total rate-limited validate requests",
-              );
-              res.writeHead(429, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Rate limit exceeded" }));
-              return;
-            }
-            logger.info(
-              `Credential validate request from ${validateIp}`,
-              "ApiServer",
-            );
-            metrics.counter(
-              "cybervault_validate_requests_total",
-              "Total validate requests",
-            );
-            await this.handleValidateCredentials(req, res);
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        // Auth endpoints
-        case "/api/v1/auth/register":
-          if (req.method === "POST") {
-            await this.handleRegister(req, res);
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        case "/api/v1/auth/login":
-          if (req.method === "POST") {
-            await this.handleLogin(req, res);
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        case "/api/v1/auth/refresh":
-          if (req.method === "POST") {
-            await this.handleRefreshToken(req, res);
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        case "/api/v1/auth/verify":
-          if (req.method === "GET") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleVerifyToken(req, res);
-              });
-            } else {
-              this.handleVerifyToken(req, res);
-            }
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        // Vaults CRUD
-        case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+$/)?.input:
-          if (req.method === "GET") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleVaultGet(req, res, url.pathname.split("/").pop()!);
-              });
-            } else {
-              this.handleVaultGet(req, res, url.pathname.split("/").pop()!);
-            }
-          } else if (req.method === "DELETE") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleVaultDelete(
-                  req,
-                  res,
-                  url.pathname.split("/").pop()!,
-                );
-              });
-            } else {
-              this.handleVaultDelete(req, res, url.pathname.split("/").pop()!);
-            }
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        // Vault unlock - returns encryptedData for client-side decryption
-        case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+\/unlock$/)?.input:
-          if (req.method === "POST") {
-            if (JWT_SECRET) {
-              authenticate(req, res, () => {
-                this.handleVaultUnlock(req, res, url.pathname.split("/")[4]);
-              });
-            } else {
-              await this.handleVaultUnlock(req, res, url.pathname.split("/")[4]);
-            }
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        // Credentials list
-        case "/api/v1/credentials":
-          if (JWT_SECRET) {
-            authenticate(req, res, () => {
-              this.handleCredentialsList(req, res);
-            });
-          } else {
-            this.handleCredentialsList(req, res);
-          }
-          break;
-
-        // API info
-        case "/api":
-          if (req.method === "GET") {
-            this.handleApiInfo(req, res);
-          } else {
-            res.writeHead(405, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Method not allowed" }));
-          }
-          break;
-
-        default:
-          // Serve static files from dist/ directory
-          await this.handleStaticFile(req, res, url.pathname);
-      }
+      await this.routeRequest(req, res, url);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      this.handleJsonError(res, error);
+    }
+  }
 
-      // Handle Content-Type validation errors with 400
-      if (message.includes("Invalid Content-Type")) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid Content-Type: expected application/json" }));
-        return;
-      }
+  private async routeRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    switch (url.pathname) {
+      case "/health":
+        await this.handleHealth(req, res);
+        break;
 
-      // Handle JSON parse errors with 400
-      if (message.includes("is not valid JSON") || message.includes("Unexpected token")) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid JSON in request body" }));
-        return;
-      }
+      case "/ready":
+        await this.handleReady(req, res);
+        break;
 
-      logger.error(
-        "Error handling request",
-        "ApiServer",
-        undefined,
-        message,
-      );
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Internal server error" }));
+      case "/metrics":
+        this.handleMetrics(req, res);
+        break;
+
+      case "/api/v1/vaults":
+        await this.routeVaults(req, res);
+        break;
+
+      case "/api/v1/credentials/generate":
+        await this.routeGenerateCredentials(req, res);
+        break;
+
+      case "/api/v1/credentials/extract":
+        await this.routeExtractCredentials(req, res);
+        break;
+
+      case "/api/v1/credentials/validate":
+        await this.routeValidateCredentials(req, res);
+        break;
+
+      case "/api/v1/auth/register":
+        await this.handleRegister(req, res);
+        break;
+
+      case "/api/v1/auth/login":
+        await this.handleLogin(req, res);
+        break;
+
+      case "/api/v1/auth/refresh":
+        await this.handleRefreshToken(req, res);
+        break;
+
+      case "/api/v1/auth/verify":
+        await this.routeVerifyToken(req, res);
+        break;
+
+      // Vaults CRUD
+      case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+$/)?.input:
+        await this.routeVaultItem(req, res, url);
+        break;
+
+      // Vault unlock
+      case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+\/unlock$/)?.input:
+        await this.routeVaultUnlock(req, res, url);
+        break;
+
+      // Vault managed release
+      case url.pathname.match(/^\/api\/v1\/vaults\/[a-zA-Z0-9_-]+\/managed-release$/)?.input:
+        await this.routeVaultManagedRelease(req, res, url);
+        break;
+
+      // Credentials list
+      case "/api/v1/credentials":
+        await this.routeCredentialsList(req, res);
+        break;
+
+      // API info
+      case "/api":
+        await this.routeApiInfo(req, res);
+        break;
+
+      default:
+        // Serve static files from dist/ directory
+        await this.handleStaticFile(req, res, url.pathname);
+    }
+  }
+
+  private async routeVaults(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "POST") {
+      await this.handleAuthRoute(req, res, () => this.handleCreateVault(req, res));
+    } else if (req.method === "GET") {
+      await this.handleAuthRoute(req, res, () => this.handleVaultsList(req, res));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeGenerateCredentials(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "POST") {
+      await this.handleAuthRoute(req, res, () => this.handleGenerateCredentials(req, res));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeExtractCredentials(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "POST") {
+      await this.handleAuthRoute(req, res, () => this.handleExtractCredentials(req, res));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeValidateCredentials(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "POST") {
+      await this.handleValidateCredentials(req, res);
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeVerifyToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "GET") {
+      await this.handleAuthRoute(req, res, () => this.handleVerifyToken(req, res));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeVaultItem(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const vaultId = url.pathname.split("/").pop()!;
+    if (req.method === "GET") {
+      await this.handleAuthRoute(req, res, () => this.handleVaultGet(req, res, vaultId));
+    } else if (req.method === "DELETE") {
+      await this.handleAuthRoute(req, res, () => this.handleVaultDelete(req, res, vaultId));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeVaultUnlock(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const vaultId = url.pathname.split("/")[4];
+    if (req.method === "POST") {
+      await this.handleAuthRoute(req, res, () => this.handleVaultUnlock(req, res, vaultId));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeVaultManagedRelease(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const vaultId = url.pathname.split("/")[4];
+    if (req.method === "POST") {
+      await this.handleAuthRoute(req, res, () => this.handleVaultManagedRelease(req, res, vaultId));
+    } else {
+      this.sendError(res, 405, "Method not allowed");
+    }
+  }
+
+  private async routeCredentialsList(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    await this.handleAuthRoute(req, res, () => this.handleCredentialsList(req, res));
+  }
+
+  private async routeApiInfo(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === "GET") {
+      this.handleApiInfo(req, res);
+    } else {
+      this.sendError(res, 405, "Method not allowed");
     }
   }
 
@@ -1344,7 +1309,7 @@ export class ApiServer {
     pathname: string,
   ): Promise<void> {
     const { readFileSync: readFS, existsSync } = await import("fs");
-    const { join, extname } = await import("path");
+    const { join } = await import("path");
 
     // Security: only serve specific static files
     const allowedFiles = ["/auth.html", "/vault.html", "/test-plugin.html"];

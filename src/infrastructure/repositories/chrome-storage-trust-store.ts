@@ -46,10 +46,12 @@ function validateDomain(domain: string): string {
 }
 
 function checkControlCharacters(domain: string): void {
-  // Check for control characters (ASCII 0-31, 127) without using literal control chars in regex
-  // \x00-\x1F = 0-31, \x7F = 127 (DEL)
-  if (/[\u0000-\u001F\u007F]/.test(domain)) {
-    throw new Error("Invalid domain: contains control characters");
+  // Check for control characters (ASCII 0-31, 127) without regex to avoid SonarQube false positives
+  for (let i = 0; i < domain.length; i++) {
+    const code = domain.charCodeAt(i);
+    if ((code >= 0 && code <= 31) || code === 127) {
+      throw new Error("Invalid domain: contains control characters");
+    }
   }
 }
 
@@ -60,7 +62,7 @@ function checkDangerousCharacters(domain: string): void {
 }
 
 function checkNullByte(domain: string): void {
-  if (domain.includes("\0")) {
+  if (domain.includes("\u0000")) {
     throw new Error("Invalid domain: contains null byte");
   }
 }

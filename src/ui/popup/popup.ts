@@ -1,20 +1,23 @@
 /**
- * CyberVault Popup — credential quick-access UI
+ * CyberVault Popup — credential quick-access UI (Secure Storage Version)
  *
- * Communicates with the service worker via chrome.runtime.sendMessage
- * and persists vault state in chrome.storage.local / chrome.storage.session.
+ * SECURITY INVARIANTS:
+ * - NO plaintext secrets in chrome.storage.local
+ * - Session key (VEK) ONLY in chrome.storage.session
+ * - Credentials stored ENCRYPTED in local storage
+ * - Decryption happens on-demand using session key from session storage
  *
- * Flow: Login -> Unlock -> Manage credentials
+ * Communicates with service worker via chrome.runtime.sendMessage
+ * and uses master-key-manager for all crypto operations.
  */
 
 (function() {
 /* ------------------------------------------------------------------ */
-/*  Storage keys (must match auditor.ts and repositories)              */
+/*  Storage keys                                                       */
 /* ------------------------------------------------------------------ */
 
-const VAULT_KEY = "vault_data";
+const VAULT_KEY = "vault_data";           // Encrypted vault data only
 const SETTINGS_KEY = "cybervault_settings";
-const UNLOCK_STATE_KEY = "cybervault_unlock_state";
 const AUTH_TOKEN_KEY = "cybervault_token";
 const USER_ID_KEY = "cybervault_userId";
 
@@ -27,7 +30,7 @@ interface CredentialPlain {
   vaultId: string;
   title: string;
   username: string;
-  password: string;
+  password: string;  // Only in memory, never persisted
   url?: string;
   notes?: string;
   tags: string[];
@@ -41,7 +44,7 @@ interface VaultPlain {
   id: string;
   name: string;
   description?: string;
-  encryptedData: string;
+  encryptedData: string;  // ENCRYPTED - ciphertext only
   encryptionKeyId: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
@@ -60,6 +63,10 @@ interface LoginResponse {
   token: string;
   refreshToken: string;
   message: string;
+}
+
+interface UnlockVaultResponse {
+  encryptedData: string;  // Vault data encrypted with session key
 }
 
 /* ------------------------------------------------------------------ */
@@ -132,64 +139,35 @@ async function writeStorage(data: Record<string, unknown>): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  PBKDF2 Key Derivation (same as EncryptionService)                  */
+/*  Secure Storage API (uses master-key-manager via background)       */
 /* ------------------------------------------------------------------ */
 
-const ENCRYPTION_CONFIG = {
-  AES: { ALGORITHM: "AES-GCM" as const, KEY_LENGTH: 256, IV_LENGTH: 12, TAG_LENGTH: 128 },
-  PBKDF2: { ALGORITHM: "PBKDF2" as const, HASH: "SHA-512" as const, ITERATIONS: 600000, SALT_LENGTH: 16 }
-};
-
-function base64ToBinary(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
+async function unlockVaultWithPassphrase(passphrase: string): Promise<boolean> {
+  const response = await sendMessage<{ success: boolean; error?: string }>({
+    type: "UNLOCK_VAULT",
+    passphrase,
+  });
+  return response.ok && response.data?.success === true;
 }
 
-async function decryptVault(encryptedData: string, masterKey: string): Promise<string> {
-  const combined = base64ToBinary(encryptedData);
-  const saltLength = ENCRYPTION_CONFIG.PBKDF2.SALT_LENGTH;
-  const ivLength = ENCRYPTION_CONFIG.AES.IV_LENGTH;
+async function lockVaultSecure(): Promise<void> {
+  await sendMessage({ type: "LOCK_VAULT" });
+}
 
-  const salt = combined.slice(0, saltLength);
-  const iv = combined.slice(saltLength, saltLength + ivLength);
-  const ciphertextWithTag = combined.slice(saltLength + ivLength);
+async function encryptCredentialData(data: string): Promise<string | null> {
+  const response = await sendMessage<{ success: boolean; data?: string; error?: string }>({
+    type: "ENCRYPT_DATA",
+    payload: data,
+  });
+  return response.ok && response.data?.data ? response.data.data : null;
+}
 
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(masterKey),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-
-  const aesKey = await crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: salt as unknown as BufferSource,
-      iterations: ENCRYPTION_CONFIG.PBKDF2.ITERATIONS,
-      hash: ENCRYPTION_CONFIG.PBKDF2.HASH,
-    },
-    keyMaterial,
-    { name: ENCRYPTION_CONFIG.AES.ALGORITHM, length: ENCRYPTION_CONFIG.AES.KEY_LENGTH },
-    false,
-    ["decrypt"]
-  );
-
-  const decryptedBuffer = await crypto.subtle.decrypt(
-    {
-      name: ENCRYPTION_CONFIG.AES.ALGORITHM,
-      iv: iv as unknown as BufferSource,
-      tagLength: ENCRYPTION_CONFIG.AES.TAG_LENGTH,
-    },
-    aesKey,
-    ciphertextWithTag as unknown as BufferSource
-  );
-
-  return new TextDecoder().decode(decryptedBuffer);
+async function decryptCredentialData(encryptedData: string): Promise<string | null> {
+  const response = await sendMessage<{ success: boolean; data?: string; error?: string }>({
+    type: "DECRYPT_DATA",
+    payload: encryptedData,
+  });
+  return response.ok && response.data?.data ? response.data.data : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -222,15 +200,12 @@ async function handleLogin(e: Event): Promise<void> {
     const data = await res.json();
 
     if (res.ok && data.token) {
-      // Store auth data
       authToken = data.token;
       await writeStorage({
         [AUTH_TOKEN_KEY]: data.token,
         [USER_ID_KEY]: data.userId,
         "cybervault_email": email
       });
-
-      // Show locked view
       showView("locked");
       passphraseInput.focus();
     } else {
@@ -266,23 +241,23 @@ function showView(view: "login" | "locked" | "unlocked"): void {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Vault Lock / Unlock                                                */
+/*  Vault Lock / Unlock (Secure)                                       */
 /* ------------------------------------------------------------------ */
 
 async function checkAuthState(): Promise<void> {
   authToken = await readStorage<string>(AUTH_TOKEN_KEY);
-  const unlockState = await chrome.storage.session.get([UNLOCK_STATE_KEY]);
-  const state = unlockState[UNLOCK_STATE_KEY] as { expiresAt: number } | undefined;
+  
+  // Check if vault is unlocked via secure storage
+  const isUnlocked = await sendMessage<{ success: boolean; unlocked: boolean }>({
+    type: "CHECK_VAULT_STATUS"
+  });
 
-  if (state && Date.now() < state.expiresAt) {
-    // Already unlocked in this session
+  if (isUnlocked.ok && isUnlocked.data?.unlocked) {
     showView("unlocked");
     await loadCredentials();
   } else if (authToken) {
-    // Authenticated but vault locked
     showView("locked");
   } else {
-    // Not authenticated
     showView("login");
   }
 }
@@ -306,7 +281,6 @@ async function handleUnlock(): Promise<void> {
     });
 
     if (vaultRes.status === 401) {
-      // Token expired, go back to login
       await writeStorage({ [AUTH_TOKEN_KEY]: null });
       authToken = null;
       showView("login");
@@ -323,7 +297,7 @@ async function handleUnlock(): Promise<void> {
 
     const vault = vaultData.vaults[0];
 
-    // Get encrypted data
+    // Get encrypted vault data
     const unlockRes = await fetch(`${API_BASE}/api/v1/vaults/${vault.id}/unlock`, {
       method: "POST",
       headers: {
@@ -336,23 +310,17 @@ async function handleUnlock(): Promise<void> {
       throw new Error("Failed to fetch vault data");
     }
 
-    const unlockData = await unlockRes.json();
+    const unlockData: UnlockVaultResponse = await unlockRes.json();
 
-    // Decrypt locally with passphrase
-    const decrypted = await decryptVault(unlockData.encryptedData, passphrase);
-    const parsedCredentials = JSON.parse(decrypted);
+    // Unlock vault using secure storage (stores session key in session storage)
+    const unlockResult = await unlockVaultWithPassphrase(passphrase);
+    
+    if (!unlockResult) {
+      throw new Error("Frase maestra incorrecta o error al descifrar");
+    }
 
-    // Store decrypted credentials temporarily
-    await writeStorage({ [VAULT_KEY]: { ...vault, metadata: { credentials: parsedCredentials } } });
-
-    // Set unlock session (30 min)
-    await chrome.storage.session.set({
-      [UNLOCK_STATE_KEY]: {
-        vaultId: vault.id,
-        unlockedAt: Date.now(),
-        expiresAt: Date.now() + 30 * 60 * 1000,
-      },
-    });
+    // Store encrypted vault data locally (ciphertext only)
+    await writeStorage({ [VAULT_KEY]: { ...vault, metadata: { encryptedData: unlockData.encryptedData } } });
 
     // Show unlocked view
     showView("unlocked");
@@ -370,8 +338,8 @@ async function handleUnlock(): Promise<void> {
 }
 
 async function handleLock(): Promise<void> {
-  await chrome.storage.session.remove(UNLOCK_STATE_KEY);
-  await chrome.storage.local.remove(VAULT_KEY);
+  await lockVaultSecure();
+  await writeStorage({ [VAULT_KEY]: null });
   isUnlocked = false;
   credentials = [];
   credentialList.innerHTML = "";
@@ -379,19 +347,32 @@ async function handleLock(): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Credential Loading                                                 */
+/*  Credential Loading (Decrypt on-demand)                             */
 /* ------------------------------------------------------------------ */
 
 async function loadCredentials(): Promise<void> {
   const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
-  if (!vaultData?.metadata?.credentials) {
+  if (!vaultData?.encryptedData) {
     credentials = [];
     renderCredentialList([]);
     return;
   }
 
-  credentials = vaultData.metadata.credentials as CredentialPlain[];
-  renderCredentialList(credentials);
+  // Decrypt credentials on-demand using session key
+  const decrypted = await decryptCredentialData(vaultData.encryptedData);
+  if (!decrypted) {
+    credentials = [];
+    renderCredentialList([]);
+    return;
+  }
+
+  try {
+    credentials = JSON.parse(decrypted) as CredentialPlain[];
+    renderCredentialList(credentials);
+  } catch {
+    credentials = [];
+    renderCredentialList([]);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -493,7 +474,7 @@ function handleSearch(): void {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Quick Add                                                          */
+/*  Quick Add (Encrypt before storing)                                 */
 /* ------------------------------------------------------------------ */
 
 function showAddForm(): void {
@@ -532,17 +513,24 @@ async function handleAddCredential(): Promise<void> {
     updatedAt: new Date().toISOString(),
   };
 
-  const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
-  if (vaultData) {
-    const existing = (vaultData.metadata?.credentials as CredentialPlain[]) || [];
-    existing.push(newCred);
-    vaultData.metadata = { ...vaultData.metadata, credentials: existing };
-    vaultData.updatedAt = new Date().toISOString();
-    await writeStorage({ [VAULT_KEY]: vaultData });
-  }
+  // Add to in-memory list
+  credentials.push(newCred);
+
+  // Encrypt and store entire credentials array
+  await saveCredentialsEncrypted();
 
   hideAddForm();
-  await loadCredentials();
+  renderCredentialList(credentials);
+}
+
+async function saveCredentialsEncrypted(): Promise<void> {
+  const vaultData = await readStorage<VaultPlain>(VAULT_KEY);
+  if (!vaultData) return;
+
+  const encrypted = await encryptCredentialData(JSON.stringify(credentials));
+  if (encrypted) {
+    await writeStorage({ [VAULT_KEY]: { ...vaultData, metadata: { encryptedData: encrypted } } });
+  }
 }
 
 /* ------------------------------------------------------------------ */

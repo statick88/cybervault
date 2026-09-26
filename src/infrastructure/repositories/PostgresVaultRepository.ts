@@ -345,4 +345,21 @@ export class PostgresVaultRepository implements IVaultRepository {
     await this.pool.end();
     logger.info("PostgreSQL connection pool closed");
   }
+
+  async updateMetadata(vaultId: string, metadata: Record<string, unknown>): Promise<void> {
+    const query = `
+      UPDATE vaults
+      SET metadata = $1, updated_at = NOW()
+      WHERE id = $2
+    `;
+    try {
+      await this.executeWithCircuit(() =>
+        this.pool.query(query, [JSON.stringify(metadata), vaultId]),
+      );
+      logger.info(`Vault metadata updated: ${vaultId}`);
+    } catch (error) {
+      logger.error("Failed to update vault metadata", "PostgresVaultRepository", undefined, String(error));
+      throw error;
+    }
+  }
 }

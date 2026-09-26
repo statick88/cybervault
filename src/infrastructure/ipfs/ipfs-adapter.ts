@@ -280,25 +280,18 @@ function createIPFSAdapter(config?: Partial<IPFSConfig>): IPFSAdapter {
   if (envUrl) {
     try {
       const parsed = new URL(envUrl);
+      const port = resolvePort(parsed);
       resolvedConfig = {
         host: parsed.hostname,
-        port: parsed.port ? parseInt(parsed.port, 10) : parsed.protocol === "https:" ? 443 : 5001,
+        port,
         protocol: parsed.protocol.replace(":", "") as "http" | "https",
-        apiPath: parsed.pathname !== "/" ? parsed.pathname : undefined,
+        apiPath: resolveApiPath(parsed),
       };
     } catch {
-      resolvedConfig = {
-        host: "127.0.0.1",
-        port: 5001,
-        protocol: "http",
-      };
+      resolvedConfig = defaultConfig();
     }
   } else {
-    resolvedConfig = {
-      host: "127.0.0.1",
-      port: 5001,
-      protocol: "http",
-    };
+    resolvedConfig = defaultConfig();
   }
 
   if (config) {
@@ -306,6 +299,19 @@ function createIPFSAdapter(config?: Partial<IPFSConfig>): IPFSAdapter {
   }
 
   return new IPFSAdapter(resolvedConfig);
+}
+
+function resolvePort(parsed: URL): number {
+  if (parsed.port) return parseInt(parsed.port, 10);
+  return parsed.protocol === "https:" ? 443 : 5001;
+}
+
+function resolveApiPath(parsed: URL): string | undefined {
+  return parsed.pathname !== "/" ? parsed.pathname : undefined;
+}
+
+function defaultConfig(): IPFSConfig {
+  return { host: "127.0.0.1", port: 5001, protocol: "http" };
 }
 
 export { IPFSAdapter, createIPFSAdapter };

@@ -26,6 +26,7 @@ export interface ICredentialRepository {
   save(credential: Credential): Promise<Credential>;
   findById(id: CredentialId): Promise<Credential | null>;
   findByVaultId(vaultId: VaultId): Promise<Credential[]>;
+  findBySecretRef(secretRef: string): Promise<Credential | null>;
   delete(id: CredentialId): Promise<boolean>;
   list(): Promise<Credential[]>;
 }
@@ -80,6 +81,10 @@ export class PostgresCredentialRepository implements ICredentialRepository {
         title VARCHAR(255) NOT NULL,
         username VARCHAR(255) NOT NULL,
         encrypted_password TEXT NOT NULL,
+        mode VARCHAR(20) DEFAULT 'personal',
+        salt TEXT,
+        version INTEGER DEFAULT 1,
+        release_share_ref VARCHAR(255),
         url TEXT,
         notes TEXT,
         tags TEXT[] DEFAULT '{}',
@@ -93,6 +98,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       CREATE INDEX IF NOT EXISTS idx_credentials_vault_id ON credentials(vault_id);
       CREATE INDEX IF NOT EXISTS idx_credentials_created_at ON credentials(created_at);
       CREATE INDEX IF NOT EXISTS idx_credentials_favorite ON credentials(favorite);
+      CREATE INDEX IF NOT EXISTS idx_credentials_secret_ref ON credentials(release_share_ref);
     `;
 
     await this.executeWithCircuit(() => this.pool.query(createTableQuery));
@@ -107,16 +113,21 @@ export class PostgresCredentialRepository implements ICredentialRepository {
 
     const query = `
       INSERT INTO credentials (
-        id, vault_id, title, username, encrypted_password, url, notes, tags, favorite, 
+        id, vault_id, title, username, encrypted_password, mode, salt, version, release_share_ref,
+        url, notes, tags, favorite, 
         created_at, updated_at, last_used
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
       )
       ON CONFLICT (id) DO UPDATE SET
         vault_id = EXCLUDED.vault_id,
         title = EXCLUDED.title,
         username = EXCLUDED.username,
         encrypted_password = EXCLUDED.encrypted_password,
+        mode = EXCLUDED.mode,
+        salt = EXCLUDED.salt,
+        version = EXCLUDED.version,
+        release_share_ref = EXCLUDED.release_share_ref,
         url = EXCLUDED.url,
         notes = EXCLUDED.notes,
         tags = EXCLUDED.tags,
@@ -132,6 +143,10 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       plain.title,
       plain.username,
       plain.encryptedPassword,
+      plain.mode,
+      plain.salt,
+      plain.version,
+      plain.releaseShareRef || null,
       plain.url || null,
       plain.notes || null,
       plain.tags,
@@ -171,7 +186,8 @@ export class PostgresCredentialRepository implements ICredentialRepository {
    */
   async findById(id: CredentialId): Promise<Credential | null> {
     const query = `
-      SELECT id, vault_id, title, username, encrypted_password, url, notes, tags, favorite, 
+      SELECT id, vault_id, title, username, encrypted_password, mode, salt, version, release_share_ref,
+             url, notes, tags, favorite, 
              created_at, updated_at, last_used
       FROM credentials
       WHERE id = $1
@@ -212,7 +228,8 @@ export class PostgresCredentialRepository implements ICredentialRepository {
    */
   async findByVaultId(vaultId: VaultId): Promise<Credential[]> {
     const query = `
-      SELECT id, vault_id, title, username, encrypted_password, url, notes, tags, favorite, 
+      SELECT id, vault_id, title, username, encrypted_password, mode, salt, version, release_share_ref,
+             url, notes, tags, favorite, 
              created_at, updated_at, last_used
       FROM credentials
       WHERE vault_id = $1
@@ -245,6 +262,48 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       return credentials;
     } catch (error) {
       logger.error("Failed to find credentials by vault id", "PostgresCredentialRepository", undefined, String(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene una credencial por su secretRef (para managed release)
+   */
+  async findBySecretRef(secretRef: string): Promise<Credential | null> {
+    const query = `
+      SELECT id, vault_id, title, username, encrypted_password, mode, salt, version, release_share_ref,
+             url, notes, tags, favorite, 
+             created_at, updated_at, last_used
+      FROM credentials
+      WHERE release_share_ref = $1
+    `;
+
+    try {
+      const result: QueryResult = await this.executeWithCircuit(() =>
+        withRetry(
+          () => this.pool.query(query, [secretRef]),
+          { maxAttempts: 2, retryableErrors: PG_RETRYABLE_ERRORS },
+        ),
+      );
+
+      if (result.rows.length === 0) {
+        return null;
+      }
+
+      const row = result.rows[0];
+
+      logger.info(`Credential found with secretRef: ${secretRef}`);
+      return Credential.fromPlainObject({
+        ...row,
+        tags: row.tags || [],
+        vaultId: row.vault_id,
+        encryptedPassword: row.encrypted_password,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        lastUsed: row.last_used,
+      });
+    } catch (error) {
+      logger.error("Failed to find credential by secretRef", "PostgresCredentialRepository", undefined, String(error));
       throw error;
     }
   }
@@ -285,7 +344,8 @@ export class PostgresCredentialRepository implements ICredentialRepository {
    */
   async list(): Promise<Credential[]> {
     const query = `
-      SELECT id, vault_id, title, username, encrypted_password, url, notes, tags, favorite, 
+      SELECT id, vault_id, title, username, encrypted_password, mode, salt, version, release_share_ref,
+             url, notes, tags, favorite, 
              created_at, updated_at, last_used
       FROM credentials
       ORDER BY created_at DESC

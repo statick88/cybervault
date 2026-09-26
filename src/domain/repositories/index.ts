@@ -1,9 +1,7 @@
 import type { Vault } from "../entities/vault";
 import type { Credential } from "../entities/credential";
 import type { Vulnerability } from "../entities/vulnerability";
-import type { VaultId } from "../value-objects/ids";
-import type { CredentialId } from "../value-objects/ids";
-import type { VulnerabilityId } from "../value-objects/ids";
+import type { VaultId, CredentialId, VulnerabilityId } from "../value-objects/ids";
 
 export interface IVaultRepository {
   save(vault: Vault): Promise<Vault>;
@@ -12,14 +10,26 @@ export interface IVaultRepository {
   delete(id: VaultId): Promise<boolean>;
   list(): Promise<Vault[]>;
   listByOwnerId(ownerId: string): Promise<Vault[]>;
+  updateMetadata(vaultId: string, metadata: Record<string, unknown>): Promise<void>;
 }
 
 export interface ICredentialRepository {
   save(credential: Credential): Promise<Credential>;
   findById(id: CredentialId): Promise<Credential | null>;
   findByVaultId(vaultId: VaultId): Promise<Credential[]>;
+  findBySecretRef(secretRef: string): Promise<Credential | null>;
   delete(id: CredentialId): Promise<boolean>;
   list(): Promise<Credential[]>;
+}
+
+export interface IUserRepository {
+  findByEmail(email: string): Promise<any | null>;
+  findById(userId: string): Promise<any | null>;
+  setPasswordResetToken(userId: string, tokenHash: string, expiresAt: number): Promise<void>;
+  clearPasswordResetToken(userId: string): Promise<void>;
+  updatePassword(userId: string, hash: string, salt: string): Promise<void>;
+  incrementSessionVersion(userId: string): Promise<void>;
+  setRecoveryKeyHash(userId: string, hash: string): Promise<void>;
 }
 
 export interface IVulnerabilityRepository {

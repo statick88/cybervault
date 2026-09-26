@@ -230,3 +230,16 @@
 - src/infrastructure/ipfs/ipfs-adapter.ts — IPFS con circuit breaker
 - benchmarks/domain-validation.bench.ts — benchmark suite
 - benchmarks/results/benchmark-report.json — benchmark results
+
+
+## ODD — Fase O5.8 (2026-09-26)
+- [x] Puerto `IReleaseShareStore` (src/domain/repositories/index.ts)
+- [x] Release Share KEK con info HKDF propia (`cybervault|release-share-kek|v1`)
+- [x] `ManagedAuthoringUseCase` — authoring managed server-side (Option C)
+- [x] Fix D1: `ManagedReleaseUseCase` devuelve el Release Share real
+- [x] Fix D1b: ventana JTI de 0s corregida (`exp - iat` en segundos)
+- [x] Wire en `server.ts` con `RELEASE_SHARE_KEK_SECRET` (fail closed)
+- [x] Tests: 19 nuevos en tests/application/managed-authoring.test.ts
+- [x] Suite completa: 47/47 suites, 836 passed / 846 total (baseline 46/817/827)
+- [x] `npx tsc --noEmit`: salida idéntica al baseline (0 errores nuevos)
+- [x] ODD doc: fila O5.8 -> done, D1 -> FIXED, D1b registrado

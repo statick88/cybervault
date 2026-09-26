@@ -22,6 +22,43 @@ export interface ICredentialRepository {
   list(): Promise<Credential[]>;
 }
 
+/**
+ * A Release Share that Core holds on behalf of a managed credential.
+ *
+ * Core is the ONLY holder of a Release Share (split trust: Plus authorizes,
+ * never sees; the client holds it transiently for one authorized release). What
+ * is persisted here is therefore never the share itself — it is the share
+ * wrapped under the Core-held "Release Share KEK", keyed by the opaque
+ * `secretRef` that Plus also sees.
+ *
+ * `wrappedShare` layout and the KEK derivation live in
+ * `infrastructure/crypto/release-share-kek.ts`; this layer only stores the
+ * opaque blob, which keeps the port testable without any key material.
+ */
+export interface WrappedReleaseShare {
+  /** Opaque reference shared with Plus as `capability.secretRef`. */
+  readonly secretRef: string;
+  /** Base64 `iv|ciphertext` of the 32-byte Release Share under the Release Share KEK. */
+  readonly wrappedShare: string;
+  readonly createdAt: Date;
+}
+
+/**
+ * Persistence port for wrapped Release Shares.
+ *
+ * Deliberately dumb: no key material, no unwrap logic. The use cases derive the
+ * Release Share KEK from an injected server secret and wrap/unwrap around this
+ * store, so a test can swap the secret without swapping the storage.
+ */
+export interface IReleaseShareStore {
+  /** Persist (or replace) the wrapped share for `secretRef`. */
+  save(entry: WrappedReleaseShare): Promise<void>;
+  /** Return the wrapped blob, or null when the reference is unknown. */
+  findBySecretRef(secretRef: string): Promise<WrappedReleaseShare | null>;
+  /** Drop a wrapped share (credential deletion / rotation). */
+  delete(secretRef: string): Promise<boolean>;
+}
+
 export interface IUserRepository {
   findByEmail(email: string): Promise<any | null>;
   findById(userId: string): Promise<any | null>;

@@ -251,7 +251,8 @@ export async function authorCredential(
   }
 
   /* ------------------------------------------------------------------
-   * MANAGED AUTHORING IS DELIBERATELY REFUSED HERE.
+   * MANAGED AUTHORING IS DELIBERATELY REFUSED HERE — THIS IS DESIGN, NOT
+   * A GAP.
    *
    * A managed entry key is HKDF(VEK || ReleaseShare, ...). At authoring time
    * the client does not hold the Release Share — that is the entire point of
@@ -261,19 +262,28 @@ export async function authorCredential(
    * The tempting shortcut is to seal to a VEK-only key and mix the Release
    * Share in at release time, but that yields a ciphertext no release path can
    * ever open, which would look like a working managed credential while failing
-   * silently at use. Inventing a second wrapping layer to paper over that is a
-   * cryptographic design decision, not an implementation detail, so it is
-   * escalated rather than guessed.
+   * silently at use.
    *
-   * Tracked as an open decision in odd/tasks/cybervault-final-security-architecture.md.
+   * DECISION (odd/tasks/cybervault-final-security-architecture.md,
+   * "Decisions Already Made", 2026-09-26): managed authoring happens
+   * SERVER-SIDE, in Core — see `src/application/use-cases/
+   * managed-authoring.use-case.ts`, which is the only place that ever holds
+   * both the VEK-derived material and the Release Share at once. Two-layer
+   * wrapping (Option A) and a client-held stable share (Option B) were both
+   * rejected because they add a second holder of share material.
+   *
+   * Keeping this refusal is therefore a design invariant: it is what stops the
+   * extension from creating a credential that lists correctly and then fails
+   * silently at use (defect D1). Do not "fix" this branch by allowing managed
+   * mode here.
    * ------------------------------------------------------------------ */
   if (mode === "managed") {
     secureZero(vek);
     return reject(
       "MANAGED_REQUIRES_RELEASE_SHARE_REF",
-      "managed authoring needs a key-wrapping decision: the entry key is " +
-        "HKDF(VEK || ReleaseShare) and the client does not hold the Release " +
-        "Share at authoring time",
+      "managed authoring is server-side by design: the entry key is " +
+        "HKDF(VEK || ReleaseShare) and only Core holds the Release Share at " +
+        "authoring time (see application/use-cases/managed-authoring.use-case.ts)",
     );
   }
 

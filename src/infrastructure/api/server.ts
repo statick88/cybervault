@@ -56,7 +56,9 @@ import {
   ChromeStorageVaultRepository,
   PostgresVaultRepository,
   PostgresCredentialRepository,
+  InMemoryReleaseShareStore,
 } from "../../infrastructure/repositories";
+import { loadReleaseShareKekSecret } from "../../infrastructure/crypto/release-share-kek";
 
 // Tipos fuertes para credenciales
 import { CredentialsTypeFactory } from "../../domain/services/autocompletado/credentials-types";
@@ -100,6 +102,10 @@ export class ApiServer {
   private generateCredentialsUseCase: GenerateCredentialsUseCase;
   private extractCredentialsUseCase: ExtractCredentialsUseCase;
   private credentialsGenerator: CredentialsGenerator;
+  /** Wrapped Release Shares for managed credentials (dumb store, no key material). */
+  private releaseShareStore: InMemoryReleaseShareStore;
+  /** Base64 32-byte secret behind the Release Share KEK. Null => release refuses. */
+  private releaseShareKekSecret: Uint8Array | null;
 
   constructor(
     vaultRepository: IVaultRepository,
@@ -112,6 +118,18 @@ export class ApiServer {
   ) {
     this.vaultRepository = vaultRepository;
     this.credentialRepository = credentialRepository;
+
+    this.releaseShareStore = new InMemoryReleaseShareStore();
+    this.releaseShareKekSecret = loadReleaseShareKekSecret(
+      process.env.RELEASE_SHARE_KEK_SECRET,
+    );
+    if (!this.releaseShareKekSecret) {
+      // Fail closed at request time, not at boot: the process must still start.
+      logger.warn(
+        "RELEASE_SHARE_KEK_SECRET missing or not 32-byte base64 - managed release will refuse every request",
+        "ApiServer",
+      );
+    }
 
     this.createVaultUseCase = new CreateVaultUseCase(vaultRepository);
     this.generateCredentialsUseCase = new GenerateCredentialsUseCase(
@@ -965,7 +983,12 @@ export class ApiServer {
       // Use the managed release use case
       // Note: In production, this would be injected via constructor
       const { ManagedReleaseUseCase } = await import("../../application/use-cases/managed-release.use-case");
-      const useCase = new ManagedReleaseUseCase(this.credentialRepository!);
+      const useCase = new ManagedReleaseUseCase(
+        this.credentialRepository!,
+        /* jtiStore: undefined => global store */ undefined,
+        this.releaseShareStore,
+        this.releaseShareKekSecret,
+      );
 
       const result = await useCase.execute({
         capabilityToken,

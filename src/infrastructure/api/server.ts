@@ -39,6 +39,7 @@ import { applyCorsHeaders } from "./middleware/cors";
 import { applySecurityHeaders } from "./middleware/security-headers";
 import {
   checkRateLimit,
+  checkValidateRateLimit,
   RATE_LIMIT_MAX,
   RATE_LIMIT_WINDOW,
   _clearRateLimitForTests,
@@ -593,6 +594,19 @@ export class ApiServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
+    // This endpoint is unauthenticated and takes a raw password, so it is a
+    // policy oracle and a credential-stuffing aid. A dedicated limiter was
+    // written for it (checkValidateRateLimit, 20 requests / 5 minutes) but was
+    // never wired, leaving only the global 100/15min limit. Enforce it here.
+    const ip = req.socket?.remoteAddress || "unknown";
+    if (!checkValidateRateLimit(ip)) {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({ error: "Too many validation requests" }),
+      );
+      return;
+    }
+
     let email: string | null = null;
     let password: string | null = null;
 
@@ -614,18 +628,19 @@ export class ApiServer {
 
     const result: Record<string, unknown> = {};
 
+    // Only `isValid` is returned. The previous response also carried `hasSalt`
+    // and `hasPepper` set to the exact same value as `isValid`, so they added
+    // no information while confirming to an unauthenticated caller that the
+    // backend uses salted emails and peppered passwords.
     if (email) {
       result.email = {
         isValid: this.credentialsGenerator.isValidEmailWithSalt(email),
-        hasSalt: this.credentialsGenerator.isValidEmailWithSalt(email),
       };
     }
 
     if (password) {
       result.password = {
         isValid: this.credentialsGenerator.isValidPasswordWithPepper(password),
-        hasPepper:
-          this.credentialsGenerator.isValidPasswordWithPepper(password),
       };
     }
 

@@ -615,12 +615,14 @@ export async function startPlusServer(options: {
     challengeRepo,
     entitlementRepo,
     userRepo,
+    emailService,
   } = options;
 
   const plusServer = new PlusApiServer(
     challengeRepo,
     entitlementRepo,
     userRepo,
+    emailService,
   );
 
   return plusServer.start(port);

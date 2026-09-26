@@ -60,6 +60,9 @@ export interface StepUpSession {
   readonly completed: boolean;
 }
 
+/** A session argument that also accepts "no session in progress". */
+type MaybeStepUpSession = StepUpSession | null | undefined;
+
 export type StepUpFailureCode =
   | "CHALLENGE_UNAVAILABLE"
   | "SESSION_EXPIRED"
@@ -140,7 +143,7 @@ export async function beginStepUp(
  * refused rather than silently retried.
  */
 export function checkSession(
-  session: StepUpSession | null | undefined,
+  session: MaybeStepUpSession,
   binding: StepUpBinding,
   deps: Pick<StepUpDeps, "now">,
 ): { usable: true } | StepUpFailure {
@@ -174,7 +177,7 @@ export function checkSession(
  * The PIN is passed straight through and never retained.
  */
 export async function submitStepUpPin(
-  session: StepUpSession | null | undefined,
+  session: MaybeStepUpSession,
   binding: StepUpBinding,
   pin: string,
   deps: StepUpDeps,
@@ -226,7 +229,7 @@ export async function submitStepUpPin(
  * just avoids spending a round trip to learn that.
  */
 export function canRetryRelease(
-  session: StepUpSession | null | undefined,
+  session: MaybeStepUpSession,
   binding: StepUpBinding,
 ): { ok: true } | StepUpFailure {
   if (!session) {

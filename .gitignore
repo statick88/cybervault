@@ -20,3 +20,9 @@ cybervault-plugin.tar.gz
 *.tmp
 *.log
 pentest-reports/
+
+# Test coverage output (generated; consumed by SonarQube, never committed)
+coverage/
+
+# SonarQube scanner working directory (generated)
+.scannerwork/

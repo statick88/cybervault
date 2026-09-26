@@ -22,9 +22,8 @@
  */
 
 import type { ICredentialRepository, IReleaseShareStore } from "../../domain/repositories";
-import { Credential } from "../../domain/entities/credential";
 import { CredentialId } from "../../domain/value-objects/ids";
-import { verifyCapability, CapabilityPayload, CapabilityOperation } from "../../infrastructure/crypto/ed25519-capability";
+import { verifyCapability, CapabilityPayload } from "../../infrastructure/crypto/ed25519-capability";
 import { verifyAndConsumeJti } from "../../infrastructure/crypto/jti-store";
 import {
   deriveReleaseShareKek,

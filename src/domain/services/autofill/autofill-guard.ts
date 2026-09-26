@@ -211,8 +211,8 @@ export function evaluateAutofill(request: AutofillGuardRequest): AutofillDecisio
   }
 
   if (hasFrame && hasTopLevel) {
-    const frame = parseAbsoluteOrigin(request.frameOrigin as string);
-    const topLevel = parseAbsoluteOrigin(request.topLevelOrigin as string);
+    const frame = parseAbsoluteOrigin(request.frameOrigin);
+    const topLevel = parseAbsoluteOrigin(request.topLevelOrigin);
     if (!frame.ok || !topLevel.ok) {
       return block(
         "FRAME_CONTEXT_INCONSISTENT",

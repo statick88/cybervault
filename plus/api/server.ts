@@ -16,21 +16,11 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { logger } from "@/shared/logger";
 import { metrics } from "@/shared/metrics";
-import { getCapabilityIssuer } from "../domain/services/capability-issuer";
-import { getChallengeService } from "../domain/services/challenge";
-import { getRiskEngine } from "../domain/services/risk-engine";
-import type { CapabilityOperation, SignedCapability } from "@/infrastructure/crypto/ed25519-capability";
-import type { PlusUser } from "../domain/entities/user";
-import type { Resource } from "../domain/entities/resource";
-import type { Entitlement } from "../domain/entities/entitlement";
-import type { PestilloState } from "../domain/entities/entitlement";
 import type { IChallengeRepository } from "../domain/repositories";
 import type { IEntitlementRepository } from "../domain/repositories";
 import type { IPlusUserRepository } from "../domain/repositories";
 import { NoOpEmailService } from "../domain/services/email-service";
 import type { IEmailService } from "../domain/services/email-service";
-import { verifyCapabilityCore, consumeCapabilityJti } from "../domain/services/capability-issuer";
-import { generateEd25519KeyPair, loadEd25519PrivateKey } from "@/infrastructure/crypto/ed25519-capability";
 
 /** Security configuration */
 const SECURITY_CONFIG = {
@@ -625,7 +615,6 @@ export async function startPlusServer(options: {
     challengeRepo,
     entitlementRepo,
     userRepo,
-    emailService,
   } = options;
 
   const plusServer = new PlusApiServer(

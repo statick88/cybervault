@@ -22,9 +22,9 @@
  */
 
 import { logger } from "@/shared/logger";
-import { binaryToBase64, base64ToBinary } from "@/shared/utils";
+import { binaryToBase64 } from "@/shared/utils";
 import type { CapabilityOperation, CapabilityPayload, SignedCapability } from "@/infrastructure/crypto/ed25519-capability";
-import { signCapability, createCapabilityPayload, verifyCapability, loadEd25519PrivateKey, loadEd25519PublicKey, CAPABILITY_VERSION, DEFAULT_CAPABILITY_TTL_SECONDS, MAX_CAPABILITY_TTL_SECONDS } from "@/infrastructure/crypto/ed25519-capability";
+import { signCapability, createCapabilityPayload, verifyCapability, loadEd25519PrivateKey, loadEd25519PublicKey, DEFAULT_CAPABILITY_TTL_SECONDS, MAX_CAPABILITY_TTL_SECONDS } from "@/infrastructure/crypto/ed25519-capability";
 import { verifyAndConsumeJti } from "@/infrastructure/crypto/jti-store";
 
 /** Capability issuance request */

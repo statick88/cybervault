@@ -269,7 +269,7 @@ export class AdaptiveRiskEngine {
       score = 30; // No habitual countries established
       reason = "No habitual countries established for user";
     } else if (habitualCountries.includes(currentCountry)) {
-      score = 0; // Habitual country
+      // Habitual country: score stays at its initial value of 0
       reason = `Country ${currentCountry} is habitual for user`;
     } else {
       // New country - check policy country risk
@@ -300,7 +300,7 @@ export class AdaptiveRiskEngine {
   }
 
   private evaluateDeviceTrust(context: RiskContext): RiskFactor {
-    const { user, clientContext, history, policy } = context;
+    const { clientContext, history, policy } = context;
     const deviceId = clientContext.deviceId;
 
     let score = 0;
@@ -310,7 +310,7 @@ export class AdaptiveRiskEngine {
       score = 40;
       reason = "No device ID provided";
     } else if (history?.knownDevices?.includes(deviceId)) {
-      score = 0;
+      // Known device: score stays at its initial value of 0
       reason = `Device ${deviceId} is known/trusted`;
     } else {
       score = 50;
@@ -344,7 +344,7 @@ export class AdaptiveRiskEngine {
       score = 25;
       reason = `Request outside business hours (UTC hour: ${hour}, day: ${day})`;
     } else {
-      score = 0;
+      // Within business hours: score stays at its initial value of 0
       reason = "Request within business hours";
     }
 
@@ -404,7 +404,7 @@ export class AdaptiveRiskEngine {
         reason = "Pestillo is CLOSED - access denied by policy";
         break;
       case "enabled":
-        score = 0; // Base score, modifier will be applied
+        // Base score of 0; the modifier is applied below
         reason = "Pestillo is ENABLED - adaptive risk applies";
         break;
       case "step_up":

@@ -12,15 +12,9 @@
 import { logger } from "@/shared/logger";
 import { secureZero } from "@/infrastructure/crypto/secure-memory";
 import { binaryToBase64, base64ToBinary } from "@/shared/utils";
-import type { CapabilityOperation, CapabilityPayload, SignedCapability } from "@/infrastructure/crypto/ed25519-capability";
+import type { CapabilityOperation, SignedCapability } from "@/infrastructure/crypto/ed25519-capability";
 import { signCapability, createCapabilityPayload, verifyCapability, loadEd25519PrivateKey } from "@/infrastructure/crypto/ed25519-capability";
 import { verifyAndConsumeJti } from "@/infrastructure/crypto/jti-store";
-import type { PlusUser } from "../entities/user";
-import type { Resource } from "../entities/resource";
-import type { PestilloState } from "../entities/entitlement";
-import { getRiskEngine } from "./risk-engine";
-import type { IChallengeRepository as ChallengeRepo } from "../repositories";
-import type { IEmailService as EmailSvc } from "../services/email-service";
 
 /** Challenge types */
 export type ChallengeType = "step_up" | "risk_based" | "forced";

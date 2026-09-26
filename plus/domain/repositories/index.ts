@@ -10,7 +10,6 @@ import type { Entitlement } from "../entities/entitlement";
 import type { PlusUser } from "../entities/user";
 import type { ResourceType, ResourceEnvironment, ResourceCriticality } from "../entities/resource";
 import type { PestilloState } from "../entities/entitlement";
-import type { ChallengeType, ChallengeStatus } from "../services/challenge";
 
 export interface IResourceRepository {
   save(resource: Resource): Promise<Resource>;

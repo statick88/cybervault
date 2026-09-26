@@ -9,7 +9,6 @@
  */
 
 import Redis from "ioredis";
-import { secureZero } from "./secure-memory";
 
 /** JTI store interface */
 export interface IJtiStore {

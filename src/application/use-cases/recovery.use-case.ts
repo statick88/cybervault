@@ -9,7 +9,6 @@
 import type { IUserRepository } from "../../domain/repositories";
 import type { IVaultRepository } from "../../domain/repositories";
 import { logger } from "../../shared/logger";
-import { verifyAndConsumeJti } from "../../infrastructure/crypto/jti-store";
 import { binaryToBase64, base64ToBinary } from "../../shared/utils";
 import { secureZero } from "../../infrastructure/crypto/secure-memory";
 

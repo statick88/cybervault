@@ -275,10 +275,11 @@ export class ManagedAuthoringUseCase {
           createdAt: new Date(),
         });
       } catch (error) {
+        const cause = error instanceof Error ? error.message : "unknown failure";
         const detail =
           error instanceof ReleaseShareKekError
             ? error.message
-            : `could not persist the wrapped Release Share: ${error instanceof Error ? error.message : "unknown failure"}`;
+            : `could not persist the wrapped Release Share: ${cause}`;
         const reason: ManagedAuthoringRejection =
           error instanceof ReleaseShareKekError ? "RELEASE_SHARE_KEK_INVALID" : "RELEASE_SHARE_PERSIST_FAILED";
         return reject(reason, detail);

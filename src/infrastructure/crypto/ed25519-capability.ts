@@ -21,8 +21,10 @@
  */
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { secureZero } from "./secure-memory";
 import { binaryToBase64, base64ToBinary } from "../../shared/utils";
+
+/** Assurance level asserted by a capability token. */
+type AssuranceLevel = 1 | 2 | 3;
 
 /** Capability token version */
 export const CAPABILITY_VERSION = 1;
@@ -60,7 +62,7 @@ export interface CapabilityPayload {
   operation: CapabilityOperation;
   secretRef: string;
   deviceId?: string;
-  assurance: 1 | 2 | 3;
+  assurance: AssuranceLevel;
   iat: number;
   exp: number;
   jti: string;
@@ -238,7 +240,7 @@ export function decodeCapabilityPayload(data: Uint8Array): CapabilityPayload {
   const operation = readString();
   const secretRef = readString(2);
   const deviceId = readOptionalString(2);
-  const assurance = readUint8() as 1 | 2 | 3;
+  const assurance = readUint8() as AssuranceLevel;
   const iat = readUint64();
   const exp = readUint64();
   const jti = readString();
@@ -354,7 +356,7 @@ export function createCapabilityPayload(params: {
   operation: CapabilityOperation;
   secretRef: string;
   deviceId?: string;
-  assurance: 1 | 2 | 3;
+  assurance: AssuranceLevel;
   ttlSeconds?: number;
 }): CapabilityPayload {
   const now = Math.floor(Date.now() / 1000);

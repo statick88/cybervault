@@ -40,7 +40,7 @@ import {
   type OpaqueIndex,
 } from "../domain/services/autofill/domain-index";
 import { deriveManagedEntryKey, derivePersonalEntryKey } from "../infrastructure/crypto/hkdf-derivation";
-import { base64ToBinary, binaryToBase64 } from "../shared/utils";
+import { base64ToBinary } from "../shared/utils";
 import { secureZero } from "../infrastructure/crypto/secure-memory";
 
 /* ------------------------------------------------------------------ */

@@ -10,7 +10,7 @@
  */
 
 import { deriveManagedEntryKey } from "../../infrastructure/crypto/hkdf-derivation";
-import { base64ToBinary, binaryToBase64 } from "../../shared/utils";
+import { base64ToBinary } from "../../shared/utils";
 import { secureZero } from "../../infrastructure/crypto/secure-memory";
 
 /** Convert Uint8Array to ArrayBuffer for Web Crypto API */
@@ -32,7 +32,6 @@ async function decryptAESGCM(
 
     // For managed credentials, the encrypted data format is:
     // salt(32) | iv(12) | ciphertext+tag
-    const salt = combined.slice(0, saltLength);
     const iv = combined.slice(saltLength, saltLength + ivLength);
     const ciphertextWithTag = combined.slice(saltLength + ivLength);
 

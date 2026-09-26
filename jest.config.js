@@ -8,6 +8,13 @@ module.exports = {
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
   },
+  transform: {
+    "^.+\\.tsx?$": "ts-jest",
+    "^.+\\.js$": "babel-jest",
+  },
+  transformIgnorePatterns: [
+    "/node_modules/(?!@noble/)",
+  ],
   collectCoverageFrom: [
     "src/domain/**/*.ts",
     "!src/domain/**/index.ts",

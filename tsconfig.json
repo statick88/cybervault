@@ -4,7 +4,7 @@
     "module": "commonjs",
     "lib": ["ES2022", "DOM"],
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -12,8 +12,13 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@plus/*": ["plus/*"]
+    }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "plus/**/*"],
   "exclude": ["node_modules", "dist", "tests"]
 }

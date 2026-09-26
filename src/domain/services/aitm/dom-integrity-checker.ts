@@ -78,50 +78,64 @@ export class DOMIntegrityChecker {
   detectUnexpectedScripts(): DOMAnomaly[] {
     const anomalies: DOMAnomaly[] = [];
     const scripts = document.querySelectorAll('script');
+    const suspiciousPatterns = this.getSuspiciousPatterns();
 
     for (const script of Array.from(scripts)) {
       const src = script.getAttribute('src') || '';
       const text = script.textContent || '';
 
-      // Detectar scripts inline (posible XSS)
       if (!src && text.length > 0) {
-        // Verificar si contiene patrones sospechosos
-        const suspiciousPatterns = [
-          'document.cookie',
-          'document.location',
-          'window.location',
-          'fetch(',
-          'XMLHttpRequest',
-          'Image().src',
-          'createElement',
-          'appendChild',
-        ];
-
-        for (const pattern of suspiciousPatterns) {
-          if (text.includes(pattern)) {
-            anomalies.push({
-              type: 'unexpected-script',
-              location: 'inline script',
-              description: `Inline script contains suspicious pattern: "${pattern}"`,
-              severity: 'critical',
-            });
-            break;
-          }
+        const pattern = this.findSuspiciousPattern(text, suspiciousPatterns);
+        if (pattern) {
+          anomalies.push(this.createAnomaly(
+            'unexpected-script',
+            'inline script',
+            `Inline script contains suspicious pattern: "${pattern}"`,
+            'critical',
+          ));
         }
       }
 
-      // Detectar scripts de dominios externos no comunes
       if (src && !this.isTrustedDomain(src)) {
-        anomalies.push({
-          type: 'unexpected-script',
-          location: src,
-          description: `External script from untrusted domain: ${src}`,
-          severity: 'warning',
-        });
+        anomalies.push(this.createAnomaly(
+          'unexpected-script',
+          src,
+          `External script from untrusted domain: ${src}`,
+          'warning',
+        ));
       }
     }
 
     return anomalies;
+  }
+
+  private getSuspiciousPatterns(): string[] {
+    return [
+      'document.cookie',
+      'document.location',
+      'window.location',
+      'fetch(',
+      'XMLHttpRequest',
+      'Image().src',
+      'createElement',
+      'appendChild',
+    ];
+  }
+
+  private findSuspiciousPattern(text: string, patterns: string[]): string | null {
+    for (const pattern of patterns) {
+      if (text.includes(pattern)) return pattern;
+    }
+    return null;
+  }
+
+  private createAnomaly(
+    type: DOMAnomaly['type'],
+    location: string,
+    description: string,
+    severity: DOMAnomaly['severity'],
+  ): DOMAnomaly {
+    return { type, location, description, severity };
   }
 
   /**
@@ -269,9 +283,7 @@ export class DOMIntegrityChecker {
       // Esta es una verificación limitada pero útil
 
       // Verificar si el campo tiene atributos data-* sospechosos
-      const attrs = field.attributes;
-      for (let i = 0; i < attrs.length; i++) {
-        const attr = attrs[i];
+      for (const attr of field.attributes) {
         if (
           attr.name.startsWith('data-') &&
           (attr.name.includes('capture') ||

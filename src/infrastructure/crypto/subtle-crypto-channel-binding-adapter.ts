@@ -165,7 +165,7 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
         BINDING_CONFIG.KEY_LENGTH * 8 // bits
       );
 
-      const derivedKey = new Uint8Array(derivedBits as ArrayBuffer);
+      const derivedKey = new Uint8Array(derivedBits);
 
       return {
         key: derivedKey,
@@ -241,20 +241,16 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
       message as unknown as BufferSource
     );
 
-    return new Uint8Array(signature as ArrayBuffer);
+    return new Uint8Array(signature);
   }
 
   /**
    * Constant-time comparison of two Uint8Arrays
    */
   private constantTimeEquals(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.length !== b.length) {
-      return false;
-    }
+    if (a.length !== b.length) return false;
     let result = 0;
-    for (let i = 0; i < a.length; i++) {
-      result |= a[i] ^ b[i];
-    }
+    for (let i = 0; i < a.length; i++) result |= a[i] ^ b[i];
     return result === 0;
   }
 
@@ -262,11 +258,8 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
    * Convert Uint8Array to base64 string
    */
   private toBase64(bytes: Uint8Array): string {
-    // Use btoa with String.fromCharCode for binary-safe conversion
     let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
+    for (const byte of bytes) binary += String.fromCharCode(byte);
     return btoa(binary);
   }
 
@@ -276,9 +269,7 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
   private fromBase64(base64: string): Uint8Array {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
 }

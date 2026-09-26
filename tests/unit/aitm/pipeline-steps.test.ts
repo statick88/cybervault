@@ -2,6 +2,11 @@ import { ExactMatchStep } from "../../../src/domain/services/aitm/steps/exact-ma
 import { ConfusableDetectionStep } from "../../../src/domain/services/aitm/steps/confusable-detection-step";
 import { TyposquattingStep } from "../../../src/domain/services/aitm/steps/typosquatting-step";
 
+function origin(scheme: string, hostname: string, port?: number): string {
+  const p = port ?? (scheme === "https" ? 443 : 80);
+  return `${scheme}://${hostname}:${p}`;
+}
+
 describe("AITM Pipeline Steps", () => {
   describe("ExactMatchStep", () => {
     const step = new ExactMatchStep();
@@ -10,8 +15,11 @@ describe("AITM Pipeline Steps", () => {
       expect(step.name).toBe("ExactMatch");
     });
 
-    it("returns valid for exact match", async () => {
-      const result = await step.execute("example.com", "example.com");
+    it("returns valid for exact origin match", async () => {
+      const result = await step.execute(
+        origin("https", "example.com", 443),
+        origin("https", "example.com", 443)
+      );
       expect(result.isValid).toBe(true);
       expect(result.riskLevel).toBe("low");
       expect(result.confidence).toBe(1.0);
@@ -19,30 +27,73 @@ describe("AITM Pipeline Steps", () => {
     });
 
     it("normalizes case before matching", async () => {
-      const result = await step.execute("EXAMPLE.COM", "example.com");
+      const result = await step.execute(
+        origin("https", "EXAMPLE.COM", 443),
+        origin("https", "example.com", 443)
+      );
       expect(result.isValid).toBe(true);
     });
 
-    it("handles trailing dot", async () => {
-      const result = await step.execute("example.com.", "example.com");
+    it("handles trailing dot in hostname", async () => {
+      const result = await step.execute(
+        origin("https", "example.com.", 443),
+        origin("https", "example.com", 443)
+      );
       expect(result.isValid).toBe(true);
     });
 
-    it("returns valid for valid subdomain", async () => {
-      const result = await step.execute("mail.example.com", "example.com");
-      expect(result.isValid).toBe(true);
-      expect(result.riskLevel).toBe("low");
+    it("returns INVALID for subdomain (no subdomain matching)", async () => {
+      const result = await step.execute(
+        origin("https", "mail.example.com", 443),
+        origin("https", "example.com", 443)
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.riskLevel).toBe("high");
+      expect(result.confidence).toBe(1.0);
+    });
+
+    it("returns INVALID for www subdomain", async () => {
+      const result = await step.execute(
+        origin("https", "www.example.com", 443),
+        origin("https", "example.com", 443)
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.riskLevel).toBe("high");
+    });
+
+    it("returns INVALID for different scheme (http vs https)", async () => {
+      const result = await step.execute(
+        origin("http", "example.com", 80),
+        origin("https", "example.com", 443)
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.riskLevel).toBe("high");
+    });
+
+    it("returns INVALID for different port", async () => {
+      const result = await step.execute(
+        origin("https", "example.com", 8443),
+        origin("https", "example.com", 443)
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.riskLevel).toBe("high");
     });
 
     it("returns invalid for non-matching domain", async () => {
-      const result = await step.execute("evil.com", "example.com");
+      const result = await step.execute(
+        origin("https", "evil.com", 443),
+        origin("https", "example.com", 443)
+      );
       expect(result.isValid).toBe(false);
       expect(result.riskLevel).toBe("high");
       expect(result.confidence).toBe(1.0);
     });
 
     it("returns invalid for similar but wrong domain", async () => {
-      const result = await step.execute("examp1e.com", "example.com");
+      const result = await step.execute(
+        origin("https", "examp1e.com", 443),
+        origin("https", "example.com", 443)
+      );
       expect(result.isValid).toBe(false);
       expect(result.riskLevel).toBe("high");
     });
@@ -56,7 +107,10 @@ describe("AITM Pipeline Steps", () => {
     });
 
     it("returns valid for clean domain", async () => {
-      const result = await step.execute("google.com", "google.com");
+      const result = await step.execute(
+        origin("https", "google.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(true);
       expect(result.riskLevel).toBe("low");
       expect(result.evidence).toEqual([]);
@@ -64,7 +118,10 @@ describe("AITM Pipeline Steps", () => {
 
     it("returns invalid for Cyrillic attack domain", async () => {
       // gооgle.com with Cyrillic 'о' (U+043E)
-      const result = await step.execute("g\u043E\u043Egle.com", "google.com");
+      const result = await step.execute(
+        origin("https", "g\u043E\u043Egle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(false);
       expect(result.riskLevel).toBe("high");
       expect(result.evidence!.length).toBeGreaterThan(0);
@@ -72,18 +129,27 @@ describe("AITM Pipeline Steps", () => {
 
     it("returns invalid for Greek characters", async () => {
       // gοοgle.com with Greek omicron (U+03BF)
-      const result = await step.execute("g\u03BF\u03BFgle.com", "google.com");
+      const result = await step.execute(
+        origin("https", "g\u03BF\u03BFgle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(false);
       expect(result.riskLevel).toBe("medium");
     });
 
     it("strips zero-width characters before detection", async () => {
-      const result = await step.execute("g\u200Boogle.com", "google.com");
+      const result = await step.execute(
+        origin("https", "g\u200Boogle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(true);
     });
 
     it("returns high risk for mixed Cyrillic/Latin", async () => {
-      const result = await step.execute("g\u043E\u043Egle.com", "google.com");
+      const result = await step.execute(
+        origin("https", "g\u043E\u043Egle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.riskLevel).toBe("high");
       expect(result.confidence).toBe(0.95);
     });
@@ -97,7 +163,10 @@ describe("AITM Pipeline Steps", () => {
 
     it("returns valid for exact registrable domain match", async () => {
       const step = new TyposquattingStep();
-      const result = await step.execute("google.com", "google.com");
+      const result = await step.execute(
+        origin("https", "google.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(true);
       expect(result.distance).toBe(0);
       expect(result.riskLevel).toBe("low");
@@ -106,7 +175,10 @@ describe("AITM Pipeline Steps", () => {
     it("returns invalid for very similar domain above threshold", async () => {
       // "goggle" vs "google" similarity ≈ 0.833; use threshold 0.80 so it's above
       const step = new TyposquattingStep(0.80);
-      const result = await step.execute("goggle.com", "google.com");
+      const result = await step.execute(
+        origin("https", "goggle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(false);
       expect(result.riskLevel).toBe("high");
       expect(result.distance).toBeGreaterThan(0);
@@ -114,7 +186,10 @@ describe("AITM Pipeline Steps", () => {
 
     it("returns valid for very different domain below threshold", async () => {
       const step = new TyposquattingStep(0.85);
-      const result = await step.execute("amazon.com", "google.com");
+      const result = await step.execute(
+        origin("https", "amazon.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(true);
       expect(result.riskLevel).toBe("low");
     });
@@ -122,7 +197,10 @@ describe("AITM Pipeline Steps", () => {
     it("strips common TLDs before comparison", async () => {
       const step = new TyposquattingStep(0.85);
       // Both resolve to registrable "google"
-      const result = await step.execute("google.com", "google.org");
+      const result = await step.execute(
+        origin("https", "google.com", 443),
+        origin("https", "google.org", 443)
+      );
       expect(result.isValid).toBe(true);
       expect(result.distance).toBe(0);
     });
@@ -132,16 +210,25 @@ describe("AITM Pipeline Steps", () => {
       const looseStep = new TyposquattingStep(0.5);
 
       // "goggle" vs "google" ~ 0.83 similarity
-      const strict = await strictStep.execute("goggle.com", "google.com");
+      const strict = await strictStep.execute(
+        origin("https", "goggle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(strict.isValid).toBe(true); // below strict threshold
 
-      const loose = await looseStep.execute("goggle.com", "google.com");
+      const loose = await looseStep.execute(
+        origin("https", "goggle.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(loose.isValid).toBe(false); // above loose threshold
     });
 
     it("handles subdomains extracting registrable domain", async () => {
       const step = new TyposquattingStep(0.85);
-      const result = await step.execute("mail.google.com", "google.com");
+      const result = await step.execute(
+        origin("https", "mail.google.com", 443),
+        origin("https", "google.com", 443)
+      );
       expect(result.isValid).toBe(true);
       expect(result.distance).toBe(0);
     });

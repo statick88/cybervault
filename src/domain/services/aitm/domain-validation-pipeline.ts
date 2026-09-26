@@ -19,7 +19,7 @@ export type RiskLevel = "low" | "medium" | "high";
  * Result produced by a single validation step.
  */
 export interface DomainValidationResult {
-  /** Whether the hostname passed this validation step */
+  /** Whether the origin passed this validation step */
   isValid: boolean;
   /** Name of the strategy that produced this result */
   strategy: string;
@@ -33,6 +33,8 @@ export interface DomainValidationResult {
   evidence?: unknown[];
   /** Optional edit distance if the step computed one */
   distance?: number;
+  /** Optional additional metadata (e.g., mismatches for debugging) */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -57,13 +59,13 @@ export interface IDomainValidationStep {
   name: string;
 
   /**
-   * Execute this validation step against the given hostname.
+   * Execute this validation step against the given origin.
    *
-   * @param hostname - The hostname to validate (already normalized)
-   * @param expectedDomain - The expected/legitimate domain
+   * @param currentOrigin - The origin to validate (scheme://hostname:port)
+   * @param expectedOrigin - The expected/legitimate origin
    * @returns The validation result for this step
    */
-  execute(hostname: string, expectedDomain: string): Promise<DomainValidationResult>;
+  execute(currentOrigin: string, expectedOrigin: string): Promise<DomainValidationResult>;
 }
 
 /**
@@ -80,9 +82,9 @@ export interface IDomainValidationPipeline {
   /**
    * Run all registered steps and return the aggregated result.
    *
-   * @param hostname - The hostname to validate
-   * @param expectedDomain - The expected/legitimate domain
+   * @param currentOrigin - The origin to validate (scheme://hostname:port)
+   * @param expectedOrigin - The expected/legitimate origin
    * @returns The aggregated pipeline result
    */
-  validate(hostname: string, expectedDomain: string): Promise<PipelineResult>;
+  validate(currentOrigin: string, expectedOrigin: string): Promise<PipelineResult>;
 }

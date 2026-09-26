@@ -1,14 +1,25 @@
 /**
- * Exact Match Step — RFC 1035 Domain Validation
+ * Exact Match Step — Absolute Origin Validation
  *
- * Validates whether the current hostname is an exact match or a valid
- * subdomain of the expected domain. Uses dnsNormalize() for RFC 1035
- * compliance (case folding, trailing dot removal).
+ * Delegates the actual "is this the same origin?" decision to the single
+ * canonical authority in `domain/services/autofill/origin.ts`.
+ *
+ * WHY DELEGATION MATTERS HERE
+ * ---------------------------
+ * This step and the autofill guard both decide whether a credential may be
+ * shown to a page. If they each carried their own notion of origin equality
+ * they would eventually disagree, and the disagreement would be a security bug
+ * in whichever copy was more permissive. There is now exactly one definition.
+ *
+ * This step's remaining job is to express the verdict in AiTM pipeline terms
+ * (risk level, confidence, human-readable reason) and to keep the similarity
+ * signals separate — confusable and typosquatting detection are WARNING-ONLY
+ * and can never authorize a release.
  *
  * @module domain/services/aitm/steps/exact-match-step
  */
 
-import { dnsNormalize } from "../../../utils/dns-normalize";
+import { compareAbsoluteOrigins } from "../../autofill/origin";
 import type {
   IDomainValidationStep,
   DomainValidationResult,
@@ -18,42 +29,31 @@ export class ExactMatchStep implements IDomainValidationStep {
   readonly name = "ExactMatch";
 
   async execute(
-    hostname: string,
-    expectedDomain: string,
+    currentOrigin: string,
+    expectedOrigin: string,
   ): Promise<DomainValidationResult> {
-    const normalizedHost = dnsNormalize(hostname);
-    const normalizedExpected = dnsNormalize(expectedDomain);
+    const comparison = compareAbsoluteOrigins(expectedOrigin, currentOrigin);
 
-    // Exact match after normalization
-    if (normalizedHost === normalizedExpected) {
+    if (comparison.equal) {
       return {
         isValid: true,
         strategy: this.name,
         riskLevel: "low",
         confidence: 1.0,
-        reason: `Hostname "${normalizedHost}" exactly matches expected domain "${normalizedExpected}"`,
+        reason: `Origin "${currentOrigin}" exactly matches expected origin "${expectedOrigin}"`,
       };
     }
 
-    // Subdomain check: hostname ends with .expectedDomain
-    const subdomainSuffix = `.${normalizedExpected}`;
-    if (normalizedHost.endsWith(subdomainSuffix)) {
-      return {
-        isValid: true,
-        strategy: this.name,
-        riskLevel: "low",
-        confidence: 1.0,
-        reason: `Hostname "${normalizedHost}" is a valid subdomain of "${normalizedExpected}"`,
-      };
-    }
-
-    // No match
     return {
       isValid: false,
       strategy: this.name,
       riskLevel: "high",
       confidence: 1.0,
-      reason: `Hostname "${normalizedHost}" does not match expected domain "${normalizedExpected}" and is not a valid subdomain`,
+      reason: `Origin "${currentOrigin}" does NOT exactly match expected "${expectedOrigin}" — ${comparison.reason}`,
+      metadata: {
+        expected: comparison.expected?.serialized ?? null,
+        actual: comparison.actual?.serialized ?? null,
+      },
     };
   }
 }

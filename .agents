@@ -1,115 +1,40 @@
-# CyberVault — Project Context for AI Agents
-# Última actualización: 2026-08-16
+# Project Agents Context
+# Last updated: 2026-09-27
 
-## Identidad del Proyecto
-- **Nombre:** CyberVault
-- **Tipo:** Phishing-Aware Password Manager (Research Paper Prototype)
-- **Versión:** 0.1.0
-- **Stack:** TypeScript, Node.js 22, Chrome Extension (Manifest V3), PostgreSQL 16, Redis 7, Docker
-- **Target:** Browser-based credential protection against phishing, typosquatting, homograph attacks
-- **Propósito:** Pre-submission domain validation + zero-knowledge credential storage
-- **Contexto:** Paper de investigación — Universidad de las Fuerzas Armadas ESPE, Ecuador
-- **Autores:** Luis Jaramillo-Montaño, Diego Medardo Saavedra, Gustavo Salazar-Chacón, Cristian Bustos-Sánchez
+## Project identity
+- **CyberVault** — password manager with split-trust architecture: browser extension (MV3 service worker + popup), Core API (`src/infrastructure/api`, port 3010), Plus entitlement/challenge service (`plus/`, port 3011).
+- Stack: TypeScript (strict), WebCrypto (PBKDF2 600k / HKDF), Jest + ts-jest, esbuild bundling (`scripts/build-extension.mjs`), optional SonarQube.
 
-## Arquitectura
-```
-src/
-├── domain/              → Entities, Ports/Interfaces, Pure Business Logic
-│   ├── entities/        → Vault, Credential, Vulnerability
-│   ├── ports/           → ICryptoService, ISubmissionGate, IDomainNormalizer
-│   ├── repositories/    → IVaultRepository, ICredentialRepository
-│   ├── services/        → AiTM detection pipeline (3-phase), domain validation
-│   └── value-objects/   → VaultId, CredentialId, CryptoHash (branded IDs)
-│
-├── application/         → Use Cases orchestration
-│   └── use-cases/       → CreateVault, GenerateCredentials, ExtractCredentials, ValidateFormSubmission
-│
-├── infrastructure/      → Adapters implementing ports
-│   ├── api/             → HTTP server (raw Node.js), JWT auth, rate limiting
-│   ├── browser/         → Chrome DOM adapters (SubmissionGate, DomainNormalizer, WarningRenderer)
-│   ├── crypto/          → AES-GCM-256, PBKDF2, ECDSA P-256, EncryptionService
-│   ├── db/              → Migration runner, CLI
-│   ├── repositories/    → PostgresVaultRepo, PostgresCredentialRepo, PostgresUserRepo
-│   ├── security/        → ConfusableDetector, TimingAnalyzer, Unicode confusables
-│   ├── ipfs/            → IPFS adapter with circuit breaker + retry
-│   └── cookie/          → Cookie isolation
-│
-├── shared/              → Cross-cutting utilities
-│   ├── retry.ts         → Exponential backoff + jitter
-│   ├── logger.ts        → Structured JSON/human logging
-│   ├── metrics.ts       → Lightweight Prometheus-format metrics
-│   └── circuit-breaker.ts → Fault tolerance state machine
-│
-├── background/          → Chrome Extension service worker
-│   └── auditor.ts       → AiTM detection in extension context
-│
-└── ui/                  → Chrome Extension popup, options, content scripts
-```
+## Architecture
+- `src/background/auditor.ts` — service worker: message router, all handlers, release/step-up/managed-release logic. Sole entry point for extension messaging.
+- `src/background/message-types.ts` — the message contract; re-exported by `auditor.ts`. Content scripts and popup import from it so they cannot drift.
+- `src/background/credential-release.ts` — release path (binding proof → guard → key derivation → decrypt). Fails closed on every failure path.
+- `src/domain/services/autofill/` — origin canonicalization, opaque index, authoring, step-up binding rules, autofill guard.
+- `src/infrastructure/crypto/master-key-manager.ts` — vault init/unlock, session key (`cybervault_session_key`, 15-min `SESSION_DURATION_MS`).
+- `src/ui/popup/popup.ts|html` — popup UI; sends typed messages only.
+- `src/ui/content-scripts/` — `autocomplete.js` (form fill), `managed-decrypt.js`, `inject.js`.
+- Storage: `chrome.storage.session` holds `cybervault_vek` + `cybervault_session_key` + `cybervault_unlock_state`; `chrome.storage.local` holds `cybervault_cred_records` + `cybervault_cred_index` (ciphertext only).
 
-## Estado Actual del Proyecto
-- **Etapa:** Remediación ODD en curso (`odd/tasks/cybervault-final-verification-remediation.md`)
-- **Compilación:** `tsc --noEmit` = 809 errores preexistentes (baseline verificado — no subir)
-- **Tests:** 874 passed / 887 total (49 suites + 1 skipped), baseline 859
-- **WU-1 (CRITICAL-1):** ✅ done — `PLUS_PUBLIC_KEY` pineado, bindings de capability verificados, 15 tests negativos nuevos
-- **WU-2 (CRITICAL-2) / WU-3 (CRITICAL-3):** pendientes
-- **Score actual:** ~55/70 (79%) — objetivo 100/100
+## Current state
+- Stage: **WU-3 (CRITICAL-3) implementation complete, awaiting orchestrator verification and commit.** Branch `fix/pentest-script-rdd`. Nothing committed by the agent.
 
-## Objetivos del Paper
-1. Demostrar validación de dominio pre-envío contra phishing
-2. Pipeline de 3 fases: ExactMatch → ConfusableDetection → Levenshtein
-3. Almacenamiento zero-knowledge con encriptación local
-4. Integración IPFS para almacenamiento descentralizado
-5. Monitoreo de brechas HIBP (k-anonymity)
-6. Benchmarks reproducibles
+## Objectives
+1. ✅ WU-1 / WU-2 (prior sessions) — origin authority, managed-release contract fixes.
+2. ✅ WU-3 — extension-side credential release path wired end to end (VEK persistence, authoring writer, step-up senders, popup senders, behavioural tests).
+3. ⏳ Orchestrator verification + commit (explicitly out of agent scope).
 
-## Público Objetivo
-- Investigadores en seguridad informática
-- Desarrolladores de password managers
-- Comunidad académica en criptografía aplicada
-- Profesionales de ciberseguridad
+## Project conventions
+- English for all code, comments, tests, docs; no AI attribution in commits; conventional commits only.
+- No new dependencies. Do not touch `plus/`, `plus/admin/`, Docker.
+- Never weaken: ExactMatch guard, step-up binding re-check, JTI consumption. `origin.ts` is the sole origin authority.
+- Regex-on-source assertions in tests constrain refactors — read them before editing `auditor.ts`.
 
-## Convenciones del Proyecto
-- **Idioma:** TypeScript (CommonJS)
-- **Arquitectura:** Clean Architecture / Hexagonal
-- **Build:** esbuild (extension), tsc (backend)
-- **Testing:** Jest + Playwright + Supertest
-- **Git:** Conventional commits (no AI attribution)
-- **Logging:** Structured logger (src/shared/logger.ts)
-- **Metrics:** Lightweight Prometheus format (src/shared/metrics.ts)
+## External dependencies
+- Node 18+ (global `fetch`, WebCrypto). Playwright e2e requires Chrome (not installed here). SonarQube scanner CLI not installed.
 
-## Dependencias Externas
-- PostgreSQL 16 (credential/vault storage)
-- Redis 7 (cache & sessions) — configurado pero no aún conectado
-- IPFS (optional decentralized storage) — con circuit breaker + retry
-- Chrome browser (extension host)
-
-## Seguridad Implementada
-- JWT auth con jti claim para revocación futura
-- JWT_SECRET gate para staging/production
-- CORS explícito (no wildcard)
-- User scoping en vault/credential queries (ownerId)
-- Rate limiting por IP
-- CSP headers configurados
-- Body size limits (1MB)
-- PBKDF2 con 600,000 iteraciones (NIST)
-- AES-GCM-256 con key derivation
-- ECDSA P-256 para firmas
-- Timing-safe password comparison
-
-## Resiliencia Implementada
-- Retry con exponential backoff + jitter (IPFS, Postgres)
-- Circuit breaker (IPFS: degradación graceful, Postgres: fail-fast)
-- Connection pooling (pg.Pool, max 10, idle 30s)
-- Health checks (DB + IPFS dependency verification)
-- API request timeout (30s → 504)
-- Structured logging con contextos
-
-## Puntos de Atención (Known Issues)
-1. **E2E Tests skipeados** — Requieren Chrome real (no Chromium bundled). Fixture usa `channel: 'chrome'`
-2. **Paper v2 incompleto** — Documento tiene mezcla de texto v1/v2. Correcciones 1-7 aplicadas, resto pendiente
-3. **Redis configurado** pero no conectado en aplicación (solo docker-compose)
-
-## Próximos Pasos (para 100/100)
-1. **CI Pipeline** — Crear workflow GitHub Actions con `setup-chrome` para E2E tests
-2. **Paper v2** — Aplicar 15 correcciones restantes (usar script o edición manual)
-3. **Verificación final** — Ejecutar 22 E2E tests en CI con Chrome real
+## Points of attention
+- **tsc baseline = 809 errors** (pre-existing, mostly `plus/admin` JSX). Any edit must keep it at 809.
+- **jest baseline = 908 passed / 921 total** (52 of 53 suites, 13 skipped) after WU-3.
+- Never write `password`/`totpSecret` inside a `chrome.storage.local.set(...)` body in `auditor.ts` — `tests/extension/sw-contract.test.ts` uses a non-greedy regex that can overrun to the next `)`.
+- 15-min (`master-key-manager`) vs 30-min (`SESSION_WINDOW_MS`) session window discrepancy is reported, not silently unified.
+- `.agents` and `.progress` are gitignored runtime state, not deliverables.

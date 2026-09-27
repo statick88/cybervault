@@ -112,9 +112,16 @@ export async function requestManagedCapability(
       (response) => {
         if (chrome.runtime.lastError) {
           resolve({ success: false, error: chrome.runtime.lastError.message });
-        } else {
-          resolve(response);
+          return;
         }
+        // The worker replies with the service-worker envelope
+        // `{ ok, data, error }`; the capability itself is in `data`.
+        if (!response?.ok) {
+          resolve({ success: false, error: response?.error });
+          return;
+        }
+        const data = (response.data ?? {}) as CapabilityResponse;
+        resolve({ ...data, success: Boolean(data.capabilityToken) });
       },
     );
   });
@@ -122,10 +129,15 @@ export async function requestManagedCapability(
 
 /**
  * Request ReleaseShare from Core using capability
+ *
+ * The payload is exactly what `POST /api/v1/vaults/{vaultId}/managed-release`
+ * takes: the capability and the credential it is for. No public key travels
+ * with it — Core has pinned Plus's key itself since WU-1, and a key the caller
+ * supplies would be a key the caller chooses.
  */
 export async function requestReleaseShare(
   capabilityToken: CapabilityResponse["capabilityToken"],
-  plusPublicKey: string,
+  credentialId: string,
 ): Promise<ManagedReleaseResponse> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
@@ -133,14 +145,16 @@ export async function requestReleaseShare(
         type: "REQUEST_RELEASE_SHARE",
         payload: {
           capabilityToken,
-          plusPublicKey,
+          credentialId,
         },
       },
       (response) => {
         if (chrome.runtime.lastError) {
           resolve({ success: false, error: chrome.runtime.lastError.message });
+        } else if (!response?.ok) {
+          resolve({ success: false, error: response?.error });
         } else {
-          resolve(response);
+          resolve({ success: true, releaseShare: response.data?.releaseShare });
         }
       },
     );
@@ -184,23 +198,11 @@ export async function decryptManagedCredential(
       return null;
     }
 
-    // 2. Get Plus public key for Core verification
-    const plusPublicKeyResponse = await new Promise<any>((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: "GET_PLUS_PUBLIC_KEY" },
-        resolve,
-      );
-    });
-
-    if (!plusPublicKeyResponse?.ok) {
-      console.error("Failed to get Plus public key");
-      return null;
-    }
-
-    // 3. Request ReleaseShare from Core
+    // 2. Request the ReleaseShare from Core. Core pins Plus's verification key
+    //    itself, so no key is fetched here to travel with the request.
     const releaseResponse = await requestReleaseShare(
       capabilityResponse.capabilityToken,
-      plusPublicKeyResponse.data?.publicKey,
+      credential.id,
     );
 
     if (!releaseResponse.success || !releaseResponse.releaseShare) {

@@ -80,15 +80,34 @@
       <p>No credentials yet.</p>
     </div>
 
+    <div id="step-up-panel" class="add-form" hidden>
+      <p id="step-up-status" class="add-form__status"></p>
+      <input
+        type="password"
+        id="step-up-pin"
+        placeholder="PIN"
+        class="add-form__input"
+        inputmode="numeric"
+        autocomplete="one-time-code"
+        aria-label="Step-up PIN"
+      />
+      <div class="add-form__actions">
+        <button id="step-up-submit" class="btn btn--primary" type="button">Verify</button>
+        <button id="step-up-dismiss" class="btn btn--ghost" type="button">Later</button>
+      </div>
+      <p id="step-up-error" class="error" hidden></p>
+    </div>
+
     <div id="add-form" class="add-form" hidden>
       <input type="text" id="add-title" placeholder="Title" class="add-form__input" />
       <input type="text" id="add-username" placeholder="Username" class="add-form__input" />
       <input type="password" id="add-password" placeholder="Password" class="add-form__input" />
-      <input type="url" id="add-url" placeholder="URL (optional)" class="add-form__input" />
+      <input type="url" id="add-url" placeholder="Origin (https://example.com)" class="add-form__input" />
       <div class="add-form__actions">
         <button id="add-save" class="btn btn--primary" type="button">Save</button>
         <button id="add-cancel" class="btn btn--ghost" type="button">Cancel</button>
       </div>
+      <p id="add-error" class="error" hidden></p>
     </div>
   </section>
 

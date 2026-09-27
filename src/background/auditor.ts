@@ -21,7 +21,16 @@ import {
   type EncryptedCredentialRecord,
 } from "./credential-release";
 import type { OpaqueIndex } from "../domain/services/autofill/domain-index";
-import type { StepUpBinding } from "../domain/services/autofill/step-up-flow";
+import {
+  authorCredential,
+  type AuthoredCredentialRecord,
+} from "../domain/services/autofill/credential-authoring";
+import {
+  canRetryRelease,
+  type StepUpBinding,
+  type StepUpSession,
+} from "../domain/services/autofill/step-up-flow";
+import { initializeVault, unlockVault } from "../infrastructure/crypto/master-key-manager";
 import {
   MESSAGE_TYPES,
   type BackgroundMessage,
@@ -41,6 +50,8 @@ import {
   type ReleaseCredentialMessage,
   type StartStepUpMessage,
   type SubmitStepUpPinMessage,
+  type AuthorCredentialMessage,
+  type GetPendingStepUpMessage,
 } from "./message-types";
 import { metrics } from "../shared/metrics";
 import { logger } from "../shared/logger";
@@ -181,16 +192,67 @@ async function handleUnlockVault(
   msg: UnlockVaultMessage,
 ): Promise<BackgroundResponse> {
   try {
-    // Store unlock state in session storage (cleared when browser closes)
+    const passphrase = msg.passphrase;
+    if (typeof passphrase !== "string" || passphrase === "") {
+      return { ok: false, error: "a passphrase is required" };
+    }
+
+    // Verify first. Only a vault that does not exist yet is created here:
+    // nothing else in `src/` ever calls `initializeVault`, so without this the
+    // very first unlock would fail with "not initialized" and no extension
+    // session could ever start. A wrong passphrase on an existing vault never
+    // reaches this branch, so it cannot re-initialize over live data.
+    let result = await unlockVault(passphrase);
+    if (!result.success && result.code === "VAULT_NOT_INITIALIZED") {
+      const created = await initializeVault(passphrase);
+      if (!created.success) {
+        return {
+          ok: false,
+          error: created.error ?? "vault initialization failed",
+          data: { success: false },
+        };
+      }
+      result = await unlockVault(passphrase);
+    }
+    if (!result.success) {
+      return {
+        ok: false,
+        error: result.error ?? "unlock failed",
+        data: { success: false },
+      };
+    }
+
+    // Persist the session VEK. This is the writer the release path was missing:
+    // `readSessionVek` returns null until `cybervault_vek` exists, so
+    // `listCandidatesForOrigin` returned [] and `releaseCredential` refused
+    // with VAULT_LOCKED for every credential.
+    //
+    // The extension derives exactly one 256-bit secret at unlock (HKDF label
+    // `cybervault|session_key|v2`, see key-derivation-service) and that value
+    // IS this vault's VEK — the header of master-key-manager.ts documents the
+    // two names for the same session-scoped key. `cybervault_vek` is the
+    // authorization-scoped handle the release path reads; both entries live in
+    // session storage and are removed together by `handleLockVault`.
+    const session = await chrome.storage.session.get(["cybervault_session_key"]);
+    const sessionKey = session["cybervault_session_key"] as string | undefined;
+    if (!sessionKey) {
+      return { ok: false, error: "unlock produced no session key" };
+    }
+
+    const now = Date.now();
     await chrome.storage.session.set({
+      [STORE_KEYS.SESSION_VEK]: sessionKey,
       cybervault_unlock_state: {
         vaultId: msg.vaultId,
-        unlockedAt: Date.now(),
-        expiresAt: Date.now() + 30 * 60 * 1000, // 30 min session
+        unlockedAt: now,
+        expiresAt: now + SESSION_WINDOW_MS, // 30 min session
       },
     });
 
-    return { ok: true, data: { unlocked: true } };
+    return {
+      ok: true,
+      data: { success: true, unlocked: true, vaultId: msg.vaultId },
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: message };
@@ -228,6 +290,13 @@ async function handleLockVault(
       return { ok: false, error: "lock failed to clear session VEK" };
     }
 
+    // Key material is gone, so every in-flight third factor with it: a
+    // challenge or a completion recorded against a session that no longer
+    // exists must not be spendable after the next unlock.
+    stepUpChallenges.clear();
+    challengedBindings.clear();
+    completedStepUps.clear();
+
     return { ok: true, data: { locked: true, vekCleared: true } };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -239,14 +308,8 @@ async function handleCheckVaultStatus(
   _msg: CheckVaultStatusMessage,
 ): Promise<BackgroundResponse> {
   try {
-    const session = await chrome.storage.session.get([
-      "cybervault_session_key",
-      "cybervault_unlock_time",
-    ]);
-    const sessionKey = session["cybervault_session_key"] as string | undefined;
-    const unlockTime = session["cybervault_unlock_time"] as number | undefined;
-    const isValid = !!(sessionKey && unlockTime && Date.now() - unlockTime < 30 * 60 * 1000);
-    return { ok: true, data: { unlocked: isValid } };
+    const unlocked = await isSessionUnlocked();
+    return { ok: true, data: { unlocked } };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: message };
@@ -366,6 +429,84 @@ async function handleRequestManagedCapability(
   }
 }
 
+/**
+ * POST one managed release to Core.
+ *
+ * ONE implementation for both call sites (the message handler and the release
+ * path's `requestCapability`), because two hand-written copies of a security
+ * request is how they drift apart — and they had: both posted to
+ * `/api/v1/managed/release`, which does not exist, and both sent a
+ * `plusPublicKey` the route has not accepted since WU-1, while omitting the
+ * `credentialId` it verifies.
+ *
+ * `vaultId` is read from the worker's own unlock state rather than taken from
+ * the caller: the caller does not get to choose which vault to release from.
+ */
+async function fetchManagedRelease(args: {
+  token: string;
+  credentialId: string;
+  capabilityToken: RequestReleaseShareMessage["payload"]["capabilityToken"];
+  signal: AbortSignal;
+}): Promise<
+  | { readonly ok: true; readonly releaseShare: string }
+  | {
+      readonly ok: false;
+      readonly kind: "unlocked" | "http" | "network" | "denied";
+      readonly status?: number;
+      readonly detail: string;
+    }
+> {
+  const config = await chrome.storage.local.get(["core_base_url"]);
+  const baseUrl = (config["core_base_url"] as string) || "http://localhost:3010";
+
+  const session = await chrome.storage.session.get(["cybervault_unlock_state"]);
+  const state = session["cybervault_unlock_state"] as { vaultId?: string } | undefined;
+  const vaultId = state?.vaultId;
+  if (typeof vaultId !== "string" || vaultId === "") {
+    return { ok: false, kind: "unlocked", detail: "vault not unlocked" };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${baseUrl}/api/v1/vaults/${encodeURIComponent(vaultId)}/managed-release`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${args.token}`,
+        },
+        body: JSON.stringify({
+          capabilityToken: args.capabilityToken,
+          credentialId: args.credentialId,
+        }),
+        signal: args.signal,
+      },
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      kind: "network",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    return { ok: false, kind: "http", status: response.status, detail: text };
+  }
+
+  const body = (await response.json()) as {
+    success?: boolean;
+    releaseShare?: string;
+    error?: string;
+  };
+  if (body.success === false || !body.releaseShare) {
+    return { ok: false, kind: "denied", detail: body.error ?? "release share denied" };
+  }
+  return { ok: true, releaseShare: body.releaseShare };
+}
+
 async function handleRequestReleaseShare(
   msg: RequestReleaseShareMessage,
 ): Promise<BackgroundResponse> {
@@ -378,44 +519,36 @@ async function handleRequestReleaseShare(
       return { ok: false, error: "Not authenticated" };
     }
 
-    // Get Core API base URL
-    const coreConfig = await chrome.storage.local.get(["core_base_url"]);
-    const baseUrl = coreConfig["core_base_url"] || "http://localhost:3010";
-
-    // Call Core API for managed release
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     try {
-      const response = await fetch(`${baseUrl}/api/v1/managed/release`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          capabilityToken: msg.payload.capabilityToken,
-          plusPublicKey: msg.payload.plusPublicKey,
-        }),
+      const release = await fetchManagedRelease({
+        token: authToken as string,
+        credentialId: msg.payload.credentialId,
+        capabilityToken: msg.payload.capabilityToken,
         signal: controller.signal,
       });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        return { ok: false, error: `Core API ${response.status}: ${errorText}` };
+      if (!release.ok) {
+        if (release.kind === "http") {
+          return { ok: false, error: `Core API ${release.status}: ${release.detail}` };
+        }
+        if (release.kind === "network") {
+          const message = release.detail;
+          if (message.includes("aborted") || message.includes("timeout")) {
+            return { ok: false, error: "Core API timeout" };
+          }
+          return { ok: false, error: `Core API error: ${message}` };
+        }
+        return { ok: false, error: release.detail };
       }
 
-      const data = await response.json();
-      return { ok: true, data };
-    } catch (fetchErr) {
+      return {
+        ok: true,
+        data: { success: true, releaseShare: release.releaseShare },
+      };
+    } finally {
       clearTimeout(timeoutId);
-      const message = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      if (message.includes("aborted") || message.includes("timeout")) {
-        return { ok: false, error: "Core API timeout" };
-      }
-      return { ok: false, error: `Core API error: ${message}` };
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -473,9 +606,71 @@ async function handleGetPlusPublicKey(
 const STORE_KEYS = {
   INDEX: "cybervault_cred_index",
   RECORDS: "cybervault_cred_records",
-  /** Session-scoped VEK, written by master-key-manager on unlock. */
+  /** Session-scoped VEK, written by `handleUnlockVault` on a successful unlock. */
   SESSION_VEK: "cybervault_vek",
 } as const;
+
+/**
+ * How long an unlock stays usable.
+ *
+ * One window for the whole worker. `unlock_state.expiresAt`, the status reply
+ * and the VEK liveness gate all read this constant, so they cannot drift apart.
+ *
+ * NOTE (reported, not silently unified): `master-key-manager.ts` separately
+ * keeps its own `SESSION_DURATION_MS` of 15 minutes, which governs
+ * `isSessionValid()` and therefore `getSessionKey()`. Between minute 15 and 30
+ * those two views disagree — the worker reports unlocked while the key manager
+ * would report expired. The worker's own paths all go through the gate below,
+ * so they are internally consistent; closing the 15-vs-30 gap is a separate
+ * decision about which timeout the product actually wants.
+ */
+const SESSION_WINDOW_MS = 30 * 60 * 1000;
+
+/**
+ * Is the vault usable right now?
+ *
+ * Shared by the status reply and by `readSessionVek`, so "the popup says
+ * unlocked" and "the release path may derive a key" can never disagree.
+ */
+async function isSessionUnlocked(): Promise<boolean> {
+  try {
+    const session = await chrome.storage.session.get([
+      "cybervault_session_key",
+      "cybervault_unlock_time",
+      "cybervault_unlock_state",
+    ]);
+    const sessionKey = session["cybervault_session_key"] as string | undefined;
+    const unlockTime = session["cybervault_unlock_time"] as number | undefined;
+    const state = session["cybervault_unlock_state"] as
+      | { expiresAt?: number }
+      | undefined;
+    if (!sessionKey || !unlockTime) return false;
+    if (typeof state?.expiresAt === "number" && Date.now() >= state.expiresAt) {
+      return false;
+    }
+    return Date.now() - unlockTime < SESSION_WINDOW_MS;
+  } catch {
+    // Fail closed: storage unavailable means "locked".
+    return false;
+  }
+}
+
+/**
+ * Drop every piece of session key material the moment the window lapses.
+ *
+ * The release path is the only thing that reads the VEK, so expiry is enforced
+ * where it is read rather than by a timer the service worker could be asleep
+ * for. Leaving the material in place until someone asks would make "locked" a
+ * statement about the UI rather than about the key.
+ */
+async function expireSessionKeyMaterial(): Promise<void> {
+  await chrome.storage.session.remove([
+    STORE_KEYS.SESSION_VEK,
+    "cybervault_session_key",
+    "cybervault_unlock_time",
+    "cybervault_unlock_state",
+  ]);
+}
 
 /**
  * Read the session VEK.
@@ -485,6 +680,14 @@ const STORE_KEYS = {
  */
 async function readSessionVek(): Promise<Uint8Array | null> {
   try {
+    // Liveness first: a VEK left behind by a lapsed session must not be usable
+    // just because nobody removed it. On expiry the material is dropped here,
+    // so the refusal is "locked" rather than "cleared after the fact".
+    if (!(await isSessionUnlocked())) {
+      await expireSessionKeyMaterial();
+      return null;
+    }
+
     const stored = await chrome.storage.session.get([STORE_KEYS.SESSION_VEK]);
     const raw = stored[STORE_KEYS.SESSION_VEK];
     if (typeof raw !== "string" || raw === "") return null;
@@ -500,11 +703,17 @@ async function readSessionVek(): Promise<Uint8Array | null> {
   }
 }
 
-/** Success shape of the Plus capability + public-key round trip. */
+/** The Ed25519 capability Plus issues, in the shape it returns it. */
+interface PlusCapabilityToken {
+  readonly payload: unknown;
+  readonly signature: string;
+  readonly protectedHeader: string;
+}
+
+/** Success shape of the Plus capability round trip. */
 interface PlusMaterialSuccess {
   readonly ok: true;
-  readonly capability: { success?: boolean; challengeRequired?: boolean; error?: string };
-  readonly plusPublicKey: string;
+  readonly capabilityToken: PlusCapabilityToken;
 }
 
 /**
@@ -517,12 +726,19 @@ type PlusMaterialResult =
   | { readonly ok: false; readonly challengeRequired: true };
 
 /**
- * Plus round trip for a managed release: capability request, then public key.
+ * Plus round trip for a managed release: ask for the capability.
  *
  * EXTRACTED VERBATIM from `buildReleaseDeps().requestCapability` — same
- * endpoints, headers, request bodies, status handling, failure detail
- * strings, and the same evaluation order (challenge check before success
- * check, public key before release).
+ * endpoint, headers, request body, status handling and failure detail strings.
+ *
+ * CONTRACT (read from `plus/api/server.ts`, not assumed): the route responds
+ * with `{ capabilityToken, expiresAt }` — the token is a top-level field, not a
+ * wrapper object. The previous shape read `success` / `challengeRequired` off
+ * the whole body and then handed that whole body to Core as `capabilityToken`,
+ * so a release could never have succeeded even with the URL corrected.
+ *
+ * Not fetched here: the Plus public key. Core pins that key itself since WU-1,
+ * so transporting it would only invite the caller-chosen-key bypass again.
  */
 async function fetchPlusMaterial(args: {
   plusBase: string;
@@ -555,27 +771,30 @@ async function fetchPlusMaterial(args: {
   if (!capRes.ok) {
     return { ok: false, detail: `capability request failed (${capRes.status})` };
   }
-  const cap = (await capRes.json()) as PlusMaterialSuccess["capability"];
+  const cap = (await capRes.json()) as {
+    success?: boolean;
+    challengeRequired?: boolean;
+    error?: string;
+    capabilityToken?: PlusCapabilityToken;
+  };
+  // Checked first and kept, even though the current Plus issues a 400 instead:
+  // `ReleaseDeps` promises this outcome, and a policy that demands a third
+  // factor must surface as a challenge rather than as a generic denial.
   if (cap.challengeRequired) {
     return { ok: false, challengeRequired: true };
   }
   if (cap.success === false) {
     return { ok: false, detail: cap.error ?? "capability denied" };
   }
-
-  const pubRes = await fetch(`${args.plusBase}/api/v1/crypto/public-key`, {
-    method: "GET",
-    signal: args.signal,
-  });
-  if (!pubRes.ok) {
-    return { ok: false, detail: `public key unavailable (${pubRes.status})` };
-  }
-  const pub = (await pubRes.json()) as { publicKey?: string };
-  if (!pub.publicKey) {
-    return { ok: false, detail: "public key missing" };
+  if (
+    !cap.capabilityToken ||
+    typeof cap.capabilityToken.signature !== "string" ||
+    typeof cap.capabilityToken.protectedHeader !== "string"
+  ) {
+    return { ok: false, detail: "capability token missing" };
   }
 
-  return { ok: true, capability: cap, plusPublicKey: pub.publicKey };
+  return { ok: true, capabilityToken: cap.capabilityToken };
 }
 
 function buildReleaseDeps(): ReleaseDeps {
@@ -621,7 +840,6 @@ function buildReleaseDeps(): ReleaseDeps {
       ]);
       const plusBase = (config["plus_base_url"] as string) || "http://localhost:3011";
       const serviceSecret = (config["plus_service_secret"] as string) || "";
-      const coreBase = "http://localhost:3010";
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
@@ -638,29 +856,22 @@ function buildReleaseDeps(): ReleaseDeps {
         });
         if (!plus.ok) return plus;
 
-        const relRes = await fetch(`${coreBase}/api/v1/managed/release`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            credentialId,
-            capabilityToken: plus.capability,
-            plusPublicKey: plus.plusPublicKey,
-          }),
+        const released = await fetchManagedRelease({
+          token,
+          credentialId,
+          capabilityToken: plus.capabilityToken,
           signal: controller.signal,
         });
-
-        if (!relRes.ok) {
-          return { ok: false, detail: `managed release failed (${relRes.status})` };
+        if (!released.ok) {
+          if (released.kind === "http") {
+            return { ok: false, detail: `managed release failed (${released.status})` };
+          }
+          // network / denied / not-unlocked: the helper already carries a
+          // message that is safe to show, and it never contains key material.
+          return { ok: false, detail: released.detail };
         }
-        const rel = (await relRes.json()) as { success?: boolean; releaseShare?: string; error?: string };
-        if (rel.success === false || !rel.releaseShare) {
-          return { ok: false, detail: rel.error ?? "release share denied" };
-        }
 
-        return { ok: true, releaseShare: rel.releaseShare };
+        return { ok: true, releaseShare: released.releaseShare };
       } catch (err) {
         return {
           ok: false,
@@ -685,10 +896,100 @@ async function handleListCredentialsForOrigin(
   }
 }
 
+/**
+ * Author one credential into the release store.
+ *
+ * This is the writer for `cybervault_cred_records` and `cybervault_cred_index`.
+ * Neither store ever had one, so the index was empty for every user: listing
+ * found no candidates and every release returned CREDENTIAL_NOT_FOUND. The
+ * guard, the crypto and the binding logic were all present — and unreachable.
+ *
+ * The call is delegated to `authorCredential`, which validates the origin
+ * before anything else, seals the envelope and registers the lookup token.
+ * This handler owns only the persistence, and it persists the record WITHOUT
+ * its origin: the store must hold ciphertext, salts and non-secret metadata
+ * only (see STORE_KEYS), and the opaque index is what proves the binding.
+ */
+async function handleAuthorCredential(
+  msg: AuthorCredentialMessage,
+): Promise<BackgroundResponse> {
+  try {
+    const vek = await readSessionVek();
+    if (!vek) {
+      return { ok: false, error: "VAULT_LOCKED", data: { code: "VAULT_LOCKED" } };
+    }
+
+    const existingIndex = await buildReleaseDeps().getIndex();
+    const result = await authorCredential(
+      {
+        origin: msg.payload?.origin ?? "",
+        username: msg.payload?.username ?? "",
+        password: msg.payload?.password ?? "",
+        title: msg.payload?.title ?? "",
+        totpSeedBase32: msg.payload?.totpSeedBase32,
+      },
+      vek,
+      existingIndex,
+    );
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: result.reason,
+        data: { reason: result.reason, detail: result.detail },
+      };
+    }
+
+    const { origin: _boundOrigin, ...persisted } = result.record;
+
+    const stored = await chrome.storage.local.get([STORE_KEYS.RECORDS]);
+    const all =
+      (stored[STORE_KEYS.RECORDS] as Record<string, EncryptedCredentialRecord> | undefined) ?? {};
+
+    await chrome.storage.local.set({
+      [STORE_KEYS.RECORDS]: { ...all, [result.record.id]: persisted },
+      [STORE_KEYS.INDEX]: result.index,
+    });
+
+    return {
+      ok: true,
+      data: {
+        id: result.record.id,
+        title: result.record.title,
+        usernameHint: result.record.usernameHint,
+        origin: result.record.origin,
+      },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+}
+
 async function handleReleaseCredential(
   msg: ReleaseCredentialMessage,
 ): Promise<BackgroundResponse> {
   try {
+    const binding: StepUpBinding = {
+      credentialId: msg.credentialId,
+      origin: msg.origin,
+      operation: msg.operation,
+    };
+    const key = bindingKey(binding);
+
+    // A release whose policy demanded a third factor stays gated on that
+    // factor until it has been completed FOR THIS BINDING. `canRetryRelease`
+    // is the same check the domain module exists to enforce: a challenge
+    // satisfied for one credential, origin or operation never authorizes a
+    // different one, and a step-up that has not been completed authorizes
+    // nothing at all.
+    if (challengedBindings.has(key)) {
+      const retry = canRetryRelease(completedStepUps.get(key) ?? null, binding);
+      if (!retry.ok) {
+        return { ok: false, error: "CHALLENGE_REQUIRED", data: { code: "CHALLENGE_REQUIRED" } };
+      }
+    }
+
     const outcome = await releaseCredential(
       {
         credentialId: msg.credentialId,
@@ -701,7 +1002,17 @@ async function handleReleaseCredential(
       buildReleaseDeps(),
     );
 
-    if (outcome.ok) return { ok: true, data: outcome.credential };
+    if (outcome.ok) {
+      // The step-up, when there was one, is spent by exactly this release.
+      challengedBindings.delete(key);
+      completedStepUps.delete(key);
+      return { ok: true, data: outcome.credential };
+    }
+
+    if (outcome.code === "CHALLENGE_REQUIRED") {
+      challengedBindings.set(key, binding);
+    }
+
     // Denials are a normal, expected outcome. The page receives the code so it
     // can distinguish "locked" from "blocked by policy" from "needs step-up",
     // but never a partial credential.
@@ -726,6 +1037,53 @@ async function handleReleaseCredential(
  * to fail.
  */
 const stepUpChallenges = new Map<string, { binding: StepUpBinding; expiresAt: number }>();
+
+/**
+ * Bindings a release was refused for, keyed by `bindingKey`.
+ *
+ * A challenge exists to authorize ONE release. Recording which releases are
+ * waiting on one is what lets `handleReleaseCredential` refuse a retry that has
+ * no completed step-up behind it, instead of spending a round trip to learn
+ * what Plus would have said again.
+ */
+const challengedBindings = new Map<string, StepUpBinding>();
+
+/** Completed step-ups, keyed by the binding they were completed for. */
+const completedStepUps = new Map<string, StepUpSession>();
+
+/**
+ * A release is identified by all three fields — credential, origin and
+ * operation — because a challenge for any two of them must never authorize
+ * the third. The triple is serialized rather than concatenated: an origin may
+ * contain a separator-looking run of characters (IPv6 hosts such as `[::1]`),
+ * and a key that could be assembled two ways is a key that can be collided.
+ */
+function bindingKey(binding: StepUpBinding): string {
+  return JSON.stringify([binding.credentialId, binding.origin, binding.operation]);
+}
+
+/**
+ * The bindings a step-up is still owed for.
+ *
+ * The content script that hit the denial is gone by the time the user reaches
+ * the popup, so the worker is the only place that still knows which release
+ * was refused. This hands that binding back so the popup can start a challenge
+ * for it rather than inventing one.
+ */
+async function handleGetPendingStepUp(
+  _msg: GetPendingStepUpMessage,
+): Promise<BackgroundResponse> {
+  try {
+    const pending: StepUpBinding[] = [];
+    for (const [key, binding] of challengedBindings) {
+      if (!completedStepUps.has(key)) pending.push(binding);
+    }
+    return { ok: true, data: pending };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+}
 
 const STEP_UP_PLUS_URL = "http://localhost:3011";
 
@@ -848,6 +1206,17 @@ async function handleSubmitStepUpPin(msg: SubmitStepUpPinMessage): Promise<Backg
       if (body.success) {
         // One-shot: a completed challenge cannot be replayed.
         stepUpChallenges.delete(msg.challengeId);
+        // Record the completion against the binding the challenge was started
+        // for, which is what `canRetryRelease` compares a later retry with.
+        // The session carries no PIN — only the binding, the expiry and the
+        // fact that Plus accepted it.
+        completedStepUps.set(bindingKey(entry.binding), {
+          challengeId: msg.challengeId,
+          binding: entry.binding,
+          expiresAt: entry.expiresAt,
+          attemptsRemaining: 0,
+          completed: true,
+        });
         return { ok: true, data: { verified: true } };
       }
 
@@ -923,6 +1292,10 @@ chrome.runtime.onMessage.addListener(
         handlerPromise = handleListCredentialsForOrigin(message);
         break;
 
+      case MESSAGE_TYPES.AUTHOR_CREDENTIAL:
+        handlerPromise = handleAuthorCredential(message);
+        break;
+
       case MESSAGE_TYPES.RELEASE_CREDENTIAL:
         handlerPromise = handleReleaseCredential(message);
         break;
@@ -933,6 +1306,10 @@ chrome.runtime.onMessage.addListener(
 
       case MESSAGE_TYPES.SUBMIT_STEP_UP_PIN:
         handlerPromise = handleSubmitStepUpPin(message);
+        break;
+
+      case MESSAGE_TYPES.GET_PENDING_STEP_UP:
+        handlerPromise = handleGetPendingStepUp(message);
         break;
 
       default:

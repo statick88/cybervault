@@ -41,9 +41,13 @@ export const MESSAGE_TYPES = {
   LIST_CREDENTIALS_FOR_ORIGIN: "LIST_CREDENTIALS_FOR_ORIGIN",
   RELEASE_CREDENTIAL: "RELEASE_CREDENTIAL",
 
+  /* Credential authoring — the write side of the same store */
+  AUTHOR_CREDENTIAL: "AUTHOR_CREDENTIAL",
+
   /* Step-up (third factor) — CHALLENGE_REQUIRED follow-up */
   START_STEP_UP: "START_STEP_UP",
   SUBMIT_STEP_UP_PIN: "SUBMIT_STEP_UP_PIN",
+  GET_PENDING_STEP_UP: "GET_PENDING_STEP_UP",
 } as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
@@ -114,6 +118,14 @@ export interface RequestManagedCapabilityMessage {
   };
 }
 
+/**
+ * Ask Core to release the Release Share for one managed credential.
+ *
+ * The payload mirrors `POST /api/v1/vaults/{vaultId}/managed-release` exactly:
+ * the capability Plus issued and the credential it is for. Core pins the
+ * verification key itself, so no public key may travel in the body — a key the
+ * caller supplies is a key the caller chooses.
+ */
 export interface RequestReleaseShareMessage {
   type: typeof MESSAGE_TYPES.REQUEST_RELEASE_SHARE;
   payload: {
@@ -122,7 +134,8 @@ export interface RequestReleaseShareMessage {
       signature: string;
       protectedHeader: string;
     };
-    plusPublicKey: string;
+    /** The credential the capability was issued for; verified against the vault. */
+    credentialId: string;
   };
 }
 
@@ -145,6 +158,38 @@ export interface ReleaseCredentialMessage {
   documentOrigin: string;
   topLevelOrigin: string;
   isFramed: boolean;
+}
+
+/**
+ * Persist one credential into the release store while the vault is unlocked.
+ *
+ * Deliberately narrow: the caller may not choose the record id, the mode, or a
+ * Release Share reference. Ids are minted by the worker so a caller cannot
+ * overwrite another record, and client-side authoring is personal-only —
+ * managed entries are created server-side, where the Release Share exists.
+ */
+export interface AuthorCredentialMessage {
+  type: typeof MESSAGE_TYPES.AUTHOR_CREDENTIAL;
+  payload: {
+    /** Raw origin; canonicalized and rejected if unusable, never trusted. */
+    origin: string;
+    username: string;
+    password: string;
+    title: string;
+    totpSeedBase32?: string;
+  };
+}
+
+/**
+ * Ask which release the worker is waiting on a step-up for.
+ *
+ * `START_STEP_UP` requires a binding, and the party that observed the
+ * `CHALLENGE_REQUIRED` denial (the content script) is gone by the time the user
+ * reaches the popup. The worker recorded the binding when it refused; this is
+ * how the next leg recovers it without the caller inventing one.
+ */
+export interface GetPendingStepUpMessage {
+  type: typeof MESSAGE_TYPES.GET_PENDING_STEP_UP;
 }
 
 /**
@@ -184,8 +229,10 @@ export type BackgroundMessage =
   | GetPlusPublicKeyMessage
   | ListCredentialsForOriginMessage
   | ReleaseCredentialMessage
+  | AuthorCredentialMessage
   | StartStepUpMessage
-  | SubmitStepUpPinMessage;
+  | SubmitStepUpPinMessage
+  | GetPendingStepUpMessage;
 
 export interface BackgroundResponse<T = unknown> {
   ok: boolean;

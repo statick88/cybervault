@@ -11,6 +11,19 @@
  * and uses master-key-manager for all crypto operations.
  */
 
+import type {
+  BackgroundMessage,
+  BackgroundResponse,
+} from "../../background/message-types";
+
+/*
+ * The message contract above is IMPORTED, not redeclared. This file used to
+ * send messages typed as `Record<string, unknown>`, which is why it could send
+ * UNLOCK_VAULT without the `vaultId` the worker requires and nothing complained
+ * — a structural type erases the contract instead of checking it. Every send
+ * below is now checked against the worker's own union.
+ */
+
 (function() {
 /* ------------------------------------------------------------------ */
 /*  Storage keys                                                       */
@@ -49,12 +62,6 @@ interface VaultPlain {
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
-}
-
-interface BackgroundResponse<T = unknown> {
-  ok: boolean;
-  data?: T;
-  error?: string;
 }
 
 interface LoginResponse {
@@ -107,7 +114,16 @@ const addPassword = $<HTMLInputElement>("#add-password");
 const addUrl = $<HTMLInputElement>("#add-url");
 const addSave = $<HTMLButtonElement>("#add-save");
 const addCancel = $<HTMLButtonElement>("#add-cancel");
+const addError = $<HTMLParagraphElement>("#add-error");
 const optionsLink = $<HTMLAnchorElement>("#options-link");
+
+// Step-up (third factor)
+const stepUpPanel = $<HTMLDivElement>("#step-up-panel");
+const stepUpStatus = $<HTMLParagraphElement>("#step-up-status");
+const stepUpPin = $<HTMLInputElement>("#step-up-pin");
+const stepUpSubmit = $<HTMLButtonElement>("#step-up-submit");
+const stepUpDismiss = $<HTMLButtonElement>("#step-up-dismiss");
+const stepUpError = $<HTMLParagraphElement>("#step-up-error");
 
 /* ------------------------------------------------------------------ */
 /*  State                                                              */
@@ -124,7 +140,7 @@ let authToken: string | null | undefined = null;
 const API_BASE = "http://localhost:3010";
 
 async function sendMessage<T = unknown>(
-  message: Record<string, unknown>,
+  message: BackgroundMessage,
 ): Promise<BackgroundResponse<T>> {
   return chrome.runtime.sendMessage(message);
 }
@@ -142,12 +158,11 @@ async function writeStorage(data: Record<string, unknown>): Promise<void> {
 /*  Secure Storage API (uses master-key-manager via background)       */
 /* ------------------------------------------------------------------ */
 
-async function unlockVaultWithPassphrase(passphrase: string): Promise<boolean> {
-  const response = await sendMessage<{ success: boolean; error?: string }>({
-    type: "UNLOCK_VAULT",
-    passphrase,
-  });
-  return response.ok && response.data?.success === true;
+async function unlockVaultWithPassphrase(
+  passphrase: string,
+  vaultId: string,
+): Promise<BackgroundResponse<{ success: boolean; unlocked: boolean; vaultId: string }>> {
+  return sendMessage({ type: "UNLOCK_VAULT", vaultId, passphrase });
 }
 
 async function lockVaultSecure(): Promise<void> {
@@ -155,19 +170,13 @@ async function lockVaultSecure(): Promise<void> {
 }
 
 async function encryptCredentialData(data: string): Promise<string | null> {
-  const response = await sendMessage<{ success: boolean; data?: string; error?: string }>({
-    type: "ENCRYPT_DATA",
-    payload: data,
-  });
-  return response.ok && response.data?.data ? response.data.data : null;
+  const response = await sendMessage<string>({ type: "ENCRYPT_DATA", payload: data });
+  return response.ok && typeof response.data === "string" ? response.data : null;
 }
 
 async function decryptCredentialData(encryptedData: string): Promise<string | null> {
-  const response = await sendMessage<{ success: boolean; data?: string; error?: string }>({
-    type: "DECRYPT_DATA",
-    payload: encryptedData,
-  });
-  return response.ok && response.data?.data ? response.data.data : null;
+  const response = await sendMessage<string>({ type: "DECRYPT_DATA", payload: encryptedData });
+  return response.ok && typeof response.data === "string" ? response.data : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -246,15 +255,17 @@ function showView(view: "login" | "locked" | "unlocked"): void {
 
 async function checkAuthState(): Promise<void> {
   authToken = await readStorage<string>(AUTH_TOKEN_KEY);
-  
+
   // Check if vault is unlocked via secure storage
-  const isUnlocked = await sendMessage<{ success: boolean; unlocked: boolean }>({
+  const status = await sendMessage<{ unlocked: boolean }>({
     type: "CHECK_VAULT_STATUS"
   });
 
-  if (isUnlocked.ok && isUnlocked.data?.unlocked) {
+  if (status.ok && status.data?.unlocked) {
+    isUnlocked = true;
     showView("unlocked");
     await loadCredentials();
+    await checkPendingStepUp();
   } else if (authToken) {
     showView("locked");
   } else {
@@ -313,19 +324,21 @@ async function handleUnlock(): Promise<void> {
     const unlockData: UnlockVaultResponse = await unlockRes.json();
 
     // Unlock vault using secure storage (stores session key in session storage)
-    const unlockResult = await unlockVaultWithPassphrase(passphrase);
-    
-    if (!unlockResult) {
-      throw new Error("Frase maestra incorrecta o error al descifrar");
+    const unlock = await unlockVaultWithPassphrase(passphrase, vault.id);
+
+    if (!unlock.ok || !unlock.data?.unlocked) {
+      throw new Error(unlock.error ?? "Frase maestra incorrecta o error al descifrar");
     }
 
     // Store encrypted vault data locally (ciphertext only)
     await writeStorage({ [VAULT_KEY]: { ...vault, metadata: { encryptedData: unlockData.encryptedData } } });
 
     // Show unlocked view
+    isUnlocked = true;
     showView("unlocked");
     passphraseInput.value = "";
     await loadCredentials();
+    await checkPendingStepUp();
 
   } catch (err) {
     console.error("Unlock failed:", err);
@@ -343,6 +356,9 @@ async function handleLock(): Promise<void> {
   isUnlocked = false;
   credentials = [];
   credentialList.innerHTML = "";
+  // The worker drops its step-up registries on lock; this UI must not keep
+  // offering a PIN entry for a challenge that no longer exists.
+  hideStepUp();
   showView("locked");
 }
 
@@ -484,29 +500,82 @@ function showAddForm(): void {
 
 function hideAddForm(): void {
   addForm.hidden = true;
+  addError.hidden = true;
   addTitle.value = "";
   addUsername.value = "";
   addPassword.value = "";
   addUrl.value = "";
 }
 
+/**
+ * Canonicalize the site a credential will be bound to.
+ *
+ * Returns null when the value is not an absolute http(s) origin. A bare host
+ * such as `github.com` has no scheme and guessing one would bind the credential
+ * to a site the user never named — `authorCredential` refuses the same inputs
+ * on the worker side, so checking here simply tells the user what is wrong
+ * instead of letting a save appear to succeed while authoring nothing.
+ */
+function toBoundOrigin(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function showAddError(message: string): void {
+  addError.textContent = message;
+  addError.hidden = false;
+}
+
 async function handleAddCredential(): Promise<void> {
   const title = addTitle.value.trim();
   const username = addUsername.value.trim();
   const password = addPassword.value;
-  const url = addUrl.value.trim();
 
   if (!title || !username || !password) {
     return;
   }
 
+  const origin = toBoundOrigin(addUrl.value);
+  if (!origin) {
+    showAddError(
+      "Add the site as a full origin, e.g. https://example.com — a credential with no site can never be filled.",
+    );
+    return;
+  }
+  addError.hidden = true;
+
+  // The write side of the release store. The worker mints the id, validates the
+  // origin and seals the secret; this supplies only what the user typed. Until
+  // this call existed, `cybervault_cred_records` and `cybervault_cred_index`
+  // had no writer at all, so autofill had nothing to release.
+  const authored = await sendMessage<{
+    id: string;
+    title: string;
+    usernameHint: string;
+    origin: string;
+  }>({
+    type: "AUTHOR_CREDENTIAL",
+    payload: { origin, username, password, title },
+  });
+  if (!authored.ok || !authored.data?.id) {
+    showAddError(authored.error ?? "The credential could not be saved.");
+    return;
+  }
+
   const newCred: CredentialPlain = {
-    id: crypto.randomUUID(),
+    id: authored.data.id,
     vaultId: "",
     title,
     username,
     password,
-    url: url || undefined,
+    url: origin,
     tags: [],
     favorite: false,
     createdAt: new Date().toISOString(),
@@ -531,6 +600,96 @@ async function saveCredentialsEncrypted(): Promise<void> {
   if (encrypted) {
     await writeStorage({ [VAULT_KEY]: { ...vaultData, metadata: { encryptedData: encrypted } } });
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Step-up (third factor)                                             */
+/*                                                                     */
+/*  The worker refuses a release whose policy demands a third factor    */
+/*  and remembers WHICH release it refused. The content script that hit */
+/*  the denial is gone by the time the user opens the popup, so the     */
+/*  popup is the only place left to finish the flow: read the pending   */
+/*  binding, start a challenge for it, collect the PIN, submit it.      */
+/*  Without a sender here, START_STEP_UP and SUBMIT_STEP_UP_PIN were    */
+/*  route cases nothing ever reached.                                   */
+/* ------------------------------------------------------------------ */
+
+/** Challenge the worker is currently holding for `pendingBinding`. */
+let pendingChallengeId: string | null = null;
+let pendingBinding: { credentialId: string; origin: string; operation: "AUTOFILL" | "TOTP" } | null = null;
+
+function showStepUp(status: string): void {
+  stepUpStatus.textContent = status;
+  stepUpError.hidden = true;
+  stepUpPanel.hidden = false;
+}
+
+function hideStepUp(): void {
+  stepUpPanel.hidden = true;
+  stepUpPin.value = "";
+}
+
+async function checkPendingStepUp(): Promise<void> {
+  const pending = await sendMessage<
+    Array<{ credentialId: string; origin: string; operation: "AUTOFILL" | "TOTP" }>
+  >({ type: "GET_PENDING_STEP_UP" });
+
+  const binding = pending.ok && Array.isArray(pending.data) ? pending.data[0] : undefined;
+  if (!binding) {
+    pendingChallengeId = null;
+    pendingBinding = null;
+    hideStepUp();
+    return;
+  }
+
+  pendingBinding = binding;
+  showStepUp(`Step-up required for ${binding.origin}. Requesting a challenge…`);
+
+  const started = await sendMessage<{ challengeId: string }>({
+    type: "START_STEP_UP",
+    binding,
+  });
+  if (!started.ok || !started.data?.challengeId) {
+    stepUpError.textContent = started.error ?? "The challenge could not be started.";
+    stepUpError.hidden = false;
+    return;
+  }
+
+  pendingChallengeId = started.data.challengeId;
+  stepUpStatus.textContent = "Enter the PIN you received to release this credential.";
+  stepUpSubmit.disabled = false;
+}
+
+async function handleSubmitStepUp(): Promise<void> {
+  const pin = stepUpPin.value.trim();
+  if (!pin || !pendingChallengeId) {
+    stepUpError.textContent = "Enter the PIN from the challenge message.";
+    stepUpError.hidden = false;
+    return;
+  }
+
+  stepUpSubmit.disabled = true;
+  try {
+    const verified = await sendMessage({ type: "SUBMIT_STEP_UP_PIN", challengeId: pendingChallengeId, pin });
+    if (!verified.ok) {
+      stepUpError.textContent = verified.error ?? "the PIN was not accepted";
+      stepUpError.hidden = false;
+      return;
+    }
+
+    pendingChallengeId = null;
+    pendingBinding = null;
+    stepUpStatus.textContent = "Verified. Retry the fill to release the credential.";
+    stepUpPin.value = "";
+  } finally {
+    stepUpSubmit.disabled = false;
+  }
+}
+
+function handleDismissStepUp(): void {
+  pendingChallengeId = null;
+  pendingBinding = null;
+  hideStepUp();
 }
 
 /* ------------------------------------------------------------------ */
@@ -563,6 +722,11 @@ searchInput.addEventListener("input", handleSearch);
 addBtn.addEventListener("click", showAddForm);
 addCancel.addEventListener("click", hideAddForm);
 addSave.addEventListener("click", handleAddCredential);
+stepUpSubmit.addEventListener("click", handleSubmitStepUp);
+stepUpPin.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") handleSubmitStepUp();
+});
+stepUpDismiss.addEventListener("click", handleDismissStepUp);
 optionsLink.addEventListener("click", (e) => {
   e.preventDefault();
   openOptions();

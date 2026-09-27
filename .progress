@@ -266,3 +266,15 @@
 - [x] Verificación Sonar final: **open S3776 = 0**, 0 issues nuevas, solo 4 preexistentes no-S3776 (S125/S1871/S4624×2)
 - [x] Verificación final: Jest 48/48, 845 passed / 855 total; `tsc --noEmit` = 809 (idéntico al baseline)
 - [x] Orden de checks de seguridad y códigos de bloqueo intactos (tests del contrato sin tocar)
+
+## ODD — Phase O5.10 (2026-09-27)
+- [x] `src/infrastructure/repositories/PostgresReleaseShareStore.ts` — durable `IReleaseShareStore` (opaque blob only, parameterized SQL, circuit breaker + retry, fail-closed rethrow)
+- [x] Migration `src/infrastructure/db/migrations/002_release_shares.sql` — idempotent `CREATE TABLE release_shares (secret_ref PK, wrapped_share, created_at)`; PK btree IS the index for `findBySecretRef` (EXPLAIN-verified on PG16)
+- [x] `release-share-store-factory.ts` — rule: Postgres iff `USE_POSTGRES=true` AND non-blank `DATABASE_URL`; else in-memory (server still starts with no DB)
+- [x] `server.ts` wiring: `this.releaseShareStore = createReleaseShareStore()` — constructor stays at 7 params (Sonar S107)
+- [x] Barrel extended; NO interface change to `IReleaseShareStore`; no key material in the store
+- [x] Tests: `tests/infrastructure/postgres-release-share-store.test.ts` (14 tests, mocked pg) + gated integration suite (3 tests, `CYBERVAULT_TEST_DATABASE_URL`, 3/3 PASS against real PG16)
+- [x] Suite: 49/49 passed + 1 skipped suite, 859 passed / 13 skipped / 872 total (baseline 845/10/855 preserved)
+- [x] `npx tsc --noEmit`: 809 errors — output byte-identical to baseline
+- [x] SonarQube: open issues 0 -> 0 (first scan caught own S107, constructor param removed); gate was ALREADY failing pre-change on the same 3 conditions (duplication 4.599 -> 4.440 improved)
+- [ ] ODD doc row O5.10 -> done (orchestrator)

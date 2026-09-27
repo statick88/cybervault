@@ -13,6 +13,7 @@ import { resolve as resolvePath } from "path";
 import type {
   IVaultRepository,
   ICredentialRepository,
+  IReleaseShareStore,
 } from "../../domain/repositories";
 import { VaultId } from "../../domain/value-objects/ids";
 import { EncryptionService } from "../../infrastructure/crypto/EncryptionService";
@@ -57,7 +58,7 @@ import {
   ChromeStorageVaultRepository,
   PostgresVaultRepository,
   PostgresCredentialRepository,
-  InMemoryReleaseShareStore,
+  createReleaseShareStore,
 } from "../../infrastructure/repositories";
 import { loadReleaseShareKekSecret } from "../../infrastructure/crypto/release-share-kek";
 import { secureZero } from "../../infrastructure/crypto/secure-memory";
@@ -107,8 +108,14 @@ export class ApiServer {
   private generateCredentialsUseCase: GenerateCredentialsUseCase;
   private extractCredentialsUseCase: ExtractCredentialsUseCase;
   private credentialsGenerator: CredentialsGenerator;
-  /** Wrapped Release Shares for managed credentials (dumb store, no key material). */
-  private releaseShareStore: InMemoryReleaseShareStore;
+  /**
+   * Wrapped Release Shares for managed credentials (dumb store, no key
+   * material). Selected from the environment by `createReleaseShareStore`
+   * (Postgres when configured, in-memory otherwise) — there is deliberately no
+   * extra constructor parameter for it: the selection rule lives with the
+   * factory, which is unit-tested on its own.
+   */
+  private releaseShareStore: IReleaseShareStore;
   /** Base64 32-byte secret behind the Release Share KEK. Null => release refuses. */
   private releaseShareKekSecret: Uint8Array | null;
 
@@ -124,7 +131,7 @@ export class ApiServer {
     this.vaultRepository = vaultRepository;
     this.credentialRepository = credentialRepository;
 
-    this.releaseShareStore = new InMemoryReleaseShareStore();
+    this.releaseShareStore = createReleaseShareStore();
     this.releaseShareKekSecret = loadReleaseShareKekSecret(
       process.env.RELEASE_SHARE_KEK_SECRET,
     );

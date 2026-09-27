@@ -290,4 +290,15 @@
 - [x] Verificación literal: Jest `49 passed, 49 of 50 total / 874 passed, 13 skipped, 887 total` (baseline 859); `tsc --noEmit` = **809 errors** (idéntico al baseline)
 - [x] Alcance respetado: 0 cambios en extensión, `plus/`, `plus/admin/`, Docker; 6 archivos modificados
 - [x] Reporte de deliverables y contradicciones al usuario
-- [ ] WU-2 (CRITICAL-2) y WU-3 (CRITICAL-3) — pendientes
+- [ ] WU-3 (CRITICAL-3) — pendiente
+
+## WU-2 — CRITICAL-2: verifier no debe ser material de clave (2026-09-27)
+- [x] Spec leído: `odd/tasks/cybervault-final-verification-remediation.md` (WU-2 acceptance, CRITICAL-2)
+- [x] Confirmado: **cero tests previos** para `key-derivation-service.ts` / `master-key-manager.ts`
+- [x] `key-derivation-service.ts` — cadena nueva PBKDF2-SHA512(600k) → secreto maestro 512b (nunca persistido) → HKDF-SHA256 con `info` real; etiquetas `cybervault|master_key_verify|v2` (verificador 256b) y `cybervault|session_key|v2` (session key 256b); exporta `KEY_DERIVATION_CONFIG` + `VERIFIER_SCHEME_PREFIX` (`hkdf-sha256-v2$`); `deriveKey` ya no puede emitir PBKDF2 "crudo"
+- [x] `master-key-manager.ts` — clave de storage `master_key_scheme`; verificador auto-descriptivo con prefijo; `unlockVault` rechaza esquema ajeno con `code: "SCHEME_UNSUPPORTED"` (NO "Clave maestra incorrecta") antes de cualquier PBKDF2; `MasterKeyVerifyResult.code` añadido (`VAULT_NOT_INITIALIZED|SCHEME_UNSUPPORTED|WRONG_PASSPHRASE`); `initializeVault` no sobrescribe silenciosamente un vault de esquema viejo; `resetVault` limpia la scheme key
+- [x] Tests nuevos (2 suites, 25 tests): `tests/crypto/key-derivation-service.test.ts` (10) — el assertion central "el label cambia la salida" (el viejo código lo falla), reproducción del defecto `verify[0:32]==sessionKey`, determinismo, salt, AES-GCM-256 importable; `tests/crypto/master-key-manager.test.ts` (15) — property test sobre todos los valores persistidos (equal/substring/prefijo/base64-decodificado/bytes crudos/frAGMENT), detector no-vacuo contra el layout viejo, rechazo de verificador legacy incluso con passphrase correcta, reset→re-init, regressión passphrase correcta/incorrecta, salt por bóveda
+- [x] Verificación literal: Jest `1 skipped, 51 passed, 51 of 52 total / 13 skipped, 899 passed, 912 total` (baseline WU-1: 49/874); `tsc --noEmit` = **809 errors** (idéntico al baseline)
+- [x] Prueba independiente OLD vs NEW (script en `/tmp/opencode/proof-info-effect.ts`, OLD extraído con `git show HEAD:`): `info changes output? OLD false NEW true`; `sessionKey == verifyHash[0:32]? OLD true NEW false`
+- [x] Alcance respetado: 0 cambios en extensión (content scripts), `plus/`, `plus/admin/`, Docker; 2 src modificados + 2 tests nuevos; sin commits
+- [ ] WU-3 (CRITICAL-3) — pendiente

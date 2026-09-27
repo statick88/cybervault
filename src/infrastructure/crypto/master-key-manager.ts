@@ -12,18 +12,32 @@
  * 2. Each session: User unlocks with master key → verify hash → derive session key → store in SESSION storage
  * 3. All operations use session key from SESSION storage
  * 4. On lock/timeout/close: session storage cleared, VEK eliminated
+ *
+ * Scheme versioning (CRITICAL-2):
+ * The persisted verifier carries a scheme id (`master_key_scheme`) and a
+ * self-describing prefix (`hkdf-sha256-v2$`). A verifier written by the old
+ * scheme — where PBKDF2 silently ignored `info`, so the verifier WAS the first
+ * 256 bits of the session key — is rejected with an explicit
+ * SCHEME_UNSUPPORTED result instead of a misleading "wrong password", and the
+ * vault must be re-initialized (resetVault → initializeVault). Persisted-data
+ * invalidation is explicitly authorized by the user.
  */
 
 import { encryptWithKey, decryptWithKey } from "./EncryptionService";
-import { KeyDerivationService } from "./key-derivation-service";
+import {
+  KeyDerivationService,
+  KEY_DERIVATION_CONFIG,
+  VERIFIER_SCHEME_PREFIX,
+} from "./key-derivation-service";
 import { binaryToBase64, base64ToBinary } from "../../shared/utils";
 
 const keyDerivationService = new KeyDerivationService();
 
 const STORAGE_KEYS = {
   // chrome.storage.local (PERSISTENT - survives browser restart)
-  MASTER_KEY_VERIFY: "master_key_verify", // Verification hash only (Argon2id/PBKDF2)
+  MASTER_KEY_VERIFY: "master_key_verify", // Verifier only (scheme-prefixed, never key material)
   SALT: "master_salt", // Salt for key derivation
+  SCHEME: "master_key_scheme", // Derivation scheme id of the stored verifier
   VAULT_INITIALIZED: "vault_initialized", // Whether vault is set up
 
   // chrome.storage.session (EPHEMERAL - cleared on browser close/tab close)
@@ -33,12 +47,26 @@ const STORAGE_KEYS = {
 
 const SESSION_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
+/** Error returned when the persisted verifier comes from an older scheme. */
+export const SCHEME_UNSUPPORTED_ERROR =
+  "Esquema de bóveda no compatible: los datos persistidos fueron escritos por un esquema anterior y deben descartarse. Reinicialice la bóveda (resetVault → initializeVault) para continuar.";
+
+/**
+ * Machine-readable failure reasons, so callers never have to parse the
+ * localized message to tell "wrong password" from "old scheme".
+ */
+export type MasterKeyFailureCode =
+  | "VAULT_NOT_INITIALIZED"
+  | "SCHEME_UNSUPPORTED"
+  | "WRONG_PASSPHRASE";
+
 /**
  * Result of master key verification
  */
 export interface MasterKeyVerifyResult {
   success: boolean;
   error?: string;
+  code?: MasterKeyFailureCode;
 }
 
 /**
@@ -51,8 +79,10 @@ function generateSalt(): Uint8Array {
 }
 
 /**
- * Hash the master key for verification (NOT the key itself)
- * Uses PBKDF2 with high iterations
+ * Derive the persisted verifier for the master key (NOT the key itself).
+ * PBKDF2-SHA512 stretches the passphrase, then HKDF-SHA256 binds the result to
+ * the `master_key_verify` context label. The returned value is not, does not
+ * contain, and cannot reveal the session key.
  */
 async function hashMasterKey(
   masterKey: string,
@@ -70,6 +100,22 @@ async function deriveSessionKey(
   salt: Uint8Array,
 ): Promise<string> {
   return await keyDerivationService.deriveSessionKey(masterKey, salt);
+}
+
+/**
+ * True when a persisted verifier was written by the current derivation scheme.
+ * Anything else (missing scheme id, missing prefix, foreign scheme id) is an
+ * old/foreign verifier and must be rejected explicitly.
+ */
+function hasCurrentScheme(
+  storedScheme: unknown,
+  storedVerifier: unknown,
+): boolean {
+  return (
+    storedScheme === KEY_DERIVATION_CONFIG.SCHEME &&
+    typeof storedVerifier === "string" &&
+    storedVerifier.startsWith(VERIFIER_SCHEME_PREFIX)
+  );
 }
 
 /**
@@ -105,6 +151,24 @@ export async function initializeVault(
     // Check if vault already initialized
     const alreadyInitialized = await isVaultInitialized();
     if (alreadyInitialized) {
+      // A vault whose verifier comes from an older scheme must be reset
+      // explicitly first: initializeVault never silently destroys data.
+      const existing = await chrome.storage.local.get([
+        STORAGE_KEYS.MASTER_KEY_VERIFY,
+        STORAGE_KEYS.SCHEME,
+      ]);
+      if (
+        !hasCurrentScheme(
+          existing[STORAGE_KEYS.SCHEME],
+          existing[STORAGE_KEYS.MASTER_KEY_VERIFY],
+        )
+      ) {
+        return {
+          success: false,
+          code: "SCHEME_UNSUPPORTED",
+          error: SCHEME_UNSUPPORTED_ERROR,
+        };
+      }
       return {
         success: false,
         error: "La bóveda ya ha sido inicializada",
@@ -115,13 +179,14 @@ export async function initializeVault(
     const salt = generateSalt();
     const saltBase64 = binaryToBase64(salt);
 
-    // Create verification hash (for authentication)
+    // Create the persisted verifier (for authentication) — context-bound, not key material
     const verifyHash = await hashMasterKey(masterKey, salt);
 
     // Store verification data in LOCAL storage (NOT the key!)
     await chrome.storage.local.set({
-      [STORAGE_KEYS.MASTER_KEY_VERIFY]: verifyHash,
+      [STORAGE_KEYS.MASTER_KEY_VERIFY]: `${VERIFIER_SCHEME_PREFIX}${verifyHash}`,
       [STORAGE_KEYS.SALT]: saltBase64,
+      [STORAGE_KEYS.SCHEME]: KEY_DERIVATION_CONFIG.SCHEME,
       [STORAGE_KEYS.VAULT_INITIALIZED]: true,
     });
 
@@ -160,24 +225,57 @@ export async function unlockVault(
     const stored = await chrome.storage.local.get([
       STORAGE_KEYS.MASTER_KEY_VERIFY,
       STORAGE_KEYS.SALT,
+      STORAGE_KEYS.SCHEME,
+      STORAGE_KEYS.VAULT_INITIALIZED,
     ]);
 
-    const storedHash = stored[STORAGE_KEYS.MASTER_KEY_VERIFY] as string;
+    const storedHash = stored[STORAGE_KEYS.MASTER_KEY_VERIFY];
     const storedSalt = stored[STORAGE_KEYS.SALT] as string;
 
-    if (!storedHash || !storedSalt) {
-      return { success: false, error: "Bóveda no inicializada" };
+    if (stored[STORAGE_KEYS.VAULT_INITIALIZED] !== true) {
+      return {
+        success: false,
+        code: "VAULT_NOT_INITIALIZED",
+        error: "Bóveda no inicializada",
+      };
+    }
+
+    // Fail closed on any verifier that this scheme did not write. This is a
+    // scheme error, NOT a passphrase error: the user must re-initialize.
+    if (!hasCurrentScheme(stored[STORAGE_KEYS.SCHEME], storedHash)) {
+      return {
+        success: false,
+        code: "SCHEME_UNSUPPORTED",
+        error: SCHEME_UNSUPPORTED_ERROR,
+      };
+    }
+
+    if (!storedSalt) {
+      return {
+        success: false,
+        code: "VAULT_NOT_INITIALIZED",
+        error: "Bóveda no inicializada",
+      };
     }
 
     const salt = base64ToBinary(storedSalt);
+
+    // Strip the public scheme prefix; what remains is the 256-bit verifier.
+    const expectedVerifier = (storedHash as string).slice(
+      VERIFIER_SCHEME_PREFIX.length,
+    );
 
     // Verify master key
     const verifyHash = await hashMasterKey(masterKey, salt);
 
     // Timing-safe comparison
-    if (!timingSafeEqual(verifyHash, storedHash)) {
+    if (!timingSafeEqual(verifyHash, expectedVerifier)) {
       // SECURITY: Generic error message
-      return { success: false, error: "Clave maestra incorrecta" };
+      return {
+        success: false,
+        code: "WRONG_PASSPHRASE",
+        error: "Clave maestra incorrecta",
+      };
     }
 
     // Derive session key and store in SESSION storage
@@ -318,6 +416,7 @@ export async function resetVault(): Promise<void> {
   await chrome.storage.local.remove([
     STORAGE_KEYS.MASTER_KEY_VERIFY,
     STORAGE_KEYS.SALT,
+    STORAGE_KEYS.SCHEME,
     STORAGE_KEYS.VAULT_INITIALIZED,
     "credentials",
   ]);

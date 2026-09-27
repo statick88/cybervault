@@ -22,8 +22,7 @@
  */
 
 import type { ICredentialRepository, IReleaseShareStore } from "../../domain/repositories";
-import { CredentialId } from "../../domain/value-objects/ids";
-import { verifyCapability, CapabilityPayload } from "../../infrastructure/crypto/ed25519-capability";
+import { verifyCapability, CapabilityPayload, CapabilityOperation } from "../../infrastructure/crypto/ed25519-capability";
 import { verifyAndConsumeJti } from "../../infrastructure/crypto/jti-store";
 import {
   deriveReleaseShareKek,
@@ -230,6 +229,17 @@ export interface GetCredentialWithCapabilityOutput {
   error?: string;
 }
 
+/** Operations a capability may carry that can result in a credential read. */
+const RELEASABLE_OPERATIONS: ReadonlySet<string> = new Set<CapabilityOperation>([
+  "VIEW",
+  "AUTOFILL",
+  "TOTP",
+]);
+
+function isReleasableOperation(operation: CapabilityOperation): boolean {
+  return RELEASABLE_OPERATIONS.has(operation);
+}
+
 export class GetCredentialWithCapabilityUseCase {
   constructor(
     private credentialRepository: ICredentialRepository,
@@ -262,25 +272,35 @@ export class GetCredentialWithCapabilityUseCase {
         return { success: false, error: jtiResult.error };
       }
 
-      // Find credential by ID
-      const credentialId = input.credentialId ? CredentialId.fromString(input.credentialId) : null;
-      if (!credentialId) {
-        return { success: false, error: "Credential ID required" };
-      }
-      const credential = await this.credentialRepository.findById(credentialId);
+      // Resolve the credential THROUGH the capability, never from the
+      // request. A capability authorizes one secretRef, so looking the
+      // credential up by a caller-supplied id would let any validly signed
+      // capability retrieve any credential in the store: the capability's
+      // userId, resourceId, operation and secretRef are all ignored once the
+      // signature checks out. That is an IDOR, and the previous version of
+      // this method did exactly that — the ownership check below was an empty
+      // branch whose comment claimed the check existed.
+      const credential = await this.credentialRepository.findBySecretRef(
+        capability.secretRef,
+      );
       if (!credential) {
-        return { success: false, error: "Credential not found" };
+        return { success: false, error: "Credential not found for secretRef" };
       }
 
-      // Verify credential belongs to the user in capability
-      // (This would require userId in credential - adding to repository query)
+      // If the caller named a credential, it must be the one the capability
+      // authorizes. Never the other way round.
+      if (input.credentialId && credential.id.toString() !== input.credentialId) {
+        return { success: false, error: "Credential does not match the capability" };
+      }
 
-      // Verify operation matches credential mode
-      if (credential.isManaged() && capability.operation === "VIEW") {
-        // VIEW requires capability for managed credentials
-      } else if (credential.isPersonal() && capability.operation !== "VIEW") {
-        // Personal credentials don't need capability for VIEW
-        // but other operations might
+      // Operation must be consistent with the credential's mode. A VIEW of a
+      // managed credential is exactly what a capability is for; an operation
+      // the mode does not support is refused rather than served.
+      if (credential.isManaged() && !isReleasableOperation(capability.operation)) {
+        return { success: false, error: "Operation is not permitted for this credential" };
+      }
+      if (credential.isPersonal() && capability.operation !== "VIEW") {
+        return { success: false, error: "Operation is not permitted for a personal credential" };
       }
 
       return {

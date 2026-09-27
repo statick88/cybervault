@@ -452,27 +452,3 @@ export interface EmailService {
   sendPasswordResetEmail(email: string, resetToken: string): Promise<void>;
   sendRecoveryKeyEmail(email: string, recoveryKey: string): Promise<void>;
 }
-
-// =============================================================================
-// REPOSITORY INTERFACE EXTENSIONS (add to domain/repositories)
-// =============================================================================
-
-/*
-export interface IUserRepository {
-  // ... existing methods
-  
-  findByEmail(email: string): Promise<User | null>;
-  findById(userId: string): Promise<User | null>;
-  setPasswordResetToken(userId: string, tokenHash: string, expiresAt: number): Promise<void>;
-  clearPasswordResetToken(userId: string): Promise<void>;
-  updatePassword(userId: string, hash: string, salt: string): Promise<void>;
-  incrementSessionVersion(userId: string): Promise<void>;
-  setRecoveryKeyHash(userId: string, hash: string): Promise<void>;
-}
-
-export interface IVaultRepository {
-  // ... existing methods
-  
-  updateMetadata(vaultId: string, metadata: Record<string, unknown>): Promise<void>;
-}
-*/

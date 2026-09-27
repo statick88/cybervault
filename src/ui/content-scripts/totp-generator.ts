@@ -315,7 +315,8 @@ export function generateOTPAuthURI(
     params.set("issuer", issuer);
   }
 
-  const encodedLabel = encodeURIComponent(`${issuer ? `${issuer}:` : ""}${label}`);
+  const prefix = issuer ? `${issuer}:` : "";
+  const encodedLabel = encodeURIComponent(`${prefix}${label}`);
   return `otpauth://totp/${encodedLabel}?${params.toString()}`;
 }
 

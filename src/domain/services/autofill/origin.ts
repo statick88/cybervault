@@ -237,5 +237,6 @@ export function originFromLocation(location: {
   hostname: string;
   port: string;
 }): string {
-  return `${location.protocol}//${location.hostname}${location.port ? `:${location.port}` : ""}`;
+  const port = location.port ? `:${location.port}` : "";
+  return `${location.protocol}//${location.hostname}${port}`;
 }

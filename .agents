@@ -47,11 +47,12 @@ src/
 ```
 
 ## Estado Actual del Proyecto
-- **Etapa:** Security-hardened + resilience-improved + observability-complete
-- **Compilación:** tsc --noEmit = 0 errores
-- **Tests:** 197 passing (16 suites), 22 E2E skipped (Chrome requerido)
+- **Etapa:** Remediación ODD en curso (`odd/tasks/cybervault-final-verification-remediation.md`)
+- **Compilación:** `tsc --noEmit` = 809 errores preexistentes (baseline verificado — no subir)
+- **Tests:** 874 passed / 887 total (49 suites + 1 skipped), baseline 859
+- **WU-1 (CRITICAL-1):** ✅ done — `PLUS_PUBLIC_KEY` pineado, bindings de capability verificados, 15 tests negativos nuevos
+- **WU-2 (CRITICAL-2) / WU-3 (CRITICAL-3):** pendientes
 - **Score actual:** ~55/70 (79%) — objetivo 100/100
-- **SDD:** Cambio `cybervault-100-completion` en progreso
 
 ## Objetivos del Paper
 1. Demostrar validación de dominio pre-envío contra phishing

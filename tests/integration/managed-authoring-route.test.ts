@@ -70,6 +70,7 @@ jest.mock("../../src/domain/value-objects/ids", () => {
 });
 
 import { ApiServer, _clearRateLimitForTests } from "../../src/infrastructure/api/server";
+import { verifyToken } from "../../src/infrastructure/api/auth";
 import type { IVaultRepository, ICredentialRepository } from "../../src/domain/repositories";
 import type { VaultId } from "../../src/domain/value-objects/ids";
 import { deriveManagedEntryKey } from "../../src/infrastructure/crypto/hkdf-derivation";
@@ -249,8 +250,9 @@ interface Harness {
 
 /**
  * Builds the server exactly like tests/integration/api-server.test.ts does.
- * The Release Share KEK secret is read from the environment in the ApiServer
- * constructor, so it must be set (or deleted) BEFORE this call.
+ * `RELEASE_SHARE_KEK_SECRET` and `PLUS_PUBLIC_KEY` are both read from the
+ * environment in the ApiServer constructor, so they must be set (or deleted)
+ * BEFORE this call.
  */
 async function startHarness(): Promise<Harness> {
   const vaultRepo = new MockVaultRepository();
@@ -314,6 +316,9 @@ let vaultId: string;
 beforeEach(async () => {
   _clearRateLimitForTests();
   process.env.RELEASE_SHARE_KEK_SECRET = RELEASE_SHARE_KEK_SECRET_B64;
+  // The capability verification key is PINNED in configuration — the same
+  // value the tests' `signCapability` signs with. No request ever carries it.
+  process.env.PLUS_PUBLIC_KEY = keyPair.publicKeyBase64;
   harness = await startHarness();
   server = harness.server;
   authToken = await getAuthToken(server);
@@ -323,6 +328,7 @@ beforeEach(async () => {
 afterEach(async () => {
   if (harness) await closeHarness(harness);
   process.env.RELEASE_SHARE_KEK_SECRET = RELEASE_SHARE_KEK_SECRET_B64;
+  delete process.env.PLUS_PUBLIC_KEY;
 });
 
 function post(body: Record<string, unknown>, target: Harness = harness, token = authToken, id = vaultId) {
@@ -332,26 +338,57 @@ function post(body: Record<string, unknown>, target: Harness = harness, token = 
     .send(body);
 }
 
-/** Authorize + release through the ALREADY-MOUNTED release route. */
-async function releaseViaHttp(
-  secretRef: string,
-  target: Harness = harness,
-  token = authToken,
-  id = vaultId,
-) {
+interface ReleaseOptions {
+  /** Credential the request asks to release (Core derives the secret from it). */
+  credentialId: string;
+  /** Ref the capability is signed FOR (normally the credential's releaseShareRef). */
+  capabilitySecretRef: string;
+  /** User the capability is signed for (defaults to the session user's shape). */
+  capabilityUserId?: string;
+  /** Device the capability is bound to; omit for an unbound capability. */
+  capabilityDeviceId?: string;
+  /** Extra body fields — used to prove tampering is ignored/refused. */
+  body?: Record<string, unknown>;
+  /** Sign with a foreign key instead of the pinned one (wrong-signer test). */
+  signWith?: Ed25519KeyPair;
+  target?: Harness;
+  token?: string;
+  vault?: string;
+}
+
+/**
+ * Release through the ALREADY-MOUNTED route, sending only what a client
+ * actually sends: the capability, the credential id and the device claim.
+ * There is deliberately no `plusPublicKey` option — the key is pinned in
+ * configuration (`PLUS_PUBLIC_KEY`), never carried by the request.
+ */
+async function releaseViaHttp(opts: ReleaseOptions) {
+  const secretRef = opts.capabilitySecretRef;
+  const token = opts.token ?? authToken;
+  // The capability must be signed for the SESSION user — that is exactly the
+  // binding CRITICAL-1 left unchecked, so the happy path signs it correctly
+  // and the negative tests deliberately do not.
+  const sessionUserId =
+    opts.capabilityUserId ??
+    verifyToken(token, process.env.JWT_SECRET as string)?.userId ??
+    "";
   const payload = createCapabilityPayload({
-    userId: "user-1",
+    userId: sessionUserId,
     resourceId: secretRef,
     operation: "AUTOFILL",
     secretRef,
-    deviceId: "device-1",
+    deviceId: opts.capabilityDeviceId,
     assurance: 2,
   });
-  const capabilityToken = await signCapability(payload, keyPair.privateKey);
-  return request(target.server)
-    .post(`/api/v1/vaults/${id}/managed-release`)
+  const capabilityToken = await signCapability(payload, (opts.signWith ?? keyPair).privateKey);
+  return request((opts.target ?? harness).server)
+    .post(`/api/v1/vaults/${opts.vault ?? vaultId}/managed-release`)
     .set("Authorization", `Bearer ${token}`)
-    .send({ capabilityToken, plusPublicKey: keyPair.publicKeyBase64 });
+    .send({
+      capabilityToken,
+      credentialId: opts.credentialId,
+      ...opts.body,
+    });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -492,7 +529,10 @@ describe("POST /api/v1/vaults/{vaultId}/managed-credentials (O5.9)", () => {
 
     // Same ApiServer => same InMemoryReleaseShareStore instance and same KEK
     // secret; the release route must find both the row and the wrapped share.
-    const release = await releaseViaHttp(secretRef);
+    const release = await releaseViaHttp({
+      credentialId: authored.body.credentialId,
+      capabilitySecretRef: secretRef,
+    });
 
     expect(release.status).toBe(200);
     expect(release.body.success).toBe(true);
@@ -506,7 +546,10 @@ describe("POST /api/v1/vaults/{vaultId}/managed-credentials (O5.9)", () => {
     const authored = await post(authorBody({ secretRef }));
     expect(authored.status).toBe(201);
 
-    const release = await releaseViaHttp(secretRef);
+    const release = await releaseViaHttp({
+      credentialId: authored.body.credentialId,
+      capabilitySecretRef: secretRef,
+    });
     expect(release.status).toBe(200);
     expect(release.body.success).toBe(true);
 
@@ -547,5 +590,171 @@ describe("POST /api/v1/vaults/{vaultId}/managed-credentials (O5.9)", () => {
 
     expect(res.status).toBe(401);
     expect(harness.credentialRepo.persistedRows()).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* CRITICAL-1 (WU-1) — the verification key is PINNED in configuration and the */
+/* capability is bound to the session, the requested credential and the device */
+/* -------------------------------------------------------------------------- */
+
+describe("CRITICAL-1: pinned capability key and declared bindings", () => {
+  async function authorKnown() {
+    const secretRef = crypto.randomUUID();
+    const authored = await post(authorBody({ secretRef }));
+    expect(authored.status).toBe(201);
+    return {
+      secretRef,
+      credentialId: authored.body.credentialId as string,
+      releaseShareRef: authored.body.record.releaseShareRef as string,
+    };
+  }
+
+  it("ignores a verification key supplied in the request body", async () => {
+    const { credentialId, releaseShareRef } = await authorKnown();
+    const attacker = generateEd25519KeyPair();
+
+    // A perfectly valid capability, plus an attacker-chosen key in the body.
+    // The server must verify against PLUS_PUBLIC_KEY from configuration and
+    // simply not care what the request claims the key is.
+    const release = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      body: { plusPublicKey: attacker.publicKeyBase64 },
+    });
+
+    expect(release.status).toBe(200);
+    expect(release.body.success).toBe(true);
+    expect(release.body.releaseShare).toBeDefined();
+  });
+
+  it("fails closed naming PLUS_PUBLIC_KEY when configuration is missing, even if the request carries a key", async () => {
+    delete process.env.PLUS_PUBLIC_KEY;
+    const unconfigured = await startHarness();
+    try {
+      const token = await getAuthToken(unconfigured.server);
+      const vault = await createVault(unconfigured.server, token);
+      const secretRef = crypto.randomUUID();
+      const authored = await post(authorBody({ secretRef }), unconfigured, token, vault);
+      expect(authored.status).toBe(201);
+
+      const attacker = generateEd25519KeyPair();
+      const release = await releaseViaHttp({
+        credentialId: authored.body.credentialId,
+        capabilitySecretRef: authored.body.record.releaseShareRef,
+        body: { plusPublicKey: attacker.publicKeyBase64 },
+        target: unconfigured,
+        token,
+        vault,
+      });
+
+      // Fail CLOSED: no pinned key, no release — and the body's key buys nothing.
+      expect(release.status).toBe(403);
+      expect(release.body.success).toBeFalsy();
+      expect(release.body.error).toContain("PLUS_PUBLIC_KEY");
+      expect(release.body.releaseShare).toBeUndefined();
+    } finally {
+      await closeHarness(unconfigured);
+      process.env.PLUS_PUBLIC_KEY = keyPair.publicKeyBase64;
+    }
+  });
+
+  it("rejects a capability signed by a key other than the pinned one", async () => {
+    const { credentialId, releaseShareRef } = await authorKnown();
+    const attacker = generateEd25519KeyPair();
+
+    const release = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      signWith: attacker,
+    });
+
+    expect(release.status).toBe(403);
+    expect(release.body.success).toBeFalsy();
+    expect(release.body.error).toBe("Invalid signature");
+    expect(release.body.releaseShare).toBeUndefined();
+  });
+
+  it("rejects a capability issued for another user than the session", async () => {
+    const { credentialId, releaseShareRef } = await authorKnown();
+
+    const release = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      capabilityUserId: "user-attacker",
+    });
+
+    expect(release.status).toBe(403);
+    expect(release.body.success).toBeFalsy();
+    expect(release.body.error).toContain("userId");
+    expect(release.body.releaseShare).toBeUndefined();
+  });
+
+  it("rejects a capability for a resource other than the requested credential", async () => {
+    const { credentialId } = await authorKnown();
+
+    // The capability is internally consistent (both fields say `other`) but
+    // names a secret that is not the requested credential's — the route binds
+    // both fields to what Core itself stores, so it must refuse.
+    const release = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: crypto.randomUUID(),
+    });
+
+    expect(release.status).toBe(403);
+    expect(release.body.success).toBeFalsy();
+    expect(release.body.error).toContain("resourceId");
+    expect(release.body.releaseShare).toBeUndefined();
+  });
+
+  it("rejects a device-bound capability unless the request declares that device", async () => {
+    const { credentialId, releaseShareRef } = await authorKnown();
+
+    const undeclared = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      capabilityDeviceId: "device-1",
+    });
+    expect(undeclared.status).toBe(403);
+    expect(undeclared.body.error).toContain("deviceId");
+
+    const wrongDevice = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      capabilityDeviceId: "device-1",
+      body: { deviceId: "device-2" },
+    });
+    expect(wrongDevice.status).toBe(403);
+    expect(wrongDevice.body.error).toContain("deviceId");
+
+    const declared = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      capabilityDeviceId: "device-1",
+      body: { deviceId: "device-1" },
+    });
+    expect(declared.status).toBe(200);
+    expect(declared.body.success).toBe(true);
+  });
+
+  it("refuses a credentialId that Core does not have in this vault", async () => {
+    const { credentialId, releaseShareRef } = await authorKnown();
+
+    // A real capability, but aimed at a credential id this vault does not own:
+    // the secret is never taken from the capability, only from Core's store.
+    const unknown = await releaseViaHttp({
+      credentialId: crypto.randomUUID(),
+      capabilitySecretRef: releaseShareRef,
+    });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.releaseShare).toBeUndefined();
+
+    const missing = await releaseViaHttp({
+      credentialId,
+      capabilitySecretRef: releaseShareRef,
+      body: { credentialId: "" },
+    });
+    expect(missing.status).toBe(400);
+    expect(missing.body.releaseShare).toBeUndefined();
   });
 });

@@ -5,12 +5,15 @@
  * for a managed credential. This is the Core↔Plus bridge endpoint.
  *
  * Flow:
- * 1. Verify capability signature (Ed25519) with Plus public key
- * 2. Check capability expiry, issuer, audience, operation
+ * 1. Fail closed when `PLUS_PUBLIC_KEY` is not pinned (never a request key)
+ * 2. Verify capability signature (Ed25519) with the PINNED Plus public key,
+ *    plus expiry, issuer, audience, operation, and every declared binding
+ *    (userId, resourceId, secretRef, deviceId) against the expected context
  * 3. Atomically consume JTI (replay protection)
  * 4. Find credential by secretRef
  * 5. Verify credential is MANAGED mode
  * 6. Verify the credential's Release Share reference matches the capability
+ *    AND that the credential lives in the vault named in the URL
  * 7. Unwrap the stored Release Share with the Release Share KEK and return it
  *    (base64). Fails closed — never falls back to the opaque reference.
  *
@@ -22,7 +25,12 @@
  */
 
 import type { ICredentialRepository, IReleaseShareStore } from "../../domain/repositories";
-import { verifyCapability, CapabilityPayload, CapabilityOperation } from "../../infrastructure/crypto/ed25519-capability";
+import {
+  verifyCapability,
+  CapabilityPayload,
+  CapabilityOperation,
+  CapabilityBindingContext,
+} from "../../infrastructure/crypto/ed25519-capability";
 import { verifyAndConsumeJti } from "../../infrastructure/crypto/jti-store";
 import {
   deriveReleaseShareKek,
@@ -38,7 +46,16 @@ export interface ManagedReleaseInput {
     signature: string;
     protectedHeader: string;
   };
-  plusPublicKey: string; // base64 Ed25519 public key
+  /**
+   * Bindings the capability must satisfy: authenticated user, requested
+   * resource, requested secret and bound device. Built by the route from the
+   * session, the URL vault and Core's own credential store — never from the
+   * capability and never from the request. Required: a missing context is a
+   * refusal, not a skipped check.
+   */
+  expected: CapabilityBindingContext;
+  /** Vault named in the URL. The released credential must live in it. */
+  vaultId: string;
 }
 
 export interface ManagedReleaseOutput {
@@ -82,13 +99,51 @@ export class ManagedReleaseUseCase {
     private releaseShareStore?: IReleaseShareStore | null,
     /** Raw 32-byte server secret backing the Release Share KEK. No default. */
     private releaseShareKekSecret?: Uint8Array | null,
+    /**
+     * PINNED Ed25519 verification key (from `PLUS_PUBLIC_KEY` via
+     * `loadPlusPublicKey`). No default, never taken from the request: null
+     * means every managed release refuses with the missing variable named.
+     */
+    private plusPublicKey?: Uint8Array | null,
   ) {}
 
   async execute(input: ManagedReleaseInput): Promise<ManagedReleaseOutput> {
     try {
-      // 1. Verify capability signature and structure
-      const verifyResult = await verifyCapability(input.capabilityToken, 
-        Buffer.from(input.plusPublicKey, "base64"),
+      // 0. Fail closed on configuration BEFORE anything else: without the
+      //    pinned key there is nothing trustworthy to verify against, and the
+      //    refusal must name the real blocker for the operator.
+      if (!this.plusPublicKey || this.plusPublicKey.byteLength === 0) {
+        return {
+          success: false,
+          error:
+            "Managed release refused: PLUS_PUBLIC_KEY is not configured — the Ed25519 capability " +
+            "verification key must be pinned in server configuration (base64 of the Plus signer's " +
+            "32-byte public key)",
+        };
+      }
+
+      // 0b. Fail closed on the binding context: a missing context must never
+      //     reach `verifyCapability` as `undefined`, because the optional
+      //     third argument is only tolerated for Plus's own self-verification.
+      if (!input.expected || typeof input.expected !== "object") {
+        return {
+          success: false,
+          error: "Managed release refused: capability binding context missing",
+        };
+      }
+      if (typeof input.vaultId !== "string" || input.vaultId === "") {
+        return {
+          success: false,
+          error: "Managed release refused: vault binding missing",
+        };
+      }
+
+      // 1. Verify capability signature, structure AND every declared binding
+      //    (userId, resourceId, secretRef, deviceId) against `input.expected`.
+      const verifyResult = await verifyCapability(
+        input.capabilityToken,
+        this.plusPublicKey,
+        input.expected,
       );
       if (!verifyResult.valid) {
         return { success: false, error: verifyResult.error };
@@ -129,6 +184,15 @@ export class ManagedReleaseUseCase {
       // 6. Verify the secretRef matches
       if (credential.releaseShareRef !== capability.secretRef) {
         return { success: false, error: "Secret reference mismatch" };
+      }
+
+      // 6b. THE CREDENTIAL MUST LIVE IN THE VAULT NAMED IN THE URL. Without
+      //     this, a capability (or a colliding `releaseShareRef` — H5) could
+      //     release a credential from another user's vault: the route already
+      //     proved the caller owns `input.vaultId`, so this binds the released
+      //     row to that same vault instead of trusting the lookup alone.
+      if (credential.vaultId.toString() !== input.vaultId) {
+        return { success: false, error: "Credential does not belong to the requested vault" };
       }
 
       // 7. Unwrap the Release Share with the Core-held Release Share KEK and
@@ -210,7 +274,12 @@ export interface GetCredentialWithCapabilityInput {
     signature: string;
     protectedHeader: string;
   };
-  plusPublicKey: string;
+  /**
+   * Bindings the capability must satisfy (authenticated user, requested
+   * resource, requested secret, bound device). Required — never derived from
+   * the capability itself.
+   */
+  expected: CapabilityBindingContext;
   credentialId: string;
 }
 
@@ -244,13 +313,33 @@ export class GetCredentialWithCapabilityUseCase {
   constructor(
     private credentialRepository: ICredentialRepository,
     private jtiStore?: any,
+    /** PINNED Ed25519 verification key. No default: null refuses. */
+    private plusPublicKey?: Uint8Array | null,
   ) {}
 
   async execute(input: GetCredentialWithCapabilityInput): Promise<GetCredentialWithCapabilityOutput> {
     try {
-      // Verify capability
-      const verifyResult = await verifyCapability(input.capabilityToken,
-        Buffer.from(input.plusPublicKey, "base64"),
+      // Fail closed: no pinned key, no verification — never a request key.
+      if (!this.plusPublicKey || this.plusPublicKey.byteLength === 0) {
+        return {
+          success: false,
+          error:
+            "Get credential refused: PLUS_PUBLIC_KEY is not configured — the Ed25519 capability " +
+            "verification key must be pinned in server configuration",
+        };
+      }
+      if (!input.expected || typeof input.expected !== "object") {
+        return {
+          success: false,
+          error: "Get credential refused: capability binding context missing",
+        };
+      }
+
+      // Verify capability: signature, structure and every declared binding.
+      const verifyResult = await verifyCapability(
+        input.capabilityToken,
+        this.plusPublicKey,
+        input.expected,
       );
       if (!verifyResult.valid) {
         return { success: false, error: verifyResult.error };

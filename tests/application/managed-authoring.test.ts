@@ -40,6 +40,7 @@ import {
 import type {
   Ed25519KeyPair,
   SignedCapability,
+  CapabilityBindingContext,
 } from "../../src/infrastructure/crypto/ed25519-capability";
 import { InMemoryJtiStore } from "../../src/infrastructure/crypto/jti-store";
 import { Credential } from "../../src/domain/entities/credential";
@@ -195,12 +196,37 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
     return signCapability(payload, keyPair.privateKey);
   }
 
+  /**
+   * Build the release input exactly as the route does: the token plus a
+   * server-derived binding context and the vault named in the URL. By
+   * default the context mirrors the capability (the "requested" resource IS
+   * the capability's `secretRef`); negative tests override individual fields
+   * to prove each binding is enforced independently.
+   */
+  function releaseInputFor(
+    capabilityToken: SignedCapability,
+    overrides: Partial<CapabilityBindingContext> = {},
+  ) {
+    return {
+      capabilityToken,
+      expected: {
+        userId: capabilityToken.payload.userId,
+        resourceId: capabilityToken.payload.resourceId,
+        secretRef: capabilityToken.payload.secretRef,
+        deviceId: capabilityToken.payload.deviceId ?? "",
+        ...overrides,
+      },
+      vaultId: VAULT_ID,
+    };
+  }
+
   function releaseUseCase(
     repository: ICredentialRepository,
     secret: Uint8Array | null | undefined = serverSecret,
     withStore: InMemoryReleaseShareStore | null = store,
+    plusPublicKey: Uint8Array | null = base64ToBinary(keyPair.publicKeyBase64),
   ): ManagedReleaseUseCase {
-    return new ManagedReleaseUseCase(repository, jtiStore, withStore, secret);
+    return new ManagedReleaseUseCase(repository, jtiStore, withStore, secret, plusPublicKey);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -217,8 +243,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
 
     const capability = await signCapabilityFor(secretRef);
     const release = await releaseUseCase(repository).execute({
-      capabilityToken: capability,
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(capability),
     });
 
     // Defect D1: the pre-fix implementation returned the opaque reference here.
@@ -258,8 +283,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
 
     const credential = persistedCredential(result.record);
     const release = await releaseUseCase(repositoryWith([credential])).execute({
-      capabilityToken: await signCapabilityFor(secretRef),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(secretRef)),
     });
     expect(release.success).toBe(true);
 
@@ -307,8 +331,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
 
     const credential = persistedCredential(result.record);
     const release = await releaseUseCase(repositoryWith([credential])).execute({
-      capabilityToken: await signCapabilityFor(secretRef),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(secretRef)),
     });
     expect(release.success).toBe(true);
 
@@ -337,8 +360,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
     // (a) Strict repository: the foreign reference simply does not resolve.
     const strictRepo = repositoryWith([credential]);
     const strict = await releaseUseCase(strictRepo).execute({
-      capabilityToken: await signCapabilityFor(crypto.randomUUID()),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(crypto.randomUUID())),
     });
     expect(strict.success).toBe(false);
     expect(strict.error).toBe("Credential not found for secretRef");
@@ -349,8 +371,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
     const looseRepo = repositoryWith([credential]);
     (looseRepo.findBySecretRef as jest.Mock).mockResolvedValue(credential);
     const loose = await releaseUseCase(looseRepo).execute({
-      capabilityToken: await signCapabilityFor(crypto.randomUUID()),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(crypto.randomUUID())),
     });
     expect(loose.success).toBe(false);
     expect(loose.error).toBe("Secret reference mismatch");
@@ -367,14 +388,12 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
     const capability = await signCapabilityFor(secretRef);
 
     const first = await releaseUseCase(repository).execute({
-      capabilityToken: capability,
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(capability),
     });
     expect(first.success).toBe(true);
 
     const replay = await releaseUseCase(repository).execute({
-      capabilityToken: capability,
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(capability),
     });
     expect(replay.success).toBe(false);
     expect(replay.error).toContain("Replay");
@@ -394,8 +413,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
     const repository = repositoryWith([credential]);
 
     const wrongKeyRelease = await releaseUseCase(repository, wrongServerSecret).execute({
-      capabilityToken: await signCapabilityFor(secretRef),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(secretRef)),
     });
 
     expect(wrongKeyRelease.success).toBe(false);
@@ -407,8 +425,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
 
     // The same capability shape still refuses when no store is wired at all.
     const unconfigured = await releaseUseCase(repository, serverSecret, null).execute({
-      capabilityToken: await signCapabilityFor(secretRef),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(secretRef)),
     });
     expect(unconfigured.success).toBe(false);
     expect(unconfigured.releaseShare).toBeUndefined();
@@ -423,8 +440,7 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
 
     const credential = persistedCredential(result.record);
     const release = await releaseUseCase(repositoryWith([credential]), null).execute({
-      capabilityToken: await signCapabilityFor(secretRef),
-      plusPublicKey: keyPair.publicKeyBase64,
+      ...releaseInputFor(await signCapabilityFor(secretRef)),
     });
 
     expect(release.success).toBe(false);
@@ -647,5 +663,132 @@ describe("O5.8 server-side managed authoring (defect D1)", () => {
     if (!badTotp.ok) expect(badTotp.reason).toBe("TOTP_SEED_INVALID");
 
     expect(store.snapshot()).toHaveLength(0);
+  });
+
+  /* ---------------------------------------------------------------------- */
+  /* 9. CRITICAL-1 (WU-1): pinned verification key + declared bindings       */
+  /* ---------------------------------------------------------------------- */
+
+  describe("capability key pinning and bindings (CRITICAL-1)", () => {
+    async function authoredCredential(): Promise<Credential> {
+      const result = await author();
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("authoring failed");
+      return persistedCredential(result.record);
+    }
+
+    it("rejects a capability signed by a key that is not the pinned one", async () => {
+      const credential = await authoredCredential();
+      const foreign = generateEd25519KeyPair();
+
+      const release = await releaseUseCase(
+        repositoryWith([credential]),
+        serverSecret,
+        store,
+        base64ToBinary(foreign.publicKeyBase64),
+      ).execute(releaseInputFor(await signCapabilityFor(secretRef)));
+
+      expect(release.success).toBe(false);
+      expect(release.error).toBe("Invalid signature");
+      expect(release.releaseShare).toBeUndefined();
+    });
+
+    it("refuses when PLUS_PUBLIC_KEY is absent instead of falling back to any key", async () => {
+      const credential = await authoredCredential();
+
+      const release = await releaseUseCase(repositoryWith([credential]), serverSecret, store, null)
+        .execute(releaseInputFor(await signCapabilityFor(secretRef)));
+
+      expect(release.success).toBe(false);
+      expect(release.error).toContain("PLUS_PUBLIC_KEY");
+      expect(release.releaseShare).toBeUndefined();
+    });
+
+    it("rejects a mismatched userId (binding 1 of 4)", async () => {
+      const credential = await authoredCredential();
+
+      const release = await releaseUseCase(repositoryWith([credential])).execute(
+        releaseInputFor(await signCapabilityFor(secretRef), { userId: "user-2" }),
+      );
+
+      expect(release.success).toBe(false);
+      expect(release.error).toContain("userId");
+      expect(release.releaseShare).toBeUndefined();
+    });
+
+    it("rejects a mismatched resourceId (binding 2 of 4)", async () => {
+      const credential = await authoredCredential();
+
+      const release = await releaseUseCase(repositoryWith([credential])).execute(
+        releaseInputFor(await signCapabilityFor(secretRef), { resourceId: crypto.randomUUID() }),
+      );
+
+      expect(release.success).toBe(false);
+      expect(release.error).toContain("resourceId");
+      expect(release.releaseShare).toBeUndefined();
+    });
+
+    it("rejects a mismatched secretRef (binding 3 of 4)", async () => {
+      const credential = await authoredCredential();
+
+      const release = await releaseUseCase(repositoryWith([credential])).execute(
+        releaseInputFor(await signCapabilityFor(secretRef), { secretRef: crypto.randomUUID() }),
+      );
+
+      expect(release.success).toBe(false);
+      expect(release.error).toContain("secretRef");
+      expect(release.releaseShare).toBeUndefined();
+    });
+
+    it("rejects a mismatched deviceId (binding 4 of 4)", async () => {
+      const credential = await authoredCredential();
+
+      const release = await releaseUseCase(repositoryWith([credential])).execute(
+        releaseInputFor(await signCapabilityFor(secretRef), { deviceId: "device-9" }),
+      );
+
+      expect(release.success).toBe(false);
+      expect(release.error).toContain("deviceId");
+      expect(release.releaseShare).toBeUndefined();
+    });
+
+    it("refuses an incomplete or absent binding context instead of skipping the check", async () => {
+      const credential = await authoredCredential();
+      const capability = await signCapabilityFor(secretRef);
+
+      const noContext = await releaseUseCase(repositoryWith([credential])).execute({
+        capabilityToken: capability,
+        expected: undefined as unknown as CapabilityBindingContext,
+        vaultId: VAULT_ID,
+      });
+      expect(noContext.success).toBe(false);
+      expect(noContext.error).toContain("binding context missing");
+
+      const incomplete = await releaseUseCase(repositoryWith([credential])).execute({
+        capabilityToken: capability,
+        expected: {
+          userId: "user-1",
+          resourceId: secretRef,
+          secretRef,
+        } as unknown as CapabilityBindingContext,
+        vaultId: VAULT_ID,
+      });
+      expect(incomplete.success).toBe(false);
+      expect(incomplete.error).toContain("incomplete");
+      expect(incomplete.releaseShare).toBeUndefined();
+    });
+
+    it("rejects a credential that lives in a different vault than the one in the URL", async () => {
+      const credential = await authoredCredential();
+
+      const release = await releaseUseCase(repositoryWith([credential])).execute({
+        ...releaseInputFor(await signCapabilityFor(secretRef)),
+        vaultId: VaultId.generate().toString(),
+      });
+
+      expect(release.success).toBe(false);
+      expect(release.error).toBe("Credential does not belong to the requested vault");
+      expect(release.releaseShare).toBeUndefined();
+    });
   });
 });

@@ -15,7 +15,7 @@ import type {
   ICredentialRepository,
   IReleaseShareStore,
 } from "../../domain/repositories";
-import { VaultId } from "../../domain/value-objects/ids";
+import { VaultId, CredentialId } from "../../domain/value-objects/ids";
 import { EncryptionService } from "../../infrastructure/crypto/EncryptionService";
 import { HashingService } from "../../infrastructure/crypto/HashingService";
 import { SignatureService } from "../../infrastructure/crypto/signature-service";
@@ -61,6 +61,10 @@ import {
   createReleaseShareStore,
 } from "../../infrastructure/repositories";
 import { loadReleaseShareKekSecret } from "../../infrastructure/crypto/release-share-kek";
+import {
+  loadPlusPublicKey,
+  type CapabilityBindingContext,
+} from "../../infrastructure/crypto/ed25519-capability";
 import { secureZero } from "../../infrastructure/crypto/secure-memory";
 import { base64ToBinary } from "../../shared/utils";
 import { Credential } from "../../domain/entities/credential";
@@ -118,6 +122,12 @@ export class ApiServer {
   private releaseShareStore: IReleaseShareStore;
   /** Base64 32-byte secret behind the Release Share KEK. Null => release refuses. */
   private releaseShareKekSecret: Uint8Array | null;
+  /**
+   * PINNED Ed25519 capability verification key (`PLUS_PUBLIC_KEY`). Loaded once
+   * from configuration, never from a request. Null => every managed release
+   * refuses with the missing variable named.
+   */
+  private plusPublicKey: Uint8Array | null;
 
   constructor(
     vaultRepository: IVaultRepository,
@@ -139,6 +149,17 @@ export class ApiServer {
       // Fail closed at request time, not at boot: the process must still start.
       logger.warn(
         "RELEASE_SHARE_KEK_SECRET missing or not 32-byte base64 - managed release will refuse every request",
+        "ApiServer",
+      );
+    }
+
+    this.plusPublicKey = loadPlusPublicKey(process.env.PLUS_PUBLIC_KEY);
+    if (!this.plusPublicKey) {
+      // Fail closed at request time, not at boot: the process must still start,
+      // but no capability can be verified against a key taken from anywhere
+      // but this configuration.
+      logger.warn(
+        "PLUS_PUBLIC_KEY missing or not 32-byte base64 - managed release will refuse every request",
         "ApiServer",
       );
     }
@@ -968,7 +989,9 @@ export class ApiServer {
 
   /**
    * Handler para managed release (Core↔Plus bridge)
-   * Verifies capability token from Plus and returns ReleaseShare for managed credential
+   * Verifies a Plus-signed capability against the PINNED `PLUS_PUBLIC_KEY`
+   * (never a request-supplied key), binds it to the authenticated user, the
+   * requested credential and this vault, and returns the ReleaseShare.
    */
   private async handleVaultManagedRelease(
     req: IncomingMessage,
@@ -991,34 +1014,88 @@ export class ApiServer {
         return;
       }
 
-      // Parse capability token from request body
+      // Parse the request body. SECURITY (ODD CRITICAL-1): the Ed25519
+      // verification key is NOT part of this contract and is never read from
+      // the request — it comes from pinned configuration (`PLUS_PUBLIC_KEY`)
+      // loaded in the constructor. A caller-supplied key is ignored.
       const data = await this.parseJsonBody(req);
       const capabilityToken = data.capabilityToken as {
         payload: any;
         signature: string;
         protectedHeader: string;
       };
-      const plusPublicKey = data.plusPublicKey as string;
 
-      if (!capabilityToken || !capabilityToken.payload || !capabilityToken.signature || !plusPublicKey) {
+      if (!capabilityToken || !capabilityToken.payload || !capabilityToken.signature) {
         res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "capabilityToken and plusPublicKey required" }));
+        res.end(JSON.stringify({ error: "capabilityToken required" }));
         return;
       }
 
-      // Use the managed release use case
+      if (!this.credentialRepository) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Credential repository not configured" }));
+        return;
+      }
+
+      // The request must name the credential it wants released. Core derives
+      // the requested secret from ITS OWN store, inside the vault the caller
+      // has already proved they own above — never from the capability and
+      // never from the body's key material.
+      const credentialId = typeof data.credentialId === "string" ? data.credentialId.trim() : "";
+      if (!credentialId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "credentialId required" }));
+        return;
+      }
+
+      const requested = await this.credentialRepository.findById(
+        CredentialId.fromString(credentialId),
+      );
+      // Scoped to this vault: an id from another vault is indistinguishable
+      // from a non-existent one, so no cross-vault existence is revealed.
+      if (!requested || requested.vaultId.toString() !== vaultId) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Credential not found" }));
+        return;
+      }
+      const requestedSecretRef = requested.releaseShareRef;
+      if (!requestedSecretRef) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ error: "Credential is not managed (requires Plus authorization)" }),
+        );
+        return;
+      }
+
+      // The device THIS request declares. "" means the deployment binds no
+      // device, so a device-bound capability is refused unless the request
+      // names the same device — a binding is never silently skipped.
+      const deviceId = typeof data.deviceId === "string" ? data.deviceId : "";
+
+      // Server-derived bindings: authenticated user + the requested resource
+      // and secret as Core itself stores them.
+      const expected: CapabilityBindingContext = {
+        userId,
+        resourceId: requestedSecretRef,
+        secretRef: requestedSecretRef,
+        deviceId,
+      };
+
+      // Use the managed release use case, wired to the PINNED key.
       // Note: In production, this would be injected via constructor
       const { ManagedReleaseUseCase } = await import("../../application/use-cases/managed-release.use-case");
       const useCase = new ManagedReleaseUseCase(
-        this.credentialRepository!,
+        this.credentialRepository,
         /* jtiStore: undefined => global store */ undefined,
         this.releaseShareStore,
         this.releaseShareKekSecret,
+        this.plusPublicKey,
       );
 
       const result = await useCase.execute({
         capabilityToken,
-        plusPublicKey,
+        expected,
+        vaultId,
       });
 
       if (!result.success) {

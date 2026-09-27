@@ -278,3 +278,16 @@
 - [x] `npx tsc --noEmit`: 809 errors — output byte-identical to baseline
 - [x] SonarQube: open issues 0 -> 0 (first scan caught own S107, constructor param removed); gate was ALREADY failing pre-change on the same 3 conditions (duplication 4.599 -> 4.440 improved)
 - [ ] ODD doc row O5.10 -> done (orchestrator)
+
+## WU-1 — CRITICAL-1: pin capability verification key (2026-09-27)
+- [x] Spec leído: `odd/tasks/cybervault-final-verification-remediation.md` (WU-1 acceptance)
+- [x] `ed25519-capability.ts` — `CapabilityBindingContext` (4 campos requeridos), `loadPlusPublicKey` (base64→32B, null si ausente/malformado), `verifyCapability(signed, key, expected?)` valida userId/resourceId/secretRef/deviceId; `verifyCapabilityBindings` exportado
+- [x] `managed-release.use-case.ts` — constructor con `plusPublicKey` pineado (sin default), input con `expected`+`vaultId` (sin `plusPublicKey`), guardas fail-closed (key, contexto, vaultId), chequeo `credential.vaultId === input.vaultId`; `GetCredentialWithCapabilityUseCase` igual
+- [x] `server.ts` — `PLUS_PUBLIC_KEY` cargado en constructor + warning de boot (patrón RELEASE_SHARE_KEK_SECRET); ruta `handleVaultManagedRelease` construye `expected` desde sesión/vault/`credentialId` (storeId), ignora `plusPublicKey` del body, 400 sin credentialId, 404 si no pertenece al vault
+- [x] `.env.example` — `PLUS_PUBLIC_KEY` documentado (fail-closed)
+- [x] Conflictos reportables resueltos: 3er parámetro de `verifyCapability` opcional a nivel de tipo (4 call sites de `plus/` no tocables); contrato `deviceId` opcional (""); extensión bloqueada pre-existente (`auditor.ts` → `/api/v1/managed/release` inexistente, WU-3)
+- [x] Tests nuevos: +8 unit (firma ajena, key ausente, 4 bindings, contexto incompleto, vault ajeno) +7 route (key del body ignorada, config ausente fail-closed con key en body, firma ajena, usuario ajeno, recurso ajeno, device binding, credentialId ajeno)
+- [x] Verificación literal: Jest `49 passed, 49 of 50 total / 874 passed, 13 skipped, 887 total` (baseline 859); `tsc --noEmit` = **809 errors** (idéntico al baseline)
+- [x] Alcance respetado: 0 cambios en extensión, `plus/`, `plus/admin/`, Docker; 6 archivos modificados
+- [x] Reporte de deliverables y contradicciones al usuario
+- [ ] WU-2 (CRITICAL-2) y WU-3 (CRITICAL-3) — pendientes

@@ -76,6 +76,35 @@ export interface SignedCapability {
   protectedHeader: string; // base64 encoded header
 }
 
+/**
+ * The context a verifier is expected to check the capability against.
+ *
+ * Every field is REQUIRED — there is no optional binding. A field the caller
+ * does not know must be resolved to a concrete value by the caller (for
+ * example an empty `deviceId` means "this deployment binds no device"), never
+ * omitted, because an omitted field would silently disable its check.
+ *
+ * `expected` is built by the SERVER from the session, the URL and its own
+ * store — never from the capability being verified, and never from the
+ * request body's key material.
+ */
+export interface CapabilityBindingContext {
+  /** Authenticated user the capability must be issued to. */
+  readonly userId: string;
+  /** Resource the capability must authorize (here: the secret being released). */
+  readonly resourceId: string;
+  /** Secret reference the capability must authorize. */
+  readonly secretRef: string;
+  /** Device the capability must be bound to; "" means "no device bound". */
+  readonly deviceId: string;
+}
+
+/** Environment variable that pins the Ed25519 capability verification key. */
+export const PLUS_PUBLIC_KEY_ENV = "PLUS_PUBLIC_KEY";
+
+/** Base64 length of a pinned Ed25519 public key, in bytes. */
+export const PLUS_PUBLIC_KEY_BYTES = 32;
+
 /** Ed25519 key pair */
 export interface Ed25519KeyPair {
   publicKey: Uint8Array; // 32 bytes
@@ -124,6 +153,27 @@ export function loadEd25519PublicKey(publicKeyBase64: string): Uint8Array {
     throw new Error("Invalid Ed25519 public key length: expected 32 bytes");
   }
   return key;
+}
+
+/**
+ * Load the PINNED Plus verification key from its textual (base64)
+ * configuration form (`PLUS_PUBLIC_KEY`).
+ *
+ * Follows the `loadReleaseShareKekSecret` convention: typed, no default,
+ * returns null — rather than throwing — when the value is absent, empty or
+ * malformed (not base64, or not exactly 32 bytes). Callers MUST treat null as
+ * "managed release is unavailable" and refuse: there is deliberately no
+ * fallback to a request-supplied key, a default key or the VEK.
+ */
+export function loadPlusPublicKey(raw: string | undefined | null): Uint8Array | null {
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const bytes = base64ToBinary(raw.trim());
+    if (bytes.byteLength !== PLUS_PUBLIC_KEY_BYTES) return null;
+    return bytes;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -288,11 +338,32 @@ export async function signCapability(
 }
 
 /**
- * Verify a signed capability with Ed25519 public key
+ * Verify a signed capability with Ed25519 public key.
+ *
+ * Checks, in this order: signature, expiry, iat, issuer, audience, operation,
+ * assurance level, version, and — when `expected` is supplied — every declared
+ * binding on the payload: `userId`, `resourceId`, `secretRef` and `deviceId`.
+ *
+ * `expected` is the context the capability must match. All four of its fields
+ * are validated: a mismatch is a verification failure, and an incomplete
+ * context (a non-string or, for everything but `deviceId`, an empty value) is
+ * itself a failure — a binding is never silently skipped because the caller
+ * forgot to pass it.
+ *
+ * SECURITY NOTE — the optional third argument exists ONLY because
+ * `plus/domain/services/capability-issuer.ts` (4 call sites) and
+ * `plus/domain/services/challenge.ts` verify capabilities they just signed,
+ * from inside the Plus service, which is out of scope for this work unit and
+ * must keep compiling and passing its tests. Those calls pass no context and
+ * therefore get signature/structure checks only. EVERY authorization path in
+ * Core (managed release, credential-with-capability) is required to pass a
+ * complete `CapabilityBindingContext`: its use case refuses to run without
+ * one. Do not add a Core caller that omits `expected`.
  */
 export async function verifyCapability(
   signed: SignedCapability,
   publicKey: Uint8Array,
+  expected?: CapabilityBindingContext,
 ): Promise<{ valid: boolean; error?: string }> {
   try {
     // Re-encode payload for verification
@@ -341,10 +412,55 @@ export async function verifyCapability(
       return { valid: false, error: "Unsupported capability version" };
     }
 
+    // Check every declared binding against the expected context.
+    if (expected !== undefined) {
+      return verifyCapabilityBindings(signed.payload, expected);
+    }
+
     return { valid: true };
   } catch (err) {
     return { valid: false, error: err instanceof Error ? err.message : "Verification failed" };
   }
+}
+
+/**
+ * Compare a capability payload against the expected binding context.
+ *
+ * Exported so callers (and tests) can assert the binding rules directly. An
+ * incomplete context fails closed — it never downgrades to "check skipped".
+ */
+export function verifyCapabilityBindings(
+  payload: CapabilityPayload,
+  expected: CapabilityBindingContext,
+): { valid: boolean; error?: string } {
+  if (
+    typeof expected.userId !== "string" ||
+    typeof expected.resourceId !== "string" ||
+    typeof expected.secretRef !== "string" ||
+    typeof expected.deviceId !== "string" ||
+    expected.userId === "" ||
+    expected.resourceId === "" ||
+    expected.secretRef === ""
+  ) {
+    return { valid: false, error: "Capability binding context is incomplete" };
+  }
+
+  if (payload.userId !== expected.userId) {
+    return { valid: false, error: "Capability userId does not match the authenticated user" };
+  }
+  if (payload.resourceId !== expected.resourceId) {
+    return { valid: false, error: "Capability resourceId does not match the requested resource" };
+  }
+  if (payload.secretRef !== expected.secretRef) {
+    return { valid: false, error: "Capability secretRef does not match the requested secret" };
+  }
+  // `deviceId` is optional on the payload: absent means "unbound", which must
+  // equal an equally unbound expectation (""), never a bound device.
+  if ((payload.deviceId ?? "") !== expected.deviceId) {
+    return { valid: false, error: "Capability deviceId does not match the bound device" };
+  }
+
+  return { valid: true };
 }
 
 /**

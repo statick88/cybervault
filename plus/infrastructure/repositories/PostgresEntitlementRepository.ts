@@ -9,6 +9,7 @@ import type { IEntitlementRepository } from "../../domain/repositories";
 import { logger } from "@/shared/logger";
 import { withRetry } from "@/shared/retry";
 import { CircuitBreaker } from "@/shared/circuit-breaker";
+import { mapEntitlementRow } from "./row-mappers";
 
 const PG_RETRYABLE_ERRORS = ["ECONNREFUSED", "timeout", "connection terminated"];
 const PG_POOL_CONFIG = {
@@ -116,14 +117,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
       );
       const row = result.rows[0];
       logger.info(`Entitlement saved: ${plain.id}`);
-      return Entitlement.fromPlainObject({
-        ...row,
-        validFrom: row.valid_from ?? undefined,
-        validUntil: row.valid_until ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Entitlement.fromPlainObject(mapEntitlementRow(row));
     } catch (error) {
       logger.error("Failed to save entitlement", "PostgresEntitlementRepository", undefined, String(error));
       throw error;
@@ -141,14 +135,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
       );
       if (result.rows.length === 0) return null;
       const row = result.rows[0];
-      return Entitlement.fromPlainObject({
-        ...row,
-        validFrom: row.valid_from ?? undefined,
-        validUntil: row.valid_until ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Entitlement.fromPlainObject(mapEntitlementRow(row));
     } catch (error) {
       logger.error("Failed to find entitlement by id", "PostgresEntitlementRepository", undefined, String(error));
       throw error;
@@ -165,14 +152,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
         ),
       );
       return result.rows.map((row) =>
-        Entitlement.fromPlainObject({
-          ...row,
-          validFrom: row.valid_from ?? undefined,
-          validUntil: row.valid_until ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Entitlement.fromPlainObject(mapEntitlementRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find entitlements by user id", "PostgresEntitlementRepository", undefined, String(error));
@@ -190,14 +170,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
         ),
       );
       return result.rows.map((row) =>
-        Entitlement.fromPlainObject({
-          ...row,
-          validFrom: row.valid_from ?? undefined,
-          validUntil: row.valid_until ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Entitlement.fromPlainObject(mapEntitlementRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find entitlements by resource id", "PostgresEntitlementRepository", undefined, String(error));
@@ -206,6 +179,9 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
   }
 
   async findByUserAndResource(userId: string, resourceId: string): Promise<Entitlement | null> {
+    // The row key IS `${userId}:${resourceId}` (see `plus_entitlements.id`
+    // and `Entitlement.create`), so this composes the key and delegates —
+    // the intended convention, not a lookup shortcut.
     const id = `${userId}:${resourceId}`;
     return this.findById(id);
   }
@@ -220,14 +196,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
         ),
       );
       return result.rows.map((row) =>
-        Entitlement.fromPlainObject({
-          ...row,
-          validFrom: row.valid_from ?? undefined,
-          validUntil: row.valid_until ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Entitlement.fromPlainObject(mapEntitlementRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find entitlements by pestillo state", "PostgresEntitlementRepository", undefined, String(error));
@@ -251,14 +220,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
         ),
       );
       return result.rows.map((row) =>
-        Entitlement.fromPlainObject({
-          ...row,
-          validFrom: row.valid_from ?? undefined,
-          validUntil: row.valid_until ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Entitlement.fromPlainObject(mapEntitlementRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find expiring entitlements", "PostgresEntitlementRepository", undefined, String(error));
@@ -329,14 +291,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
     );
 
     const entitlements = result.rows.map((row) =>
-      Entitlement.fromPlainObject({
-        ...row,
-        validFrom: row.valid_from ?? undefined,
-        validUntil: row.valid_until ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }),
+      Entitlement.fromPlainObject(mapEntitlementRow(row)),
     );
 
     return { entitlements, total };
@@ -368,14 +323,7 @@ export class PostgresEntitlementRepository implements IEntitlementRepository {
         ),
       );
       return result.rows.map((row) =>
-        Entitlement.fromPlainObject({
-          ...row,
-          validFrom: row.valid_from ?? undefined,
-          validUntil: row.valid_until ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Entitlement.fromPlainObject(mapEntitlementRow(row)),
       );
     } catch (error) {
       logger.error("Failed to list entitlements", "PostgresEntitlementRepository", undefined, String(error));

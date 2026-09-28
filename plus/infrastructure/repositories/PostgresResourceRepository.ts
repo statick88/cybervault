@@ -9,6 +9,7 @@ import type { IResourceRepository } from "../../domain/repositories";
 import { logger } from "@/shared/logger";
 import { withRetry } from "@/shared/retry";
 import { CircuitBreaker } from "@/shared/circuit-breaker";
+import { mapResourceRow } from "./row-mappers";
 
 const PG_RETRYABLE_ERRORS = ["ECONNREFUSED", "timeout", "connection terminated"];
 
@@ -124,14 +125,7 @@ export class PostgresResourceRepository implements IResourceRepository {
       );
       const row = result.rows[0];
       logger.info(`Resource saved with id: ${plain.id}`);
-      return Resource.fromPlainObject({
-        ...row,
-        tags: row.tags || [],
-        ownerTeam: row.owner_team ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Resource.fromPlainObject(mapResourceRow(row));
     } catch (error) {
       logger.error("Failed to save resource", "PostgresResourceRepository", undefined, String(error));
       throw error;
@@ -149,14 +143,7 @@ export class PostgresResourceRepository implements IResourceRepository {
       );
       if (result.rows.length === 0) return null;
       const row = result.rows[0];
-      return Resource.fromPlainObject({
-        ...row,
-        tags: row.tags || [],
-        ownerTeam: row.owner_team ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Resource.fromPlainObject(mapResourceRow(row));
     } catch (error) {
       logger.error("Failed to find resource by id", "PostgresResourceRepository", undefined, String(error));
       throw error;
@@ -173,14 +160,7 @@ export class PostgresResourceRepository implements IResourceRepository {
         ),
       );
       return result.rows.map((row) =>
-        Resource.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          ownerTeam: row.owner_team ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Resource.fromPlainObject(mapResourceRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find resources by type", "PostgresResourceRepository", undefined, String(error));
@@ -198,14 +178,7 @@ export class PostgresResourceRepository implements IResourceRepository {
         ),
       );
       return result.rows.map((row) =>
-        Resource.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          ownerTeam: row.owner_team ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Resource.fromPlainObject(mapResourceRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find resources by environment", "PostgresResourceRepository", undefined, String(error));
@@ -223,14 +196,7 @@ export class PostgresResourceRepository implements IResourceRepository {
         ),
       );
       return result.rows.map((row) =>
-        Resource.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          ownerTeam: row.owner_team ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Resource.fromPlainObject(mapResourceRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find resources by criticality", "PostgresResourceRepository", undefined, String(error));
@@ -248,14 +214,7 @@ export class PostgresResourceRepository implements IResourceRepository {
         ),
       );
       return result.rows.map((row) =>
-        Resource.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          ownerTeam: row.owner_team ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Resource.fromPlainObject(mapResourceRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find active resources", "PostgresResourceRepository", undefined, String(error));
@@ -333,14 +292,7 @@ export class PostgresResourceRepository implements IResourceRepository {
     );
 
     const resources = result.rows.map((row) =>
-      Resource.fromPlainObject({
-        ...row,
-        tags: row.tags || [],
-        ownerTeam: row.owner_team ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }),
+      Resource.fromPlainObject(mapResourceRow(row)),
     );
 
     return { resources, total };
@@ -372,14 +324,7 @@ export class PostgresResourceRepository implements IResourceRepository {
         ),
       );
       return result.rows.map((row) =>
-        Resource.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          ownerTeam: row.owner_team ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
+        Resource.fromPlainObject(mapResourceRow(row)),
       );
     } catch (error) {
       logger.error("Failed to list resources", "PostgresResourceRepository", undefined, String(error));

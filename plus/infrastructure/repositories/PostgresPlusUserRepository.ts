@@ -9,6 +9,7 @@ import type { IPlusUserRepository } from "../../domain/repositories";
 import { logger } from "@/shared/logger";
 import { withRetry } from "@/shared/retry";
 import { CircuitBreaker } from "@/shared/circuit-breaker";
+import { mapPlusUserRow } from "./row-mappers";
 
 const PG_RETRYABLE_ERRORS = ["ECONNREFUSED", "timeout", "connection terminated"];
 const PG_POOL_CONFIG = {
@@ -114,16 +115,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
       );
       const row = result.rows[0];
       logger.info(`Plus user saved: ${plain.id}`);
-      return PlusUser.fromPlainObject({
-        ...row,
-        habitualCountries: row.habitual_countries || [],
-        timezone: row.timezone,
-        active: row.active,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastLoginAt: row.last_login_at ?? undefined,
-      });
+      return PlusUser.fromPlainObject(mapPlusUserRow(row));
     } catch (error) {
       logger.error("Failed to save plus user", "PostgresPlusUserRepository", undefined, String(error));
       throw error;
@@ -141,16 +133,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
       );
       if (result.rows.length === 0) return null;
       const row = result.rows[0];
-      return PlusUser.fromPlainObject({
-        ...row,
-        habitualCountries: row.habitual_countries || [],
-        timezone: row.timezone,
-        active: row.active,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastLoginAt: row.last_login_at ?? undefined,
-      });
+      return PlusUser.fromPlainObject(mapPlusUserRow(row));
     } catch (error) {
       logger.error("Failed to find plus user by id", "PostgresPlusUserRepository", undefined, String(error));
       throw error;
@@ -168,16 +151,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
       );
       if (result.rows.length === 0) return null;
       const row = result.rows[0];
-      return PlusUser.fromPlainObject({
-        ...row,
-        habitualCountries: row.habitual_countries || [],
-        timezone: row.timezone,
-        active: row.active,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastLoginAt: row.last_login_at ?? undefined,
-      });
+      return PlusUser.fromPlainObject(mapPlusUserRow(row));
     } catch (error) {
       logger.error("Failed to find plus user by email", "PostgresPlusUserRepository", undefined, String(error));
       throw error;
@@ -194,16 +168,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
         ),
       );
       return result.rows.map((row) =>
-        PlusUser.fromPlainObject({
-          ...row,
-          habitualCountries: row.habitual_countries || [],
-          timezone: row.timezone,
-          active: row.active,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lastLoginAt: row.last_login_at ?? undefined,
-        }),
+        PlusUser.fromPlainObject(mapPlusUserRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find plus users by role", "PostgresPlusUserRepository", undefined, String(error));
@@ -221,16 +186,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
         ),
       );
       return result.rows.map((row) =>
-        PlusUser.fromPlainObject({
-          ...row,
-          habitualCountries: row.habitual_countries || [],
-          timezone: row.timezone,
-          active: row.active,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lastLoginAt: row.last_login_at ?? undefined,
-        }),
+        PlusUser.fromPlainObject(mapPlusUserRow(row)),
       );
     } catch (error) {
       logger.error("Failed to find active plus users", "PostgresPlusUserRepository", undefined, String(error));
@@ -303,16 +259,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
     );
 
     const users = result.rows.map((row) =>
-      PlusUser.fromPlainObject({
-        ...row,
-        habitualCountries: row.habitual_countries || [],
-        timezone: row.timezone,
-        active: row.active,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastLoginAt: row.last_login_at ?? undefined,
-      }),
+      PlusUser.fromPlainObject(mapPlusUserRow(row)),
     );
 
     return { users, total };
@@ -344,16 +291,7 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
         ),
       );
       return result.rows.map((row) =>
-        PlusUser.fromPlainObject({
-          ...row,
-          habitualCountries: row.habitual_countries || [],
-          timezone: row.timezone,
-          active: row.active,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lastLoginAt: row.last_login_at ?? undefined,
-        }),
+        PlusUser.fromPlainObject(mapPlusUserRow(row)),
       );
     } catch (error) {
       logger.error("Failed to list plus users", "PostgresPlusUserRepository", undefined, String(error));

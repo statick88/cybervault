@@ -5,6 +5,7 @@
 #
 # Servicios:
 #   - api: Servidor API de CyberVault
+#   - plus: Servidor Plus de autorización (capabilities / step-up)
 #   - postgres: Base de datos para vault
 #   - redis: Cache y sesiones
 #   - ipfs: Almacenamiento descentralizado (opcional)
@@ -76,6 +77,69 @@ services:
       - cybervault-network
     volumes:
       - api-logs:/app/logs
+
+  # -----------------------------------------------------------------------------
+  # Plus API Server (authorization / capabilities / step-up challenges)
+  # -----------------------------------------------------------------------------
+  plus:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.plus
+    container_name: cybervault-plus
+    ports:
+      # Same convention as `api`: host port overridable, container port fixed
+      # at the 3001 that `startPlusServer()`, PLUS_BASE_URL and
+      # PLUS_CHALLENGE_BASE_URL already assume.
+      #
+      # KNOWN COLLISION: the `swagger` service (profile `docs`) also publishes
+      # host 3001, and `adminer` (profile `dev`) takes 3002. The default stack
+      # has no clash — only `--profile docs` does. If you need both, start with
+      # PLUS_PORT=3003 (and set PLUS_BASE_URL / PLUS_CHALLENGE_BASE_URL to
+      # match, or the challenge links in the email will point at nothing).
+      - "${PLUS_PORT:-3001}:3001"
+    environment:
+      # Same H6 policy as the `api` service: this compose file is a LOCAL
+      # development stack. `plus/api/server.ts` refuses to boot when
+      # NODE_ENV=production and HTTPS is not actually configured, so the
+      # default here is development and a real deployment must pass
+      # NODE_ENV=production together with HTTPS_ENABLED=true, TLS_CERT_PATH
+      # and TLS_KEY_PATH. Do not weaken that refusal to make the stack boot.
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3001
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-false}
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-}
+      # What the browser opens, and what the challenge email links to. Both
+      # must be reachable from the HOST, hence the published port above.
+      - PLUS_BASE_URL=${PLUS_BASE_URL:-http://localhost:3001}
+      - PLUS_CHALLENGE_BASE_URL=${PLUS_CHALLENGE_BASE_URL:-http://localhost:3001}
+      # WU-1: the Ed25519 key Plus signs capabilities with. Core pins the
+      # matching PLUS_PUBLIC_KEY; if this key is absent, Plus logs a warning
+      # and mints a throwaway key whose public half Core has never pinned, so
+      # every capability it issues is rejected by design. Already present in
+      # .env — never commit or echo its value.
+      - PLUS_CAPABILITY_PRIVATE_KEY=${PLUS_CAPABILITY_PRIVATE_KEY}
+      # Plus-internal auth and service-to-service secret. `plus/api/server.ts`
+      # throws at module load unless PLUS_JWT_SECRET is set or
+      # NODE_ENV=development, which is exactly why the development default
+      # above is what lets a local stack boot while a production one fails
+      # fast. These two are T6 (.env) — set them there, not here.
+      - PLUS_JWT_SECRET=${PLUS_JWT_SECRET:-}
+      - PLUS_SERVICE_SECRET=${PLUS_SERVICE_SECRET:-}
+      # Plus repositories take a single connection string (no DB_* split).
+      - DATABASE_URL=postgresql://cybervault:${POSTGRES_PASSWORD}@postgres:5432/cybervault
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - cybervault-network
 
   # -----------------------------------------------------------------------------
   # PostgreSQL Database

@@ -12,6 +12,7 @@
 
 import type { Server, IncomingMessage, ServerResponse } from "http";
 import { createServer } from "http";
+import { createServer as createHttpsServer } from "https";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { logger } from "@/shared/logger";
@@ -19,6 +20,9 @@ import { metrics } from "@/shared/metrics";
 import type { IChallengeRepository } from "../domain/repositories";
 import type { IEntitlementRepository } from "../domain/repositories";
 import type { IPlusUserRepository } from "../domain/repositories";
+import { PostgresChallengeRepository } from "../infrastructure/repositories/PostgresChallengeRepository";
+import { PostgresEntitlementRepository } from "../infrastructure/repositories/PostgresEntitlementRepository";
+import { PostgresPlusUserRepository } from "../infrastructure/repositories/PostgresPlusUserRepository";
 import { NoOpEmailService } from "../domain/services/email-service";
 import type { IEmailService } from "../domain/services/email-service";
 import type { CapabilityOperation } from "../domain/operations";
@@ -478,7 +482,13 @@ export class PlusApiServer {
           operation: operation as any,
           secretRef,
           deviceId,
-          challengeId: context?.challengeId || "",
+          // `context` is `Record<string, unknown>`; `context?.challengeId` is
+          // therefore `unknown` and `unknown || ""` is `{}` at the type level,
+          // which is why this used to fail to compile. `contextString` is the
+          // read helper this route already uses for every other body field: it
+          // returns the value only when it is a non-empty string, and `?? ""`
+          // preserves the old "no challenge context yet" behaviour.
+          challengeId: contextString(context, "challengeId") ?? "",
           ttlSeconds,
         });
       } else if (assurance === 2) {
@@ -891,7 +901,14 @@ export class PlusApiServer {
             key: readFileSync(resolve(tlsKeyPath)),
             cert: readFileSync(resolve(tlsCertPath)),
           };
-          server = require("https").createServer(options, (req, res) => this.handleRequest(req, res));
+          // A static import rather than `require("https")`: the untyped
+          // `require()` returned `any`, so the callback's `req`/`res`
+          // parameters had no contextual type and both were implicit `any`.
+          // `createHttpsServer` is `https.createServer`, so the emitted call is
+          // still a property lookup on the `https` module object and the TLS
+          // tests' `jest.spyOn(require("https"), "createServer")` still
+          // observes it.
+          server = createHttpsServer(options, (req, res) => this.handleRequest(req, res));
           logger.info(`🔒 Plus HTTPS Server started on port ${port}`, "PlusApiServer");
         } catch (error) {
           // Unreachable for a bad path — assertTlsConfiguration() already
@@ -923,18 +940,38 @@ export class PlusApiServer {
   }
 }
 
-export async function startPlusServer(options: {
+/**
+ * Everything `startPlusServer()` can be handed.
+ *
+ * Every field is optional ON PURPOSE. The previous signature declared
+ * `challengeRepo`, `entitlementRepo` and `userRepo` as REQUIRED while the
+ * function's own default parameter was `= {}`, so the one call the type
+ * advertised — `startPlusServer()` — was exactly the call TypeScript rejected
+ * (TS2739 on the declaration). The type was wrong, not the callers.
+ *
+ * A caller may now supply any subset. Whatever is omitted falls back to the
+ * Postgres implementation bound to `DATABASE_URL`, the same arrangement
+ * Core's `startServer()` uses for its repositories — supply your own (tests,
+ * embedders) or let it default (a real deployment).
+ */
+export interface StartPlusServerOptions {
   port?: number;
-  challengeRepo: any;
-  entitlementRepo: any;
-  userRepo: any;
-  emailService?: any;
-} = {}): Promise<Server> {
+  challengeRepo?: IChallengeRepository;
+  entitlementRepo?: IEntitlementRepository;
+  userRepo?: IPlusUserRepository;
+  emailService?: IEmailService;
+}
+
+export async function startPlusServer(options: StartPlusServerOptions = {}): Promise<Server> {
+  // Read even when unused: the destructuring defaults below are only
+  // EVALUATED for properties the caller left `undefined`, so a caller that
+  // passes repositories never opens a pool here.
+  const connectionString = process.env.DATABASE_URL || "";
   const {
     port = 3001,
-    challengeRepo,
-    entitlementRepo,
-    userRepo,
+    challengeRepo = new PostgresChallengeRepository(connectionString),
+    entitlementRepo = new PostgresEntitlementRepository(connectionString),
+    userRepo = new PostgresPlusUserRepository(connectionString),
     emailService,
   } = options;
 

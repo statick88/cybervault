@@ -66,6 +66,18 @@
 - [x] H6 — `assertTlsConfiguration()` at top of `ApiServer.start()`; production without TLS refuses; unreadable cert/key refuses (no fallback); `process.exit(1)` on refused startup; `HTTPS_ENABLED` in `.env.example`
 - [x] Verify: jest 989 passed / 1006 total (17 skipped); tsc **807**; SonarQube open issues **total: 0**
 - [ ] REPORT: tsc baseline contradiction (809 → 807, the 809 WERE H7's two TS2345 + their cascade)
-- [ ] REPORT: `plus/api/server.ts` still has H6's identical `HTTPS_ENABLED` default + "falling back to HTTP" (out of finding scope)
+- [x] REPORT: `plus/api/server.ts` still has H6's identical `HTTPS_ENABLED` default + "falling back to HTTP" (out of finding scope) — **FIXED in H6-Plus below**
 - [ ] REPORT: SonarQube QG still ERROR on new_coverage (jest `collectCoverageFrom` is src/domain only), new_duplicated_lines_density, new_security_hotspots_reviewed (7 pre-existing hotspots, none in touched files)
+- [ ] Orchestrator verification + commit (agent must NOT commit)
+
+## H6-Plus — mirror the TLS fail-closed fix into `plus/api/server.ts` (branch `fix/pentest-script-rdd`, no commits)
+- [x] Negative test written FIRST: `tests/infrastructure/plus-tls-enforcement.test.ts` (13 tests, modelled on `tests/infrastructure/tls-enforcement.test.ts`); ran it against the unpatched tree → **11 failed, 2 passed** (the 2 passing are the deliberately-kept non-production happy path)
+- [x] `plus/api/server.ts`: private `assertTlsConfiguration()` mirroring Core's byte-for-byte policy — `NODE_ENV=production` without `HTTPS_ENABLED` exactly `"true"` refuses; `HTTPS_ENABLED=true` with unreadable key/cert refuses in EVERY environment; the old `catch` (warn "falling back to HTTP" + bind plaintext) now `reject()`s instead; `start()` consumes the guard's paths, never the module-load `SECURITY_CONFIG` snapshot
+- [x] Non-production policy: kept Core's choice — a process that never asked for TLS still starts plain HTTP; only "asked for TLS, could not honour it" is refused everywhere
+- [x] `.env.example`: +6 comment lines under the H6 TLS block naming `plus/api/server.ts` and stating Plus enforces the same policy with the same three variables
+- [x] Verified negative-first: pre-fix 11 failed / 2 passed → post-fix **13/13 passed**
+- [x] Verify: `npx jest --silent` = **1002 passed / 1019 total** (60 of 63 suites, 17 skipped) — baseline 989 all still pass, +13 new; `npx tsc --noEmit` = **807** (exact baseline; still exactly 4 in `plus/api/server.ts`, same four TS codes at shifted lines 481/894/894/926)
+- [x] SonarQube re-scan (token `wu5-tls`, passed as `-Dsonar.login=`): **OPEN ISSUES total: 0** (project-wide and component-wide)
+- [x] No existing test depended on the HTTP fallback: the only suite that starts Plus (`tests/plus/capability-request-step-up.test.ts`) runs `NODE_ENV=development` with `HTTPS_ENABLED` unset, which the kept policy still allows; full suite green confirms it
+- [x] REPORT: QG still ERROR — measured, not assumed: re-scanned the REVERTED tree first (baseline also ERROR: `new_coverage` 15.8, `new_duplicated_lines_density` 3.33, `new_security_hotspots_reviewed` 0), post-fix 15.7 / 3.41 / 0. Pre-existing, `sonar-project.properties` untouched
 - [ ] Orchestrator verification + commit (agent must NOT commit)

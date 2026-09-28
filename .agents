@@ -16,16 +16,17 @@
 - Storage: `chrome.storage.session` holds `cybervault_vek` + `cybervault_session_key` + `cybervault_unlock_state`; `chrome.storage.local` holds `cybervault_cred_records` + `cybervault_cred_index` (ciphertext only).
 
 ## Current state
-- Stage: **Pentest remediation H1–H7 complete, awaiting orchestrator verification and commit.** Branch `fix/pentest-script-rdd`. Nothing committed by the agent.
-- SonarQube reports **0 open issues** for `cybervault`. A scanner token is stored outside the repo at `/tmp/opencode/sonar.token` (`GLOBAL_ANALYSIS_TOKEN`); no token is stored in the repo.
-- SonarQube quality gate still ERROR, on metrics that are NOT open issues: `new_coverage` (jest `collectCoverageFrom` is `src/domain/**` only, so infrastructure changes can never count as covered), `new_duplicated_lines_density` 3.33% > 3, `new_security_hotspots_reviewed` 0% (7 pre-existing hotspots, none in files touched by H1–H7).
+- Stage: **Pentest remediation H1–H7 complete + H6-Plus (Plus TLS fail-closed) applied, awaiting orchestrator verification and commit.** Branch `fix/pentest-script-rdd`. Nothing committed by the agent.
+- SonarQube reports **0 open issues** for `cybervault`. A scanner token is generated per cycle via `api/user_tokens/generate` (e.g. `wu5-tls`) and passed as `-Dsonar.login=` (9.9 rejects `-Dsonar.token=`); a copy sits outside the repo at `/tmp/opencode/sonar.token`. No token is stored in the repo.
+- SonarQube quality gate still ERROR, on metrics that are NOT open issues — measured against a re-scan of the reverted tree, so they predate the current change: `new_coverage` (jest `collectCoverageFrom` is `src/domain/**` only, so infrastructure changes can never count as covered), `new_duplicated_lines_density` ~3.3–3.4% > 3, `new_security_hotspots_reviewed` 0% (pre-existing hotspots, none in files touched).
 
 ## Objectives
 1. ✅ WU-1 / WU-2 (prior sessions) — origin authority, managed-release contract fixes.
 2. ✅ WU-3 — extension-side credential release path wired end to end (VEK persistence, authoring writer, step-up senders, popup senders, behavioural tests).
 3. ✅ WU-4 — Plus-side capability gate: `/api/v1/capabilities/request` now decides before it signs, returns `challengeRequired`, reuses one challenge per binding; single signing key for issuer + challenge service.
 4. ✅ Pentest H1–H7 — token type gate (H1), kebab-case CSP (H2), server-minted `secretRef` (H3), migration 003 + repository DDL mirror (H4), optional `expectedVersion` optimistic locking (H5), TLS fail-closed startup (H6), awaited session key (H7).
-5. ⏳ Orchestrator verification + commit (explicitly out of agent scope).
+5. ✅ H6-Plus — `plus/api/server.ts` now refuses to start like Core does (production without `HTTPS_ENABLED` refuses; `HTTPS_ENABLED=true` with unreadable key/cert refuses in every environment; the plaintext fallback is gone). `PLUS_PUBLIC_KEY` pinning deliberately NOT added.
+6. ⏳ Orchestrator verification + commit (explicitly out of agent scope).
 
 ## Project conventions
 - English for all code, comments, tests, docs; no AI attribution in commits; conventional commits only.
@@ -40,8 +41,8 @@
 - ESLint 8.57.1 is installed but **no ESLint config file exists anywhere**, so `npm run lint` fails for every file. Pre-existing; reported, not fixed.
 
 ## Points of attention
-- **tsc baseline = 809 errors** (pre-existing, mostly `plus/admin` JSX). Any edit must keep it at 809; `plus/api/server.ts` accounts for exactly 4 of them.
-- **jest baseline = 921 passed / 934 total** (53 of 54 suites, 13 skipped) after WU-4 (was 908/921 after WU-3).
+- **tsc baseline = 807 errors** (pre-existing, mostly `plus/admin` JSX). Any edit must keep it at 807; `plus/api/server.ts` accounts for exactly 4 of them. (Was recorded as 809 before H7 — those two TS2345 and their cascade were H7's.)
+- **jest baseline = 1002 passed / 1019 total** (60 of 63 suites, 17 skipped) after H6-Plus (was 989/1006 after H1–H7, 921/934 after WU-4).
 - `jest.config.js` carries a narrow `diagnostics.exclude: ["**/plus/api/server.ts"]` so a test can import the real Plus route without ts-jest re-reporting that file's 4 pre-existing errors. `tsc --noEmit` still covers it. Deliberate, disclosed — do not widen it.
 - Never write `password`/`totpSecret` inside a `chrome.storage.local.set(...)` body in `auditor.ts` — `tests/extension/sw-contract.test.ts` uses a non-greedy regex that can overrun to the next `)`.
 - 15-min (`master-key-manager`) vs 30-min (`SESSION_WINDOW_MS`) session window discrepancy is reported, not silently unified.

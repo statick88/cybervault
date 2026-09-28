@@ -809,22 +809,102 @@ export class PlusApiServer {
     }
   }
 
+  /**
+   * H6 (Plus) — TLS is decided HERE, from the environment as it is at
+   * STARTUP, and a failure to honour it REFUSES to start instead of degrading.
+   *
+   * Two fail-open paths existed, the same ones fixed in Core:
+   *
+   *  1. `HTTPS_ENABLED` defaulted to `false` through the `SECURITY_CONFIG`
+   *     snapshot frozen when this module was first imported, so a production
+   *     deployment that simply forgot the variable served the whole
+   *     authorization API (capabilities, challenges, PIN verification) over
+   *     plaintext HTTP with no complaint.
+   *  2. With `HTTPS_ENABLED=true` but an unreadable key or certificate, the
+   *     `catch` logged a warning and started a PLAINTEXT HTTP server anyway —
+   *     "falling back to HTTP". The operator asked for TLS and got the exact
+   *     opposite, silently, on the service that issues capabilities.
+   *
+   * Both now throw. Reading the environment here rather than consulting
+   * `SECURITY_CONFIG` (frozen when the module was first imported) means the
+   * decision follows `start()` and can be exercised per test case.
+   *
+   * Outside production the behaviour is unchanged: a process that never asked
+   * for TLS still starts plain HTTP. Only "asked for TLS and could not honour
+   * it" is refused in every environment, because falling back would defeat
+   * the setting.
+   *
+   * This guards SERVER STARTUP, not a request, so no previously-valid request
+   * is refused — the only behaviour that changes is that a misconfigured
+   * Plus process now fails to boot instead of leaking.
+   */
+  private assertTlsConfiguration(): {
+    httpsEnabled: boolean;
+    tlsKeyPath: string;
+    tlsCertPath: string;
+  } {
+    // Re-read at startup: SECURITY_CONFIG is a snapshot taken when the module
+    // was first imported, so it cannot see a value set afterwards — and the
+    // paths have to come from the SAME place as the check, otherwise the guard
+    // could validate one file while the server reads another.
+    const httpsEnabled = process.env.HTTPS_ENABLED === "true";
+    const isProduction = process.env.NODE_ENV === "production";
+    const tlsKeyPath = process.env.TLS_KEY_PATH || SECURITY_CONFIG.TLS_KEY_PATH;
+    const tlsCertPath = process.env.TLS_CERT_PATH || SECURITY_CONFIG.TLS_CERT_PATH;
+
+    if (isProduction && !httpsEnabled) {
+      throw new Error(
+        "Refusing to start: NODE_ENV is \"production\" but HTTPS is not enabled. " +
+          "Set HTTPS_ENABLED=true and configure TLS_CERT_PATH and TLS_KEY_PATH, " +
+          "or terminate TLS in front of this process and say so explicitly. " +
+          "Serving credentials over plaintext HTTP is not an acceptable fallback.",
+      );
+    }
+
+    if (httpsEnabled) {
+      try {
+        readFileSync(resolve(tlsKeyPath));
+        readFileSync(resolve(tlsCertPath));
+      } catch (error) {
+        throw new Error(
+          "Refusing to start: HTTPS_ENABLED=true but the TLS key or certificate " +
+            `could not be read (key=${tlsKeyPath}, cert=${tlsCertPath}). ` +
+            "Serving plaintext HTTP instead would defeat the setting, so startup is aborted. " +
+            `Underlying error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    return { httpsEnabled, tlsKeyPath, tlsCertPath };
+  }
+
   public async start(port: number = 3001): Promise<Server> {
+    const { httpsEnabled, tlsKeyPath, tlsCertPath } = this.assertTlsConfiguration();
+
     return new Promise((resolvePromise, reject) => {
       let server: Server;
 
-      if (SECURITY_CONFIG.HTTPS_ENABLED) {
+      if (httpsEnabled) {
         try {
           const options = {
-            key: readFileSync(resolve(SECURITY_CONFIG.TLS_KEY_PATH)),
-            cert: readFileSync(resolve(SECURITY_CONFIG.TLS_CERT_PATH)),
+            // Same paths the guard just validated — never the frozen snapshot.
+            key: readFileSync(resolve(tlsKeyPath)),
+            cert: readFileSync(resolve(tlsCertPath)),
           };
           server = require("https").createServer(options, (req, res) => this.handleRequest(req, res));
           logger.info(`🔒 Plus HTTPS Server started on port ${port}`, "PlusApiServer");
         } catch (error) {
-          logger.warn("HTTPS certificates not found, falling back to HTTP", "PlusApiServer");
-          server = createServer((req, res) => this.handleRequest(req, res));
-          logger.info(`⚠️  Plus HTTP Server started on port ${port} (no HTTPS)`, "PlusApiServer");
+          // Unreachable for a bad path — assertTlsConfiguration() already
+          // refused. Kept as a hard failure rather than a fallback so this
+          // branch can never regress into serving plaintext.
+          reject(
+            new Error(
+              `Refusing to start: TLS material became unreadable while binding the HTTPS server: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            ),
+          );
+          return;
         }
       } else {
         server = createServer((req, res) => this.handleRequest(req, res));

@@ -23,8 +23,21 @@ module.exports = {
   transformIgnorePatterns: [
     "/node_modules/(?!@noble/)",
   ],
+  // Must mirror what SonarQube actually gates, or the reported coverage is a
+  // measurement of a different project than the one being scored.
+  // sonar.sources=src,plus with **/plus/admin/** excluded, and
+  // sonar.coverage.exclusions=**\/*.test.ts,**\/*.spec.ts,**\/mocks/**.
+  // Measuring only src/domain/** left Sonar scoring every src/infrastructure,
+  // src/application and plus/ file as 0% because no data was ever collected
+  // for them, which is what kept the new_coverage gate in ERROR.
   collectCoverageFrom: [
-    "src/domain/**/*.ts",
-    "!src/domain/**/index.ts",
+    "src/**/*.ts",
+    "plus/**/*.ts",
+    "!**/plus/admin/**",
+    "!**/*.test.ts",
+    "!**/*.spec.ts",
+    "!**/mocks/**",
+    "!**/index.ts",
+    "!**/*.d.ts",
   ],
 };

@@ -20,5 +20,11 @@
     }
   },
   "include": ["src/**/*", "plus/**/*"],
-  "exclude": ["node_modules", "dist", "tests"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "plus/admin",
+    "plus/admin/**"
+  ]
 }

@@ -1,4 +1,4 @@
-import { parseJsonbColumn } from "../../plus/infrastructure/repositories/jsonb";
+import { parseJsonbColumn } from "../../src/shared/jsonb";
 
 /**
  * Regression guard for the double-parse defect found during the Plus runtime

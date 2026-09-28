@@ -9,6 +9,7 @@ import { logger } from "../../shared/logger";
 import { withRetry } from "../../shared/retry";
 import { CircuitBreaker } from "../../shared/circuit-breaker";
 import { OptimisticLockConflictError } from "../../domain/errors/optimistic-lock-conflict.error";
+import { mapCredentialRow } from "./row-mappers";
 
 // Errores PostgreSQL que justifican reintentar la operación
 const PG_RETRYABLE_ERRORS = ["ECONNREFUSED", "timeout", "connection terminated"];
@@ -206,16 +207,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       const row = result.rows[0];
 
       logger.info(`Credential saved with id: ${plain.id}`);
-      return Credential.fromPlainObject({
-        ...row,
-        tags: row.tags || [],
-        vaultId: row.vault_id,
-        encryptedPassword: row.encrypted_password,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastUsed: row.last_used,
-        lockVersion: row.lock_version,
-      });
+      return Credential.fromPlainObject(mapCredentialRow(row));
     } catch (error) {
       logger.error("Failed to save credential", "PostgresCredentialRepository", undefined, String(error));
       throw error;
@@ -292,16 +284,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
 
     const row = result.rows[0];
     logger.info(`Credential saved with id: ${plain.id} (lock_version ${row.lock_version})`);
-    return Credential.fromPlainObject({
-      ...row,
-      tags: row.tags || [],
-      vaultId: row.vault_id,
-      encryptedPassword: row.encrypted_password,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      lastUsed: row.last_used,
-      lockVersion: row.lock_version,
-    });
+    return Credential.fromPlainObject(mapCredentialRow(row));
   }
 
   /**
@@ -357,16 +340,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       const row = result.rows[0];
 
       logger.info(`Credential found with id: ${id.toString()}`);
-      return Credential.fromPlainObject({
-        ...row,
-        tags: row.tags || [],
-        vaultId: row.vault_id,
-        encryptedPassword: row.encrypted_password,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastUsed: row.last_used,
-        lockVersion: row.lock_version,
-      });
+      return Credential.fromPlainObject(mapCredentialRow(row));
     } catch (error) {
       logger.error("Failed to find credential by id", "PostgresCredentialRepository", undefined, String(error));
       throw error;
@@ -395,16 +369,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       );
 
       const credentials = result.rows.map((row) =>
-        Credential.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          vaultId: row.vault_id,
-          encryptedPassword: row.encrypted_password,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lastUsed: row.last_used,
-          lockVersion: row.lock_version,
-        }),
+        Credential.fromPlainObject(mapCredentialRow(row)),
       );
 
       logger.info(
@@ -444,16 +409,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       const row = result.rows[0];
 
       logger.info(`Credential found with secretRef: ${secretRef}`);
-      return Credential.fromPlainObject({
-        ...row,
-        tags: row.tags || [],
-        vaultId: row.vault_id,
-        encryptedPassword: row.encrypted_password,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastUsed: row.last_used,
-        lockVersion: row.lock_version,
-      });
+      return Credential.fromPlainObject(mapCredentialRow(row));
     } catch (error) {
       logger.error("Failed to find credential by secretRef", "PostgresCredentialRepository", undefined, String(error));
       throw error;
@@ -512,16 +468,7 @@ export class PostgresCredentialRepository implements ICredentialRepository {
       );
 
       const credentials = result.rows.map((row) =>
-        Credential.fromPlainObject({
-          ...row,
-          tags: row.tags || [],
-          vaultId: row.vault_id,
-          encryptedPassword: row.encrypted_password,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lastUsed: row.last_used,
-          lockVersion: row.lock_version,
-        }),
+        Credential.fromPlainObject(mapCredentialRow(row)),
       );
 
       logger.info(`Listed ${credentials.length} credentials`);

@@ -11,7 +11,7 @@ import type {
   PlusUserRow,
   ResourceRow,
 } from "../../plus/infrastructure/repositories/row-mappers";
-import { parseJsonbColumn } from "../../plus/infrastructure/repositories/jsonb";
+import { parseJsonbColumn } from "../../src/shared/jsonb";
 
 /**
  * Regression guard for the snake_case → camelCase read defect found during the

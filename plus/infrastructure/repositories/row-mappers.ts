@@ -33,9 +33,9 @@
  *   arrive from `pg` as JS arrays; a SQL NULL becomes `[]`, because
  *   `.includes()` on `undefined` is exactly the crash being fixed.
  * - SQL NULL on a domain-optional column becomes `undefined`, not `null`.
- * - `metadata` goes through `parseJsonbColumn` (`jsonb.ts`): `pg` has already
- *   parsed OID 3802, so `JSON.parse(row.metadata)` would be a double parse
- *   that throws on any non-NULL value.
+ * - `metadata` goes through `parseJsonbColumn` (`src/shared/jsonb.ts`, shared
+ *   with Core): `pg` has already parsed OID 3802, so `JSON.parse(row.metadata)`
+ *   would be a double parse that throws on any non-NULL value.
  * - `TIMESTAMPTZ` columns arrive as `Date`; `fromPlainObject` re-parses with
  *   `new Date(...)`, so the mapper emits the ISO string its signature declares
  *   (a string already produced by the driver is passed through untouched).
@@ -63,7 +63,7 @@ import type {
   ResourceEnvironment,
   ResourceType,
 } from "../../domain/entities/resource";
-import { parseJsonbColumn } from "./jsonb";
+import { parseJsonbColumn } from "@/shared/jsonb";
 
 /**
  * `TIMESTAMPTZ` → the plain representation `fromPlainObject` accepts.

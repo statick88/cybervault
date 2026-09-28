@@ -10,6 +10,7 @@ import { logger } from "../../shared/logger";
 import { withRetry } from "../../shared/retry";
 import { CircuitBreaker } from "../../shared/circuit-breaker";
 import { OptimisticLockConflictError } from "../../domain/errors/optimistic-lock-conflict.error";
+import { mapVaultRow } from "./row-mappers";
 
 // Errores PostgreSQL que justifican reintentar la operación
 const PG_RETRYABLE_ERRORS = ["ECONNREFUSED", "timeout", "connection terminated"];
@@ -151,14 +152,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       const row = result.rows[0];
 
       logger.info(`Vault saved with id: ${plain.id}`);
-      return Vault.fromPlainObject({
-        ...row,
-        ownerId: row.owner_id ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lockVersion: row.lock_version,
-      });
+      return Vault.fromPlainObject(mapVaultRow(row));
     } catch (error) {
       logger.error("Failed to save vault", "PostgresVaultRepository", undefined, String(error));
       throw error;
@@ -221,14 +215,7 @@ export class PostgresVaultRepository implements IVaultRepository {
 
     const row = result.rows[0];
     logger.info(`Vault saved with id: ${plain.id} (lock_version ${row.lock_version})`);
-    return Vault.fromPlainObject({
-      ...row,
-      ownerId: row.owner_id ?? undefined,
-      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      lockVersion: row.lock_version,
-    });
+    return Vault.fromPlainObject(mapVaultRow(row));
   }
 
   /**
@@ -285,14 +272,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       const row = result.rows[0];
 
       logger.info(`Vault found with id: ${id.toString()}`);
-      return Vault.fromPlainObject({
-        ...row,
-        ownerId: row.owner_id ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lockVersion: row.lock_version,
-      });
+      return Vault.fromPlainObject(mapVaultRow(row));
     } catch (error) {
       logger.error("Failed to find vault by id", "PostgresVaultRepository", undefined, String(error));
       throw error;
@@ -327,14 +307,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       logger.info(
         `Vault found with id: ${vaultId} for owner: ${ownerId}`,
       );
-      return Vault.fromPlainObject({
-        ...row,
-        ownerId: row.owner_id ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lockVersion: row.lock_version,
-      });
+      return Vault.fromPlainObject(mapVaultRow(row));
     } catch (error) {
       logger.error("Failed to find vault by id and owner id", "PostgresVaultRepository", undefined, String(error));
       throw error;
@@ -391,16 +364,7 @@ export class PostgresVaultRepository implements IVaultRepository {
         ),
       );
 
-      const vaults = result.rows.map((row) =>
-        Vault.fromPlainObject({
-          ...row,
-          ownerId: row.owner_id ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lockVersion: row.lock_version,
-        }),
-      );
+      const vaults = result.rows.map((row) => Vault.fromPlainObject(mapVaultRow(row)));
 
       logger.info(`Listed ${vaults.length} vaults`);
       return vaults;
@@ -430,16 +394,7 @@ export class PostgresVaultRepository implements IVaultRepository {
         ),
       );
 
-      const vaults = result.rows.map((row) =>
-        Vault.fromPlainObject({
-          ...row,
-          ownerId: row.owner_id ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          lockVersion: row.lock_version,
-        }),
-      );
+      const vaults = result.rows.map((row) => Vault.fromPlainObject(mapVaultRow(row)));
 
       logger.info(`Listed ${vaults.length} vaults for owner: ${ownerId}`);
       return vaults;

@@ -21,6 +21,8 @@ import type { IEntitlementRepository } from "../domain/repositories";
 import type { IPlusUserRepository } from "../domain/repositories";
 import { NoOpEmailService } from "../domain/services/email-service";
 import type { IEmailService } from "../domain/services/email-service";
+import type { CapabilityOperation } from "../domain/operations";
+import { Resource } from "../domain/entities/resource";
 
 /** Security configuration */
 const SECURITY_CONFIG = {
@@ -37,6 +39,66 @@ if (!PLUS_JWT_SECRET && process.env.NODE_ENV !== "development") {
 
 /** Request timeout: 30 seconds */
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Read a non-empty string out of the untyped `context` of a request body. */
+function contextString(context: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = context?.[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** Read a finite number out of the untyped `context` of a request body. */
+function contextNumber(context: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = context?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * The `Resource` handed to the risk engine.
+ *
+ * This route has no resource repository injected, so the stand-in is
+ * deliberately NEUTRAL: `criticality: "medium"` carries multiplier 1.0, which
+ * makes resource criticality contribute exactly nothing instead of being
+ * guessed either way. `AdaptiveRiskEngine` reads only `resource.id` and
+ * `resource.criticality`.
+ */
+function neutralResource(resourceId: string): Resource {
+  return Resource.create({
+    id: resourceId,
+    name: resourceId,
+    type: "other",
+    endpoint: "",
+    environment: "production",
+    criticality: "medium",
+  });
+}
+
+/** Verdict of the pre-issuance authorization gate. */
+type CapabilityAuthorization =
+  | { readonly kind: "deny"; readonly reason: string }
+  | { readonly kind: "challenge"; readonly challengeId: string; readonly challengeExpiresAt: number }
+  | { readonly kind: "allow" };
+
+/** The request fields the pre-issuance authorization gate reads. */
+type CapabilityGateRequest = {
+  userId: string;
+  resourceId: string;
+  operation: string;
+  secretRef: string;
+  deviceId?: string;
+  assurance: 1 | 2 | 3;
+  context?: Record<string, unknown>;
+};
+
+/** The binding the gate — and any challenge it raises — is scoped to. */
+type CapabilityGateBinding = {
+  userId: string;
+  resourceId: string;
+  operation: CapabilityOperation;
+  secretRef: string;
+};
+
+/** Scored outcome the risk engine hands back for one request. */
+type RiskEvaluation = import("../domain/services/risk-engine").RiskEvaluation;
 
 /** Plus service configuration from environment */
 const PLUS_CONFIG = {
@@ -67,19 +129,33 @@ export class PlusApiServer {
     this.userRepo = userRepo;
     this.emailService = emailService || new NoOpEmailService();
 
-    // Initialize services
+    // Initialize services.
+    //
+    // ONE signing key for the whole server. The issuer and the challenge
+    // service used to be handed `PLUS_CAPABILITY_PRIVATE_KEY || <a freshly
+    // generated key>` in two separate expressions, so with the variable unset
+    // they each generated their OWN key: `/api/v1/crypto/public-key` then
+    // published the issuer's key while `/api/v1/challenges/verify` signed with
+    // the other one, and every capability a correct PIN produced was signed
+    // with a key Core had never pinned. The step-up completion was therefore
+    // unusable even when the PIN was right. The singletons are reset here so
+    // this constructor — and only this constructor — decides the key.
+    const signingKey =
+      PLUS_CONFIG.capabilityIssuerKey ||
+      require("@/infrastructure/crypto/ed25519-capability").generateEd25519KeyPair().privateKeyBase64;
     if (!PLUS_CONFIG.capabilityIssuerKey) {
       logger.warn("PLUS_CAPABILITY_PRIVATE_KEY not set - using generated key", "PlusApiServer");
     }
-    this.capabilityIssuer = require("../domain/services/capability-issuer").getCapabilityIssuer(
-      PLUS_CONFIG.capabilityIssuerKey || require("@/infrastructure/crypto/ed25519-capability").generateEd25519KeyPair().privateKeyBase64,
-    );
+    require("../domain/services/capability-issuer").setCapabilityIssuer(null);
+    require("../domain/services/challenge").setChallengeService(null);
+
+    this.capabilityIssuer = require("../domain/services/capability-issuer").getCapabilityIssuer(signingKey);
 
     this.challengeService = require("../domain/services/challenge").getChallengeService(
       this.challengeRepo,
       this.emailService,
       PLUS_CONFIG.challengeBaseUrl,
-      PLUS_CONFIG.capabilityIssuerKey || require("@/infrastructure/crypto/ed25519-capability").generateEd25519KeyPair().privateKeyBase64,
+      signingKey,
     );
 
     this.riskEngine = require("../domain/services/risk-engine").getRiskEngine();
@@ -188,6 +264,136 @@ export class PlusApiServer {
     );
   }
 
+  /**
+   * Decide whether a capability may be issued for this request — BEFORE any
+   * key is used.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * The extension's release path only ever posts to
+   * `/api/v1/capabilities/request`, and this handler used to go straight from
+   * body validation to signing: it never read the entitlement, never ran the
+   * risk engine and never touched a challenge. The ONLY place that ever
+   * produced `challengeRequired` was `/api/v1/entitlements/check`, which no
+   * client calls. So a `step_up` pestillo, a risk score over the challenge
+   * threshold and a `CLOSED` gate all yielded a signed capability — the
+   * third-factor flow was implemented, tested against a fetch mock, and
+   * unreachable against the real server.
+   *
+   * FAIL-CLOSED ORDER
+   * -----------------
+   * 1. No entitlement, `closed` effective state or a disallowed operation → deny.
+   * 2. An unknown principal → deny (risk cannot be scored without one).
+   * 3. The risk engine runs for EVERY surviving request, including `enabled`.
+   *    A `deny` verdict denies; the client may only RAISE the score it is
+   *    judged by, never lower it below what the server computed.
+   * 4. A third factor is required when the pestillo says so, when the risk
+   *    verdict says so, or when the caller claims assurance 3 (an assertion
+   *    that must be backed by a proven challenge, not taken on trust).
+   * 5. While a challenge for the binding is outstanding, NO capability is
+   *    issued: the route hands back a challenge id and an expiry instead.
+   */
+  private async authorizeCapabilityRequest(args: CapabilityGateRequest): Promise<CapabilityAuthorization> {
+    const binding: CapabilityGateBinding = {
+      userId: args.userId,
+      resourceId: args.resourceId,
+      operation: args.operation as CapabilityOperation,
+      secretRef: args.secretRef,
+    };
+
+    const entitlement = await this.entitlementRepo.findByUserAndResource(args.userId, args.resourceId);
+    if (!entitlement) {
+      return { kind: "deny", reason: "No entitlement found" };
+    }
+
+    const state = entitlement.getEffectiveState(new Date());
+    if (state === "closed") {
+      return { kind: "deny", reason: "Pestillo is closed" };
+    }
+    if (!entitlement.isOperationAllowed(binding.operation)) {
+      return { kind: "deny", reason: "Operation not allowed" };
+    }
+
+    const user = await this.userRepo.findById(args.userId);
+    if (!user) {
+      return { kind: "deny", reason: "Unknown user" };
+    }
+
+    const evaluation = this.riskEngine.evaluate({
+      user,
+      resource: neutralResource(args.resourceId),
+      operation: binding.operation,
+      pestilloState: state,
+      clientContext: {
+        country: contextString(args.context, "country"),
+        ip: contextString(args.context, "ip"),
+        deviceId: args.deviceId,
+        userAgent: contextString(args.context, "userAgent"),
+        timestamp: contextNumber(args.context, "timestamp") ?? Date.now(),
+      },
+      policy: this.riskEngine.getPolicy(),
+    });
+
+    // `context.riskScore` is a floor, not an authority: a caller may declare
+    // risk the server did not observe, but it can never declare the risk away.
+    const clientScore = contextNumber(args.context, "riskScore") ?? 0;
+    const thresholds = this.riskEngine.getPolicy().thresholds;
+    const decision =
+      evaluation.decision === "allow" && clientScore > thresholds.allow ? "challenge" : evaluation.decision;
+    if (decision === "deny") {
+      return { kind: "deny", reason: "Risk policy denied the request" };
+    }
+
+    const thirdFactorRequired = state === "step_up" || decision === "challenge" || args.assurance === 3;
+    if (!thirdFactorRequired) {
+      return { kind: "allow" };
+    }
+
+    // Steps 4–5: satisfy the third factor, or hand back the challenge it has
+    // to answer. Extracted so the gate above reads top to bottom; the order of
+    // the two checks below is unchanged.
+    return this.resolveThirdFactor(args, binding, state, evaluation);
+  }
+
+  /**
+   * Steps 4–5 of the fail-closed order documented on
+   * `authorizeCapabilityRequest`: while no challenge for this binding has been
+   * proven, the route answers with a challenge id and an expiry instead of a
+   * capability; a caller that NAMES a challenge must name the proven one.
+   */
+  private async resolveThirdFactor(
+    args: CapabilityGateRequest,
+    binding: CapabilityGateBinding,
+    state: string,
+    evaluation: RiskEvaluation,
+  ): Promise<CapabilityAuthorization> {
+    const proven = await this.challengeService.findCompletedChallenge(binding);
+    if (!proven) {
+      const challenge = await this.challengeService.createChallenge({
+        ...binding,
+        deviceId: args.deviceId,
+        type: state === "step_up" ? "step_up" : "risk_based",
+        riskScore: evaluation.totalScore,
+        riskReasons: evaluation.factors.filter((factor) => factor.score > 0).map((factor) => factor.reason),
+      });
+      return {
+        kind: "challenge",
+        challengeId: challenge.challengeId,
+        challengeExpiresAt: challenge.expiresAt,
+      };
+    }
+
+    // A challenge id presented by the caller must be the one that was proven
+    // for THIS binding. Omitting it is fine (the completed challenge on the
+    // server is what authorizes); naming a different one is not.
+    const presented = contextString(args.context, "challengeId");
+    if (presented !== undefined && presented !== proven.id) {
+      return { kind: "deny", reason: "Challenge not satisfied" };
+    }
+
+    return { kind: "allow" };
+  }
+
   private async handleCapabilitiesRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
       this.sendError(res, 405, "Method not allowed");
@@ -225,6 +431,40 @@ export class PlusApiServer {
       const validOperations = ["AUTOFILL", "VIEW", "TOTP", "CONNECT", "READ", "ADMIN", "BACKUP", "RESTORE", "ROTATE_SECRET", "EDIT_SECRET", "DELETE_SECRET", "EXPORT_SECRET"];
       if (!validOperations.includes(operation)) {
         this.sendError(res, 400, "Invalid operation");
+        return;
+      }
+
+      // Authorization BEFORE issuance. Nothing below this line signs anything
+      // until the entitlement, the risk engine and any outstanding challenge
+      // have all had their say.
+      const authorization = await this.authorizeCapabilityRequest({
+        userId,
+        resourceId,
+        operation,
+        secretRef,
+        deviceId,
+        assurance,
+        context,
+      });
+
+      if (authorization.kind === "deny") {
+        this.sendError(res, 403, authorization.reason);
+        return;
+      }
+
+      if (authorization.kind === "challenge") {
+        // HTTP 200: the request was understood and processed, and the answer
+        // is "not yet — prove the third factor first". Both the extension's
+        // `fetchPlusMaterial` and `PlusBridge.requestCapability` only read the
+        // body on a 2xx, so a non-2xx here would arrive as a generic denial
+        // instead of as the challenge the flow is built around.
+        this.sendSuccess(res, 200, {
+          success: false,
+          error: "Step-up authentication required",
+          challengeRequired: true,
+          challengeId: authorization.challengeId,
+          challengeExpiresAt: authorization.challengeExpiresAt,
+        });
         return;
       }
 

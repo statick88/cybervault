@@ -25,6 +25,7 @@
  */
 
 import type { ICredentialRepository, IReleaseShareStore } from "../../domain/repositories";
+import type { Credential } from "../../domain/entities/credential";
 import {
   verifyCapability,
   CapabilityPayload,
@@ -88,6 +89,18 @@ function capabilityTtlSeconds(
   return { ok: true, ttlSeconds };
 }
 
+/**
+ * Outcome of a fail-closed configuration gate. The `plusPublicKey` branch is
+ * not decoration: it is how `execute` keeps the PINNED key narrowed to
+ * `Uint8Array` after the "is it configured at all" check has passed.
+ */
+type PinnedKeyGate = { ok: false; error: string } | { ok: true; plusPublicKey: Uint8Array };
+
+/** Outcome of resolving the credential a capability is allowed to release. */
+type ResolvedReleaseCredential =
+  | { ok: true; credential: Credential }
+  | { ok: false; error: string };
+
 export class ManagedReleaseUseCase {
   constructor(
     private credentialRepository: ICredentialRepository,
@@ -111,38 +124,18 @@ export class ManagedReleaseUseCase {
     try {
       // 0. Fail closed on configuration BEFORE anything else: without the
       //    pinned key there is nothing trustworthy to verify against, and the
-      //    refusal must name the real blocker for the operator.
-      if (!this.plusPublicKey || this.plusPublicKey.byteLength === 0) {
-        return {
-          success: false,
-          error:
-            "Managed release refused: PLUS_PUBLIC_KEY is not configured — the Ed25519 capability " +
-            "verification key must be pinned in server configuration (base64 of the Plus signer's " +
-            "32-byte public key)",
-        };
-      }
-
-      // 0b. Fail closed on the binding context: a missing context must never
-      //     reach `verifyCapability` as `undefined`, because the optional
-      //     third argument is only tolerated for Plus's own self-verification.
-      if (!input.expected || typeof input.expected !== "object") {
-        return {
-          success: false,
-          error: "Managed release refused: capability binding context missing",
-        };
-      }
-      if (typeof input.vaultId !== "string" || input.vaultId === "") {
-        return {
-          success: false,
-          error: "Managed release refused: vault binding missing",
-        };
+      //    refusal must name the real blocker for the operator. The checks
+      //    live in `configurationRefusal`, in their original order.
+      const key = this.configurationRefusal(input);
+      if (!key.ok) {
+        return { success: false, error: key.error };
       }
 
       // 1. Verify capability signature, structure AND every declared binding
       //    (userId, resourceId, secretRef, deviceId) against `input.expected`.
       const verifyResult = await verifyCapability(
         input.capabilityToken,
-        this.plusPublicKey,
+        key.plusPublicKey,
         input.expected,
       );
       if (!verifyResult.valid) {
@@ -170,30 +163,14 @@ export class ManagedReleaseUseCase {
         return { success: false, error: jtiResult.error };
       }
 
-      // 4. Find credential by secretRef (opaque reference)
-      const credential = await this.credentialRepository.findBySecretRef(capability.secretRef);
-      if (!credential) {
-        return { success: false, error: "Credential not found for secretRef" };
+      // 4–6b. Resolve the credential THROUGH the capability and check it
+      //        against the capability's secretRef and the vault named in the
+      //        URL, in that order.
+      const resolved = await this.resolveCredentialForRelease(capability, input.vaultId);
+      if (!resolved.ok) {
+        return { success: false, error: resolved.error };
       }
-
-      // 5. Verify credential is MANAGED mode
-      if (!credential.isManaged()) {
-        return { success: false, error: "Credential is not managed (requires Plus authorization)" };
-      }
-
-      // 6. Verify the secretRef matches
-      if (credential.releaseShareRef !== capability.secretRef) {
-        return { success: false, error: "Secret reference mismatch" };
-      }
-
-      // 6b. THE CREDENTIAL MUST LIVE IN THE VAULT NAMED IN THE URL. Without
-      //     this, a capability (or a colliding `releaseShareRef` — H5) could
-      //     release a credential from another user's vault: the route already
-      //     proved the caller owns `input.vaultId`, so this binds the released
-      //     row to that same vault instead of trusting the lookup alone.
-      if (credential.vaultId.toString() !== input.vaultId) {
-        return { success: false, error: "Credential does not belong to the requested vault" };
-      }
+      const credential = resolved.credential;
 
       // 7. Unwrap the Release Share with the Core-held Release Share KEK and
       //    return the share itself. Fail closed on every path: a missing store,
@@ -216,6 +193,76 @@ export class ManagedReleaseUseCase {
       const message = error instanceof Error ? error.message : "Unknown error";
       return { success: false, error: `Managed release failed: ${message}` };
     }
+  }
+
+  /**
+   * The configuration refusals of the release flow (steps 0, 0b and the vault
+   * binding), verbatim and in their original order. A refusal here always
+   * precedes signature verification: without a pinned key there is nothing
+   * trustworthy to verify against, and a missing binding context must never
+   * reach `verifyCapability` as `undefined`, because the optional third
+   * argument is only tolerated for Plus's own self-verification.
+   */
+  private configurationRefusal(input: ManagedReleaseInput): PinnedKeyGate {
+    if (!this.plusPublicKey || this.plusPublicKey.byteLength === 0) {
+      return {
+        ok: false,
+        error:
+          "Managed release refused: PLUS_PUBLIC_KEY is not configured — the Ed25519 capability " +
+          "verification key must be pinned in server configuration (base64 of the Plus signer's " +
+          "32-byte public key)",
+      };
+    }
+    if (!input.expected || typeof input.expected !== "object") {
+      return {
+        ok: false,
+        error: "Managed release refused: capability binding context missing",
+      };
+    }
+    if (typeof input.vaultId !== "string" || input.vaultId === "") {
+      return {
+        ok: false,
+        error: "Managed release refused: vault binding missing",
+      };
+    }
+    return { ok: true, plusPublicKey: this.plusPublicKey };
+  }
+
+  /**
+   * Steps 4–6b of the release flow: find, then check. The order of the four
+   * refusals is part of the security contract — it decides WHICH reason a
+   * refused release reports — so each condition and its message is unchanged.
+   */
+  private async resolveCredentialForRelease(
+    capability: CapabilityPayload,
+    vaultId: string,
+  ): Promise<ResolvedReleaseCredential> {
+    // 4. Find credential by secretRef (opaque reference)
+    const credential = await this.credentialRepository.findBySecretRef(capability.secretRef);
+    if (!credential) {
+      return { ok: false, error: "Credential not found for secretRef" };
+    }
+
+    // 5. Verify credential is MANAGED mode
+    if (!credential.isManaged()) {
+      return { ok: false, error: "Credential is not managed (requires Plus authorization)" };
+    }
+
+    // 6. Verify the secretRef matches
+    if (credential.releaseShareRef !== capability.secretRef) {
+      return { ok: false, error: "Secret reference mismatch" };
+    }
+
+    // 6b. THE CREDENTIAL MUST LIVE IN THE VAULT NAMED IN THE URL. Without
+    //     this, a capability (or a colliding `releaseShareRef` — H5) could
+    //     release a credential from another user's vault: the route already
+    //     proved the caller owns `vaultId`, so this binds the released
+    //     row to that same vault instead of trusting the lookup alone.
+    if (credential.vaultId.toString() !== vaultId) {
+      return { ok: false, error: "Credential does not belong to the requested vault" };
+    }
+
+    return { ok: true, credential };
   }
 
   /**
@@ -320,25 +367,15 @@ export class GetCredentialWithCapabilityUseCase {
   async execute(input: GetCredentialWithCapabilityInput): Promise<GetCredentialWithCapabilityOutput> {
     try {
       // Fail closed: no pinned key, no verification — never a request key.
-      if (!this.plusPublicKey || this.plusPublicKey.byteLength === 0) {
-        return {
-          success: false,
-          error:
-            "Get credential refused: PLUS_PUBLIC_KEY is not configured — the Ed25519 capability " +
-            "verification key must be pinned in server configuration",
-        };
-      }
-      if (!input.expected || typeof input.expected !== "object") {
-        return {
-          success: false,
-          error: "Get credential refused: capability binding context missing",
-        };
+      const key = this.configurationRefusal(input);
+      if (!key.ok) {
+        return { success: false, error: key.error };
       }
 
       // Verify capability: signature, structure and every declared binding.
       const verifyResult = await verifyCapability(
         input.capabilityToken,
-        this.plusPublicKey,
+        key.plusPublicKey,
         input.expected,
       );
       if (!verifyResult.valid) {
@@ -361,36 +398,13 @@ export class GetCredentialWithCapabilityUseCase {
         return { success: false, error: jtiResult.error };
       }
 
-      // Resolve the credential THROUGH the capability, never from the
-      // request. A capability authorizes one secretRef, so looking the
-      // credential up by a caller-supplied id would let any validly signed
-      // capability retrieve any credential in the store: the capability's
-      // userId, resourceId, operation and secretRef are all ignored once the
-      // signature checks out. That is an IDOR, and the previous version of
-      // this method did exactly that — the ownership check below was an empty
-      // branch whose comment claimed the check existed.
-      const credential = await this.credentialRepository.findBySecretRef(
-        capability.secretRef,
-      );
-      if (!credential) {
-        return { success: false, error: "Credential not found for secretRef" };
+      // Resolve and check the credential THROUGH the capability, then make
+      // sure the operation fits the credential's mode.
+      const resolved = await this.resolveCredentialForCapability(capability, input.credentialId);
+      if (!resolved.ok) {
+        return { success: false, error: resolved.error };
       }
-
-      // If the caller named a credential, it must be the one the capability
-      // authorizes. Never the other way round.
-      if (input.credentialId && credential.id.toString() !== input.credentialId) {
-        return { success: false, error: "Credential does not match the capability" };
-      }
-
-      // Operation must be consistent with the credential's mode. A VIEW of a
-      // managed credential is exactly what a capability is for; an operation
-      // the mode does not support is refused rather than served.
-      if (credential.isManaged() && !isReleasableOperation(capability.operation)) {
-        return { success: false, error: "Operation is not permitted for this credential" };
-      }
-      if (credential.isPersonal() && capability.operation !== "VIEW") {
-        return { success: false, error: "Operation is not permitted for a personal credential" };
-      }
+      const credential = resolved.credential;
 
       return {
         success: true,
@@ -409,5 +423,73 @@ export class GetCredentialWithCapabilityUseCase {
       const message = error instanceof Error ? error.message : "Unknown error";
       return { success: false, error: `Get credential failed: ${message}` };
     }
+  }
+
+  /**
+   * The configuration refusals of this use case, verbatim and in their
+   * original order: a pinned key first (never a request key), then the
+   * binding context.
+   */
+  private configurationRefusal(
+    input: GetCredentialWithCapabilityInput,
+  ): PinnedKeyGate {
+    if (!this.plusPublicKey || this.plusPublicKey.byteLength === 0) {
+      return {
+        ok: false,
+        error:
+          "Get credential refused: PLUS_PUBLIC_KEY is not configured — the Ed25519 capability " +
+          "verification key must be pinned in server configuration",
+      };
+    }
+    if (!input.expected || typeof input.expected !== "object") {
+      return {
+        ok: false,
+        error: "Get credential refused: capability binding context missing",
+      };
+    }
+    return { ok: true, plusPublicKey: this.plusPublicKey };
+  }
+
+  /**
+   * Resolve the credential the capability authorizes, then check the caller's
+   * credential id and the credential's mode against the capability's
+   * operation — in that order, with the original messages.
+   */
+  private async resolveCredentialForCapability(
+    capability: CapabilityPayload,
+    credentialId: string,
+  ): Promise<ResolvedReleaseCredential> {
+    // Resolve the credential THROUGH the capability, never from the
+    // request. A capability authorizes one secretRef, so looking the
+    // credential up by a caller-supplied id would let any validly signed
+    // capability retrieve any credential in the store: the capability's
+    // userId, resourceId, operation and secretRef are all ignored once the
+    // signature checks out. That is an IDOR, and the previous version of
+    // this method did exactly that — the ownership check below was an empty
+    // branch whose comment claimed the check existed.
+    const credential = await this.credentialRepository.findBySecretRef(
+      capability.secretRef,
+    );
+    if (!credential) {
+      return { ok: false, error: "Credential not found for secretRef" };
+    }
+
+    // If the caller named a credential, it must be the one the capability
+    // authorizes. Never the other way round.
+    if (credentialId && credential.id.toString() !== credentialId) {
+      return { ok: false, error: "Credential does not match the capability" };
+    }
+
+    // Operation must be consistent with the credential's mode. A VIEW of a
+    // managed credential is exactly what a capability is for; an operation
+    // the mode does not support is refused rather than served.
+    if (credential.isManaged() && !isReleasableOperation(capability.operation)) {
+      return { ok: false, error: "Operation is not permitted for this credential" };
+    }
+    if (credential.isPersonal() && capability.operation !== "VIEW") {
+      return { ok: false, error: "Operation is not permitted for a personal credential" };
+    }
+
+    return { ok: true, credential };
   }
 }

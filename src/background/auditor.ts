@@ -21,10 +21,7 @@ import {
   type EncryptedCredentialRecord,
 } from "./credential-release";
 import type { OpaqueIndex } from "../domain/services/autofill/domain-index";
-import {
-  authorCredential,
-  type AuthoredCredentialRecord,
-} from "../domain/services/autofill/credential-authoring";
+import { authorCredential } from "../domain/services/autofill/credential-authoring";
 import {
   canRetryRelease,
   type StepUpBinding,
@@ -1087,6 +1084,101 @@ async function handleGetPendingStepUp(
 
 const STEP_UP_PLUS_URL = "http://localhost:3011";
 
+/** A successful trigger hands back the id the PIN answers, plus its expiry. */
+type ChallengeTriggerResult =
+  | { readonly ok: true; readonly challengeId: string; readonly expiresAt: number }
+  | { readonly ok: false; readonly error: string; readonly data?: { text: string } };
+
+/**
+ * Read the Release Share reference THIS worker holds for `credentialId`.
+ *
+ * The resource Plus binds a challenge to must be the SAME resource the
+ * capability request names, or the two legs never join up. Core pins
+ * `expected.resourceId` to the credential's release-share reference, so
+ * that is what `fetchPlusMaterial` sends as `resourceId` — sending the
+ * credential id here would create a challenge the capability route could
+ * never find, and the third factor would stay unreachable in production
+ * even though both calls succeed. The worker reads its own store rather
+ * than trusting the caller to name a reference it has no business choosing.
+ *
+ * Returns "" when there is nothing to step up for: a credential this worker
+ * does not hold (or a personal one, which needs no capability at all) cannot
+ * be released, so there is no release for a challenge to authorize.
+ */
+async function resolveManagedReleaseShareRef(credentialId: string): Promise<string> {
+  const stored = await chrome.storage.local.get([STORE_KEYS.RECORDS]);
+  const records = stored[STORE_KEYS.RECORDS] as
+    | Record<string, EncryptedCredentialRecord>
+    | undefined;
+  const record = records?.[credentialId];
+  if (
+    !record ||
+    record.mode !== "managed" ||
+    typeof record.releaseShareRef !== "string" ||
+    record.releaseShareRef === ""
+  ) {
+    return "";
+  }
+  return record.releaseShareRef;
+}
+
+/**
+ * Ask Plus to trigger the third factor for one binding. Every failure comes
+ * back as a refusal the caller can return verbatim; transport failures are
+ * left to the caller's catch, exactly as before.
+ */
+async function triggerPlusChallenge(input: {
+  binding: StepUpBinding;
+  secretRef: string;
+  token: string;
+  userId: string;
+}): Promise<ChallengeTriggerResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(`${STEP_UP_PLUS_URL}/api/v1/challenges/trigger`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Core-Service": "cybervault-core",
+        Authorization: `Bearer ${input.token}`,
+      },
+      body: JSON.stringify({
+        userId: input.userId,
+        // Plus binds the challenge to (userId, resourceId, operation,
+        // secretRef); all four must match what the capability request sends.
+        resourceId: input.secretRef,
+        operation: input.binding.operation,
+        secretRef: input.secretRef,
+        context: { userAgent: "cybervault-extension", timestamp: Date.now() },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: `challenge trigger failed (${res.status})`, data: { text } };
+    }
+    const body = (await res.json()) as {
+      success?: boolean;
+      challengeId?: string;
+      expiresAt?: number;
+      error?: string;
+    };
+    if (body.success === false || !body.challengeId) {
+      return { ok: false, error: body.error ?? "challenge refused" };
+    }
+
+    return {
+      ok: true,
+      challengeId: body.challengeId,
+      expiresAt: body.expiresAt ?? Date.now() + 120_000,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundResponse> {
   try {
     const binding: StepUpBinding = {
@@ -1098,6 +1190,11 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
       return { ok: false, error: "BINDING_MISSING" };
     }
 
+    const secretRef = await resolveManagedReleaseShareRef(binding.credentialId);
+    if (!secretRef) {
+      return { ok: false, error: "BINDING_NOT_MANAGED" };
+    }
+
     const auth = await chrome.storage.local.get([
       "cybervault_token",
       "cybervault_userId",
@@ -1106,57 +1203,22 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
     const userId = auth["cybervault_userId"] as string | undefined;
     if (!token || !userId) return { ok: false, error: "not authenticated" };
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    try {
-      const res = await fetch(`${STEP_UP_PLUS_URL}/api/v1/challenges/trigger`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Core-Service": "cybervault-core",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          userId,
-          // Plus binds the challenge to resourceId/operation/secretRef. The
-          // credential id doubles as the resource reference for the step-up.
-          resourceId: binding.credentialId,
-          operation: binding.operation,
-          secretRef: binding.credentialId,
-          context: { userAgent: "cybervault-extension", timestamp: Date.now() },
-        }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        return { ok: false, error: `challenge trigger failed (${res.status})`, data: { text } };
-      }
-      const body = (await res.json()) as {
-        success?: boolean;
-        challengeId?: string;
-        expiresAt?: number;
-        error?: string;
-      };
-      if (body.success === false || !body.challengeId) {
-        return { ok: false, error: body.error ?? "challenge refused" };
-      }
-
-      const expiresAt = body.expiresAt ?? Date.now() + 120_000;
-      stepUpChallenges.set(body.challengeId, { binding, expiresAt });
-
-      return {
-        ok: true,
-        data: {
-          challengeId: body.challengeId,
-          expiresAt,
-          attemptsRemaining: 3,
-          binding,
-        },
-      };
-    } finally {
-      clearTimeout(timer);
+    const triggered = await triggerPlusChallenge({ binding, secretRef, token, userId });
+    if (!triggered.ok) {
+      return triggered;
     }
+
+    stepUpChallenges.set(triggered.challengeId, { binding, expiresAt: triggered.expiresAt });
+
+    return {
+      ok: true,
+      data: {
+        challengeId: triggered.challengeId,
+        expiresAt: triggered.expiresAt,
+        attemptsRemaining: 3,
+        binding,
+      },
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

@@ -263,10 +263,28 @@ describe("H6: the fail-open paths are gone", () => {
     expect(envExample).toMatch(/^TLS_KEY_PATH=/m);
   });
 
-  it("does not add HTTPS_ENABLED to docker-compose.yml (deployment-owned)", () => {
-    // The finding scoped configuration documentation to `.env.example`; the
-    // compose file is deployment-owned and was left alone deliberately.
-    const compose = readSource("docker-compose.yml");
-    expect(compose).not.toMatch(/HTTPS_ENABLED/);
+  it("leaves the TLS decision to the deployment, not to compose", () => {
+    // The original guard asserted the string "HTTPS_ENABLED" was absent from
+    // compose entirely. That was too blunt: it also forbade a pass-through,
+    // and compose meanwhile hardcoded NODE_ENV=production while supplying no
+    // TLS at all. Under the H6 fail-closed guard that combination cannot boot,
+    // so the shipped stack was unstartable. Passing the value through from the
+    // deployment keeps the decision deployment-owned.
+    //
+    // What must stay forbidden is compose *deciding* TLS: no literal true, and
+    // no hardcoded production without the deployment also supplying TLS.
+    // stripComments() only understands JS-style comments; YAML uses "#", and a
+    // guard that a doc line can defeat is not a guard.
+    const compose = readSource("docker-compose.yml")
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(compose).not.toMatch(/HTTPS_ENABLED=(true|false)/);
+    expect(compose).not.toMatch(/NODE_ENV=production\s*$/m);
+
+    // ...and a production deployment must still be able to supply everything
+    // the guard demands, without editing this file.
+    expect(compose).toMatch(/HTTPS_ENABLED=\$\{HTTPS_ENABLED(?::-false)?\}/);
+    expect(compose).toMatch(/NODE_ENV=\$\{NODE_ENV:-development\}/);
   });
 });

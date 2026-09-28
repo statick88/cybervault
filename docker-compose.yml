@@ -23,7 +23,16 @@ services:
     ports:
       - "${API_PORT:-3000}:3000"
     environment:
-      - NODE_ENV=production
+      # This compose file is a LOCAL development stack: it publishes the API on
+      # localhost, ships no TLS material, and is not a production deployment.
+      # The Core server refuses to start under NODE_ENV=production unless
+      # HTTPS_ENABLED=true and the key/cert paths are readable, so a hardcoded
+      # "production" here would leave the stack unable to boot.
+      #
+      # A real deployment must set NODE_ENV=production together with
+      # HTTPS_ENABLED=true, TLS_CERT_PATH and TLS_KEY_PATH. Do not "fix" a
+      # refusal to boot by weakening that check.
+      - NODE_ENV=${NODE_ENV:-development}
       - PORT=3000
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -33,7 +42,19 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
+      # H6: production refuses to start unless TLS is actually configured.
+      # Pass-through only — compose never decides the value. A deployment that
+      # sets NODE_ENV=production must also set these, or the container will
+      # (correctly) refuse to boot.
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-false}
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-}
       - JWT_SECRET=${JWT_SECRET}
+      # WU-1: Core pins the Ed25519 key Plus signs capabilities with. When this
+      # is absent or malformed, managed release refuses every request by design.
+      - PLUS_PUBLIC_KEY=${PLUS_PUBLIC_KEY}
+      # WU-2: KEK wrapping the release share at rest. Exactly 32 bytes, base64.
+      - RELEASE_SHARE_KEK_SECRET=${RELEASE_SHARE_KEK_SECRET}
       - IPFS_ENABLED=${IPFS_ENABLED:-false}
       - USE_POSTGRES=true
       - DATABASE_URL=postgresql://cybervault:${POSTGRES_PASSWORD}@postgres:5432/cybervault

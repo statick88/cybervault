@@ -266,14 +266,17 @@ export class ApiServer {
     database: string;
     ipfs: string;
   }> {
+    // Arrow functions, not bare method references: evaluateHealthCheck invokes
+    // checkFn() with no receiver, so a detached `this.checkDatabaseHealth` runs
+    // with `this === undefined` and the health check can never succeed.
     const [database, ipfs] = await Promise.all([
       this.evaluateHealthCheck(
         process.env.USE_POSTGRES === "true",
-        this.checkDatabaseHealth,
+        () => this.checkDatabaseHealth(),
       ),
       this.evaluateHealthCheck(
         !!process.env.IPFS_API_URL,
-        this.checkIpfsHealth,
+        () => this.checkIpfsHealth(),
       ),
     ]);
 

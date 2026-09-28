@@ -1,8 +1,40 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { resolve as resolvePath } from "path";
 
-const STATIC_DIR = resolvePath(__dirname, "../../../static/swagger");
+/**
+ * This module is loaded from two different places, and the distance from this
+ * file to the app root is not the same in both:
+ *
+ *  - compiled: tsconfig.json uses "rootDir": ".", so this file is emitted at
+ *    <root>/dist/src/infrastructure/api/ and the root is four levels up.
+ *  - from source (ts-jest, tsx): the file stays at <root>/src/infrastructure/api/
+ *    and the root is three levels up.
+ *
+ * A single __dirname-relative depth is therefore wrong in one of the two, and
+ * guessing wrong makes this module throw ENOENT at import time, which takes the
+ * whole API server down. Resolve the root by probing, and only fail if no
+ * candidate actually contains the assets.
+ */
+function resolveAppRoot(relativeAsset: string): string {
+  const candidates = [
+    resolvePath(__dirname, "../../../../"), // compiled: dist/src/infrastructure/api
+    resolvePath(__dirname, "../../../"), // from source: src/infrastructure/api
+    resolvePath(process.cwd()), // container WORKDIR /app, repo root in dev
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(resolvePath(candidate, relativeAsset))) return candidate;
+  }
+
+  throw new Error(
+    `Unable to locate ${relativeAsset}. Searched: ${candidates.join(", ")}. ` +
+      `The runtime image must copy static/ and openapi.yaml to the app root.`,
+  );
+}
+
+const APP_ROOT = resolveAppRoot("static/swagger/swagger-ui.css");
+const STATIC_DIR = resolvePath(APP_ROOT, "static/swagger");
 
 const SWAGGER_CSS = readFileSync(resolvePath(STATIC_DIR, "swagger-ui.css"), "utf-8");
 const SWAGGER_JS_BUNDLE = readFileSync(resolvePath(STATIC_DIR, "swagger-ui-bundle.js"), "utf-8");
@@ -34,7 +66,7 @@ let cachedSpec: string | null = null;
 
 function loadSpec(): string {
   if (cachedSpec) return cachedSpec;
-  cachedSpec = readFileSync(resolvePath(__dirname, "../../../openapi.yaml"), "utf-8");
+  cachedSpec = readFileSync(resolvePath(APP_ROOT, "openapi.yaml"), "utf-8");
   return cachedSpec;
 }
 

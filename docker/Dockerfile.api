@@ -18,6 +18,7 @@ RUN node node_modules/esbuild/install.js || true
 
 # Copiar código fuente y scripts de build
 COPY tsconfig.json ./
+COPY openapi.yaml ./
 
 COPY src/ ./src/
 COPY scripts/ ./scripts/
@@ -43,6 +44,7 @@ WORKDIR /app
 # Copiar artefactos compilados
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 COPY --from=builder --chown=nodejs:nodejs /app/static ./static
+COPY --from=builder --chown=nodejs:nodejs /app/openapi.yaml ./openapi.yaml
 COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
 
 # Instalar solo dependencias de runtime
@@ -63,4 +65,7 @@ USER nodejs
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-CMD ["node", "dist/infrastructure/api/server.js"]
+# tsconfig.json sets "rootDir": "." so that both src/ and plus/ compile into a
+# single output tree. The emitted server therefore lives at dist/src/..., not
+# dist/... — keep this path in sync with the rootDir/include in tsconfig.json.
+CMD ["node", "dist/src/infrastructure/api/server.js"]

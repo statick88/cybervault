@@ -47,8 +47,10 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
     // Validate context
     this.validateContext(context);
 
-    // Get session key from MasterKeyManager
-    const sessionKey = getSessionKey();
+    // Get session key from MasterKeyManager. `getSessionKey` is async: without
+    // the await this is a Promise, which is always truthy, so the guard below
+    // never fires and `fromBase64("[object Promise]")` throws downstream.
+    const sessionKey = await getSessionKey();
     if (!sessionKey) {
       throw new Error('No active session key available. Vault must be unlocked.');
     }
@@ -99,8 +101,10 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
         return false;
       }
 
-      // Get session key
-      const sessionKey = getSessionKey();
+      // Get session key (async — a missing await here hands `deriveBindingKey`
+      // a Promise, `fromBase64("[object Promise]")` throws and this method
+      // silently reports `false` for every binding).
+      const sessionKey = await getSessionKey();
       if (!sessionKey) {
         return false;
       }

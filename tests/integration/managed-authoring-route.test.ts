@@ -522,10 +522,59 @@ describe("POST /api/v1/vaults/{vaultId}/managed-credentials (O5.9)", () => {
     expect((harness.app as any).releaseShareStore.snapshot()).toHaveLength(0);
   });
 
-  it("makes the saved share resolvable by the already-mounted release route for the same secretRef", async () => {
-    const secretRef = crypto.randomUUID();
-    const authored = await post(authorBody({ secretRef }));
+  // H3 — CLIENT-CHOSEN REFERENCES ARE DEAD.
+  // Before this fix `secretRef` was read straight out of the body and stored,
+  // so an authenticated attacker could choose the value another user's
+  // credential was already using and have `ON CONFLICT DO UPDATE` hand them
+  // that credential's wrapped Release Share. The route now mints the ref.
+  it("ignores a client-supplied secretRef and mints one of its own", async () => {
+    const attackerChosen = crypto.randomUUID();
+
+    const authored = await post(authorBody({ secretRef: attackerChosen }));
     expect(authored.status).toBe(201);
+
+    const minted = authored.body.record.releaseShareRef as string;
+    expect(minted).toEqual(expect.any(String));
+    expect(minted).not.toBe(attackerChosen);
+
+    // The REFERENCE THE CLIENT ASKED FOR must be nowhere in the persisted row.
+    const rows = harness.credentialRepo.persistedRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].releaseShareRef).toBe(minted);
+
+    // And the release path only works for the server-chosen reference: a
+    // capability signed for the value the client chose does not match the
+    // credential's ref, so the route refuses it (403) instead of releasing
+    // anything.
+    const rejected = await releaseViaHttp({
+      credentialId: authored.body.credentialId,
+      capabilitySecretRef: attackerChosen,
+    });
+    expect(rejected.status).toBe(403);
+
+    const accepted = await releaseViaHttp({
+      credentialId: authored.body.credentialId,
+      capabilitySecretRef: minted,
+    });
+    expect(accepted.status).toBe(200);
+  });
+
+  it("still accepts a request that omits secretRef entirely", async () => {
+    const { secretRef: _unused, ...withoutRef } = authorBody();
+    const authored = await post(withoutRef);
+
+    expect(authored.status).toBe(201);
+    expect(authored.body.record.releaseShareRef).toEqual(expect.any(String));
+  });
+
+  // H3 — the client may still SEND a `secretRef`, but the route ignores it and
+  // mints its own; the reference everything downstream uses is the one the
+  // response carries in `record.releaseShareRef`.
+  it("makes the saved share resolvable by the already-mounted release route for the same secretRef", async () => {
+    const authored = await post(authorBody({ secretRef: crypto.randomUUID() }));
+    expect(authored.status).toBe(201);
+    const secretRef = authored.body.record.releaseShareRef as string;
+    expect(secretRef).toEqual(expect.any(String));
 
     // Same ApiServer => same InMemoryReleaseShareStore instance and same KEK
     // secret; the release route must find both the row and the wrapped share.
@@ -542,9 +591,9 @@ describe("POST /api/v1/vaults/{vaultId}/managed-credentials (O5.9)", () => {
   });
 
   it("round trips authoring → release → client decrypt over HTTP only", async () => {
-    const secretRef = crypto.randomUUID();
-    const authored = await post(authorBody({ secretRef }));
+    const authored = await post(authorBody({ secretRef: crypto.randomUUID() }));
     expect(authored.status).toBe(201);
+    const secretRef = authored.body.record.releaseShareRef as string;
 
     const release = await releaseViaHttp({
       credentialId: authored.body.credentialId,
@@ -600,13 +649,14 @@ describe("POST /api/v1/vaults/{vaultId}/managed-credentials (O5.9)", () => {
 
 describe("CRITICAL-1: pinned capability key and declared bindings", () => {
   async function authorKnown() {
-    const secretRef = crypto.randomUUID();
-    const authored = await post(authorBody({ secretRef }));
+    const authored = await post(authorBody({ secretRef: crypto.randomUUID() }));
     expect(authored.status).toBe(201);
+    // H3: the ref is server-minted; both fields name the same value.
+    const releaseShareRef = authored.body.record.releaseShareRef as string;
     return {
-      secretRef,
+      secretRef: releaseShareRef,
       credentialId: authored.body.credentialId as string,
-      releaseShareRef: authored.body.record.releaseShareRef as string,
+      releaseShareRef,
     };
   }
 

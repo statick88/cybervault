@@ -63,6 +63,23 @@ export interface ChallengeCreateInput {
   maxAttempts?: number; // Default 3
 }
 
+/**
+ * The identity a challenge is scoped to.
+ *
+ * All four fields must match for a challenge to satisfy a capability request.
+ * Plus holds no credential store, so these values are the ONLY thing tying a
+ * challenge to the release it authorizes: the capability route and the
+ * step-up trigger have to name the resource the same way (by its release-share
+ * reference, which is also what Core pins as `expected.resourceId`), or a
+ * challenge completed on one leg can never satisfy the other.
+ */
+export interface ChallengeBinding {
+  userId: string;
+  resourceId: string;
+  operation: CapabilityOperation;
+  secretRef: string;
+}
+
 /** PIN verification input */
 export interface PinVerifyInput {
   challengeId: string;
@@ -114,9 +131,86 @@ export class ChallengeService {
   }
 
   /**
+   * Statuses that mean "a third factor has been demanded but not proven".
+   *
+   * `failed` and `expired` are deliberately absent: those challenges are spent,
+   * and a spent challenge must never be resurrected by a later request.
+   */
+  private static readonly OUTSTANDING: ChallengeStatus[] = ["pending", "email_sent", "url_accessed"];
+
+  private sameBinding(challenge: ChallengeProps, binding: ChallengeBinding): boolean {
+    return (
+      challenge.userId === binding.userId &&
+      challenge.resourceId === binding.resourceId &&
+      challenge.operation === binding.operation &&
+      challenge.secretRef === binding.secretRef
+    );
+  }
+
+  /**
+   * The challenge for this binding that is still waiting on the PIN, if any.
+   *
+   * Used by `createChallenge` so one release produces ONE challenge and one
+   * email: the id the capability route returns alongside `challengeRequired`,
+   * the id `START_STEP_UP` resolves and the id `/challenges/verify` consumes are
+   * then all the same id. Two challenges for one release would mean the user
+   * proves a factor against a challenge the capability gate never sees.
+   */
+  private async findOutstandingChallenge(binding: ChallengeBinding): Promise<ChallengeProps | null> {
+    const now = Date.now();
+    const challenges = await this.challengeRepo.findByUserId(binding.userId);
+    return (
+      challenges.find(
+        (challenge) =>
+          this.sameBinding(challenge, binding) &&
+          ChallengeService.OUTSTANDING.includes(challenge.status) &&
+          challenge.expiresAt > now,
+      ) ?? null
+    );
+  }
+
+  /**
+   * The challenge for this binding that has been PROVEN — correct PIN, one-time
+   * use, and still inside its own expiry.
+   *
+   * This is the only thing the capability route accepts in place of a fresh
+   * challenge. A challenge that is merely outstanding is exactly what it must
+   * NOT accept, because that is the case the capability has to be withheld for.
+   */
+  async findCompletedChallenge(binding: ChallengeBinding): Promise<ChallengeProps | null> {
+    const now = Date.now();
+    const challenges = await this.challengeRepo.findByUserId(binding.userId);
+    return (
+      challenges.find(
+        (challenge) =>
+          this.sameBinding(challenge, binding) &&
+          challenge.status === "completed" &&
+          challenge.expiresAt > now,
+      ) ?? null
+    );
+  }
+
+  /**
    * Create a new challenge and send email
    */
   async createChallenge(input: ChallengeCreateInput): Promise<{ challengeId: string; expiresAt: number }> {
+    const binding: ChallengeBinding = {
+      userId: input.userId,
+      resourceId: input.resourceId,
+      operation: input.operation,
+      secretRef: input.secretRef,
+    };
+
+    // Reuse rather than re-issue: the capability route asks for a challenge
+    // before the user has any way to enter a PIN, so without this the popup's
+    // trigger would mint a second challenge and the completion of one would
+    // never unlock the other.
+    const outstanding = await this.findOutstandingChallenge(binding);
+    if (outstanding) {
+      logger.info(`Reusing outstanding challenge ${outstanding.id} for user ${input.userId}`, "ChallengeService");
+      return { challengeId: outstanding.id, expiresAt: outstanding.expiresAt };
+    }
+
     const now = Date.now();
     const ttlMinutes = input.ttlMinutes ?? 10;
     const maxAttempts = input.maxAttempts ?? 3;

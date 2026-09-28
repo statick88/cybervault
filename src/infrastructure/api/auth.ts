@@ -153,7 +153,13 @@ export function generateRefreshToken(userId: string, secret: string): string {
 }
 
 /**
- * Verifica un token JWT y devuelve el userId si es válido
+ * Verifica un token JWT y devuelve el userId si es válido.
+ *
+ * This is a SIGNATURE/EXPIRY check only — it deliberately does not decide
+ * whether the token may be used for a given purpose, because the refresh
+ * endpoint must be able to inspect a `type === "refresh"` token. Authorization
+ * over the token kind lives in `authenticate` (access tokens only) and in
+ * `handleRefreshToken` (refresh tokens only).
  */
 export function verifyToken(
   token: string,
@@ -169,6 +175,20 @@ export function verifyToken(
     return null;
   }
 }
+
+/**
+ * The only token kind that may authenticate a request.
+ *
+ * Access tokens live 15 minutes; refresh tokens live 7 days and exist solely
+ * to be exchanged at `/api/v1/auth/refresh`. Before this check existed a
+ * 7-day refresh token was accepted by `authenticate` exactly like a 15-minute
+ * access token, so a stolen refresh token gave a full week of API access
+ * instead of the exchange-for-a-new-access-token flow it was minted for.
+ *
+ * Fail closed: anything that is not explicitly an access token — a refresh
+ * token, or a token minted without a `type` claim — is refused.
+ */
+const ACCESS_TOKEN_TYPE = "access";
 
 /**
  * Middleware de autenticación para proteger endpoints
@@ -197,7 +217,9 @@ export function authenticate(
 
   const decoded = verifyToken(token, secret);
 
-  if (!decoded) {
+  // A refresh token must never authenticate: it is only valid at the refresh
+  // endpoint, and it outlives an access token by a factor of ~672.
+  if (!decoded || decoded.type !== ACCESS_TOKEN_TYPE) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Invalid token" }));
     return;

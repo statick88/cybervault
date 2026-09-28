@@ -17,7 +17,7 @@
 jest.setTimeout(120_000);
 
 import type { BackgroundMessage } from "../../src/background/message-types";
-import { addToIndex, computeLookupToken, deriveDomainIndexKey, emptyIndex } from "../../src/domain/services/autofill/domain-index";
+import { addToIndex, computeLookupToken, deriveDomainIndexKey, emptyIndex, type OpaqueIndex } from "../../src/domain/services/autofill/domain-index";
 import { deriveManagedEntryKey } from "../../src/infrastructure/crypto/hkdf-derivation";
 import { binaryToBase64 } from "../../src/shared/utils";
 
@@ -189,33 +189,46 @@ function callsTo(path: string): RecordedCall[] {
  * same primitives the reader uses: the entry key is HKDF(VEK ‖ ReleaseShare),
  * the index entry is the real opaque token. A fixture built any other way
  * would test the mock rather than the code.
+ *
+ * Records MERGE: a second credential must not evict the first, because
+ * `START_STEP_UP` resolves the binding against this store and a probe binding
+ * with no record would never reach the wire at all.
  */
-async function seedManagedRecord(vekB64: string): Promise<void> {
+async function seedManagedRecord(
+  vekB64: string,
+  opts: { id?: string; origin?: string; releaseShareRef?: string } = {},
+): Promise<void> {
+  const id = opts.id ?? MANAGED_ID;
+  const origin = opts.origin ?? ORIGIN;
+  const releaseShareRef = opts.releaseShareRef ?? "ref-1";
   const vek = Uint8Array.from(Buffer.from(vekB64, "base64"));
   const releaseShare = Uint8Array.from(Buffer.from(RELEASE_SHARE_B64, "base64"));
   const salt = crypto.getRandomValues(new Uint8Array(32));
 
-  const entry = await deriveManagedEntryKey(vek, releaseShare, salt, MANAGED_ID, 1);
+  const entry = await deriveManagedEntryKey(vek, releaseShare, salt, id, 1);
   const keyBytes = Uint8Array.from(Buffer.from(entry.keyBase64, "base64"));
   const encryptedSecret = await seal(JSON.stringify({ u: USERNAME, p: PASSWORD }), keyBytes, salt);
 
   const indexKey = await deriveDomainIndexKey(vek);
-  const token = await computeLookupToken(ORIGIN, indexKey);
+  const token = await computeLookupToken(origin, indexKey);
   if (!token.ok) throw new Error("fixture token failed");
 
+  const existing =
+    (localStore.get(RECORDS) as Record<string, unknown> | undefined) ?? {};
   localStore.set(RECORDS, {
-    [MANAGED_ID]: {
-      id: MANAGED_ID,
+    ...existing,
+    [id]: {
+      id,
       mode: "managed",
       encryptedSecret,
       salt: binaryToBase64(salt),
       version: 1,
-      releaseShareRef: "ref-1",
+      releaseShareRef,
       title: "GitHub (managed)",
       usernameHint: "o******",
     },
   });
-  localStore.set(INDEX, addToIndex(emptyIndex(), token.token, MANAGED_ID));
+  localStore.set(INDEX, addToIndex((localStore.get(INDEX) as OpaqueIndex | undefined) ?? emptyIndex(), token.token, id));
 }
 
 const AUTOFILL_BINDING = { credentialId: MANAGED_ID, origin: ORIGIN, operation: "AUTOFILL" as const };
@@ -226,8 +239,12 @@ const TOTP_BINDING = { credentialId: MANAGED_ID, origin: ORIGIN, operation: "TOT
  *
  * The sender tests exercise the wire format, and a completion recorded for
  * them must not pre-authorize anything later: using an unrelated binding keeps
- * the two groups from sharing authorization state.
+ * the two groups from sharing authorization state. It still needs a real
+ * managed record, because `START_STEP_UP` resolves the binding's release-share
+ * reference from the record store before it can talk to Plus — and the
+ * reference it sends is `PROBE_REF`, not the credential id.
  */
+const PROBE_REF = "ref-probe";
 const PROBE_BINDING: Binding = {
   credentialId: "cred-stepup-probe",
   origin: "https://example.com",
@@ -270,6 +287,13 @@ beforeAll(async () => {
   expect(unlocked.ok).toBe(true);
 
   await seedManagedRecord(sessionStore.get("cybervault_vek") as string);
+  // The probe binding's own record, so `START_STEP_UP` has a release-share
+  // reference to send for it (see PROBE_BINDING).
+  await seedManagedRecord(sessionStore.get("cybervault_vek") as string, {
+    id: PROBE_BINDING.credentialId,
+    origin: PROBE_BINDING.origin,
+    releaseShareRef: PROBE_REF,
+  });
 
   await createArea(localStore).set({
     cybervault_token: TOKEN,
@@ -358,12 +382,28 @@ describe("step-up senders reach Plus", () => {
     expect(call.url).toBe(`${PLUS}/api/v1/challenges/trigger`);
     expect(call.method).toBe("POST");
     expect(call.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    // The resource and secret reference are the release-share reference, not
+    // the credential id: that is the value the capability request sends as
+    // `resourceId`, so it is the only name both legs of the step-up agree on.
     expect(call.body).toMatchObject({
       userId: "user-1",
-      resourceId: PROBE_BINDING.credentialId,
-      secretRef: PROBE_BINDING.credentialId,
+      resourceId: PROBE_REF,
+      secretRef: PROBE_REF,
       operation: "AUTOFILL",
     });
+    expect(call.body?.resourceId).not.toBe(PROBE_BINDING.credentialId);
+  });
+
+  it("refuses to start a step-up for a credential the worker does not hold", async () => {
+    calls.length = 0;
+    const reply = await dispatch({
+      type: "START_STEP_UP",
+      binding: { ...PROBE_BINDING, credentialId: "cred-does-not-exist" },
+    });
+    // Fail closed: there is no release to authorize, so no challenge is asked
+    // for and nothing goes out on the wire.
+    expect(reply).toMatchObject({ ok: false, error: "BINDING_NOT_MANAGED" });
+    expect(callsTo("/api/v1/challenges/trigger")).toHaveLength(0);
   });
 
   it("SUBMIT_STEP_UP_PIN forwards the PIN to verify and reports the result", async () => {

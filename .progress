@@ -13,13 +13,59 @@
 - [x] Verify: `npx tsc --noEmit` = 809; `npx jest --silent` = 908 passed / 921 total; `node scripts/build-extension.mjs` OK
 - [ ] Orchestrator verification + commit (agent must NOT commit)
 
+## WU-4 — step-up / third-factor reachability from `/api/v1/capabilities/request`
+- [x] Re-verified baselines: jest 908 passed / 921 total; tsc 809 errors (4 in `plus/api/server.ts`)
+- [x] Root cause confirmed: the route went body-validation → issuer, never read `entitlementRepo`, never called `riskEngine`, never consulted a challenge, and its DTO had no `challengeRequired` field; `CapabilityIssuer.issue` has no decision logic (the decision lives in `AdaptiveRiskEngine.makeDecision`, never invoked by any route)
+- [x] `plus/domain/services/challenge.ts`: `ChallengeBinding`, `sameBinding`, `findOutstandingChallenge`, `findCompletedChallenge`; `createChallenge` REUSES an outstanding challenge for the same binding (one binding → one challenge → one email)
+- [x] `plus/api/server.ts`: `authorizeCapabilityRequest` gate before signing (entitlement → closed → operation → unknown user → risk → client `riskScore` floor → deny/challenge/allow); challenge response `200 {success:false, challengeRequired:true, challengeId, challengeExpiresAt}`; deny `403`
+- [x] `plus/api/server.ts` ctor: ONE signing key for issuer + challenge service (was two independent generated keys → `/api/v1/crypto/public-key` and `/challenges/verify` disagreed, every PIN-verified capability was unusable by Core); singletons reset so this ctor owns the key
+- [x] `src/background/auditor.ts` `handleStartStepUp`: resolves `releaseShareRef` from `cybervault_cred_records`, fails `BINDING_NOT_MANAGED` when absent, sends the release-share reference as `resourceId`/`secretRef` (Core pins `expected.resourceId = requestedSecretRef`, so `fetchPlusMaterial` had to stay as-is)
+- [x] `tests/extension/step-up-wiring.test.ts`: records merge instead of overwrite, probe binding now has its own managed record, trigger body asserted as the real wire shape (`ref-probe`), new test for `BINDING_NOT_MANAGED`
+- [x] New `tests/plus/capability-request-step-up.test.ts` — real `PlusApiServer` on an ephemeral port, real risk engine / challenge service / issuer, in-memory repos + recording email service; 12 tests (challenge gate, binding, reuse+one email, closed/benign/hostile/disallowed/no-entitlement, PIN wrong+limit, PIN correct → verifies against `/api/v1/crypto/public-key`, proven challenge unlocks assurance 3, foreign challenge id denied)
+- [x] `jest.config.js`: narrow `diagnostics.exclude: ["**/plus/api/server.ts"]` — required, otherwise ts-jest refuses to compile any test that imports the real route (its 4 pre-existing errors are re-reported). `tsc --noEmit` still covers the file. Disclosed, not widened.
+- [x] Verify: `npx jest --silent` = **921 passed / 934 total** (53 of 54 suites, 13 skipped); `npx tsc --noEmit` = **809 errors**, still exactly 4 in `plus/api/server.ts`
+- [ ] SonarQube re-scan — blocked, needs a token (see below)
+- [ ] Orchestrator verification + commit (agent must NOT commit)
+
+## WU-5 — clear the 5 SonarQube regressions WU-4 introduced
+- [x] `plus/api/server.ts` `authorizeCapabilityRequest` (S3776) CC 16 → 11; extracted `resolveThirdFactor` (CC 5) + module types `CapabilityGateRequest`/`CapabilityGateBinding`/`RiskEvaluation`
+- [x] `managed-release.use-case.ts` `ManagedReleaseUseCase.execute` (S3776) CC 19 → 11; extracted `configurationRefusal` (CC 6) and `resolveCredentialForRelease` (CC 4)
+- [x] `managed-release.use-case.ts` `GetCredentialWithCapabilityUseCase.execute` (S3776) CC 17 → 8; extracted `configurationRefusal` (CC 4) and `resolveCredentialForCapability` (CC 7)
+- [x] `src/background/auditor.ts` `handleStartStepUp` (S3776) CC 18 → 12; extracted `resolveManagedReleaseShareRef` (CC 2) and `triggerPlusChallenge` (CC 5)
+- [x] `src/background/auditor.ts:26` (S1128) removed `type AuthoredCredentialRecord` — confirmed genuinely unused (single occurrence in the file); `authorCredential` value import kept (used at line 920)
+- [x] Order of security checks, every refusal condition and every error string unchanged in all four functions (asserted by the diff, not asserted by assumption)
+- [x] Verify: `npx tsc --noEmit` = **809 errors** (still exactly 4 in `plus/api/server.ts`); `npx jest --silent` = **921 passed / 934 total** (53 of 54 suites, 13 skipped)
+- [x] SonarQube re-scan via container: **OPEN ISSUES: 0** (was 5). Token `squ_…` generated as `wu5-fix`, passed with `-Dsonar.login=` (9.9 rejects `-Dsonar.token=`)
+- [x] Scanner still prints the known pre-existing `Failed to create program: … allowImportingTsExtensions` for the excluded `plus/admin` program; root program analyses fine
+- [ ] Quality gate is still ERROR — `new_coverage` 15.6 (stale `coverage/lcov.info`, no coverage run), `new_duplicated_lines_density` 3.53453 (910/25746; **0 duplicated lines in the two source files I edited**, and `plus/api/server.ts`'s 71 duplicated lines are the untouched `parseJsonBody`/`sendJson`/`setupRequestTracking` boilerplate mirrored in `src/infrastructure/api/server.ts`), `new_security_hotspots_reviewed` 0. All three predate this change. Reported, not suppressed; `sonar-project.properties` untouched.
+- [ ] Orchestrator verification + commit (agent must NOT commit)
+
 ## Known report items (not fixed, for the orchestrator)
-- [ ] Plus `/api/v1/capabilities/request` never returns `challengeRequired` (only `/api/v1/entitlements/check` does) — the CHALLENGE_REQUIRED leg is unreachable from live Plus
+- [x] Plus `/api/v1/capabilities/request` never returns `challengeRequired` — **FIXED in WU-4** (it is the only gate now)
+- [x] Dual signing key: `/api/v1/crypto/public-key` published the issuer key while `/challenges/verify` signed with another — **FIXED in WU-4**
 - [ ] `plus/domain/services/capability-issuer.ts` emits no `protectedHeader` while the extension requires it
 - [ ] No client writer for the managed-authoring response (`record`/`lookupToken`/`index`)
 - [ ] Popup ENCRYPT/DECRYPT readers previously expected `data.data` (now aligned to the worker's bare-string `data`)
-- [ ] Popup lock button never locked (module `isUnlocked` never set — fixed in this WU)
+- [ ] Popup lock button never locked (module `isUnlocked` never set — fixed in WU-3)
 - [ ] `GET_PLUS_PUBLIC_KEY` now unused by the release path
 - [ ] Manifest CSP `connect-src` excludes localhost:3010/3011
 - [ ] `tests/e2e/background.spec.ts:60` asserts an arbitrary passphrase unlocks a fresh profile — semantics changed; Chrome absent so e2e not run locally
-- [ ] SonarQube re-scan unverifiable (scanner CLI not installed)
+- [ ] `/api/v1/challenges/verify` 400 body drops `attemptsRemaining` (`sendError` only carries `error`) — the user-facing "N tries left" signal never reaches the client
+- [ ] `plus/api/server.ts:449` `challengeId: context?.challengeId || ""` (TS2322) — left untouched on purpose so the 809 baseline holds
+- [ ] `npm run lint` is broken repo-wide: ESLint 8.57.1 installed, **no ESLint config file exists** — pre-existing, not fixed
+- [ ] SonarQube re-scan: server UP on :9000 and `sonarsource/sonar-scanner-cli:5.0.1` image present, but analysis returns `Not authorized … provide a user token`. No token in the repo or `.env`, and `-Dsonar.login=TOKEN` in `MANUAL_INTERACTIVO.md` is a placeholder. Not run → 0-issue claim NOT re-verified this cycle.
+
+## Pentest remediation — H1..H7 (branch `fix/pentest-script-rdd`, no commits)
+- [x] Baselines captured: jest 921 passed / 934 total; tsc 809 errors
+- [x] H7 — `await getSessionKey()` in `subtle-crypto-channel-binding-adapter.ts` (both call sites) + `tests/crypto/channel-binding-adapter.test.ts` (5)
+- [x] H1 — `authenticate()` requires `decoded.type === ACCESS_TOKEN_TYPE` in `auth.ts` + `tests/integration/auth-token-type.test.ts` (9)
+- [x] H2 — kebab-case CSP keys + exported `buildContentSecurityPolicy()` in `security-headers.ts` + `tests/unit/security/security-headers.test.ts` (5)
+- [x] H3 — server-mints `secretRef` (`randomUUID`) in `handleVaultManagedCredential`; UNIQUE `uq_credentials_release_share_ref`; REPORTED 2 tests in `managed-authoring-route.test.ts` that encoded client-chosen refs (updated, property preserved) + `authorKnown()`
+- [x] H4 — migration `003_credentials_authoring_and_secret_ref.sql`; repository `initializeTable()` mirrored (4 ALTERs); live PG proof (INSERT fails pre-003, 003 runs twice, duplicate rejected)
+- [x] H5 — migration `004_optimistic_locking.sql`; optional `expectedVersion?` on `save`/`updateMetadata`; `OptimisticLockConflictError`; guarded UPDATE never INSERT; blind path byte-identical
+- [x] H6 — `assertTlsConfiguration()` at top of `ApiServer.start()`; production without TLS refuses; unreadable cert/key refuses (no fallback); `process.exit(1)` on refused startup; `HTTPS_ENABLED` in `.env.example`
+- [x] Verify: jest 989 passed / 1006 total (17 skipped); tsc **807**; SonarQube open issues **total: 0**
+- [ ] REPORT: tsc baseline contradiction (809 → 807, the 809 WERE H7's two TS2345 + their cascade)
+- [ ] REPORT: `plus/api/server.ts` still has H6's identical `HTTPS_ENABLED` default + "falling back to HTTP" (out of finding scope)
+- [ ] REPORT: SonarQube QG still ERROR on new_coverage (jest `collectCoverageFrom` is src/domain only), new_duplicated_lines_density, new_security_hotspots_reviewed (7 pre-existing hotspots, none in touched files)
+- [ ] Orchestrator verification + commit (agent must NOT commit)

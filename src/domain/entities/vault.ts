@@ -12,6 +12,13 @@ export interface VaultProps {
   metadata?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Optimistic-lock counter (H5). Owned by the DATABASE, never written by the
+   * application: repositories read it on load and hand it back as
+   * `expectedVersion` on the next write. Undefined until a row has been read
+   * from a schema that carries `lock_version`.
+   */
+  lockVersion?: number;
 }
 
 export class Vault {
@@ -56,6 +63,11 @@ export class Vault {
 
   get updatedAt(): Date {
     return this.props.updatedAt;
+  }
+
+  /** Optimistic-lock counter as read from the repository (H5). */
+  get lockVersion(): number | undefined {
+    return this.props.lockVersion;
   }
 
   // Métodos de negocio
@@ -108,6 +120,7 @@ export class Vault {
     metadata?: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
+    lockVersion?: number | string;
   }): Vault {
     return new Vault({
       id: VaultId.fromString(obj.id),
@@ -119,6 +132,10 @@ export class Vault {
       metadata: obj.metadata,
       createdAt: new Date(obj.createdAt),
       updatedAt: new Date(obj.updatedAt),
+      // PostgreSQL returns BIGINT columns as strings.
+      lockVersion: obj.lockVersion === undefined || obj.lockVersion === null
+        ? undefined
+        : Number(obj.lockVersion),
     });
   }
 
@@ -134,6 +151,7 @@ export class Vault {
     metadata?: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
+    lockVersion?: number;
   } {
     return {
       id: this.props.id.toString(),
@@ -144,6 +162,7 @@ export class Vault {
       metadata: this.props.metadata ? JSON.parse(JSON.stringify(this.props.metadata)) : undefined,
       createdAt: this.props.createdAt.toISOString(),
       updatedAt: this.props.updatedAt.toISOString(),
+      lockVersion: this.props.lockVersion,
     };
   }
 
@@ -160,6 +179,7 @@ export class Vault {
     metadata?: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
+    lockVersion?: number;
   } {
     return {
       id: this.props.id.toString(),
@@ -171,6 +191,7 @@ export class Vault {
       metadata: this.props.metadata ? JSON.parse(JSON.stringify(this.props.metadata)) : undefined,
       createdAt: this.props.createdAt.toISOString(),
       updatedAt: this.props.updatedAt.toISOString(),
+      lockVersion: this.props.lockVersion,
     };
   }
 }

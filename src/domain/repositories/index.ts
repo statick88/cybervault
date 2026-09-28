@@ -4,17 +4,35 @@ import type { Vulnerability } from "../entities/vulnerability";
 import type { VaultId, CredentialId, VulnerabilityId } from "../value-objects/ids";
 
 export interface IVaultRepository {
-  save(vault: Vault): Promise<Vault>;
+  /**
+   * Persist a vault.
+   *
+   * H5 (lost update): when `expectedVersion` is supplied the write is GUARDED
+   * by the row's `lock_version` and an `OptimisticLockConflictError` is thrown
+   * if it no longer matches — see `OptimisticLockConflictError`. When it is
+   * omitted the original blind-write behaviour applies unchanged, so no
+   * existing caller can start failing.
+   */
+  save(vault: Vault, expectedVersion?: number): Promise<Vault>;
   findById(id: VaultId): Promise<Vault | null>;
   findByVaultIdAndOwnerId(vaultId: string, ownerId: string): Promise<Vault | null>;
   delete(id: VaultId): Promise<boolean>;
   list(): Promise<Vault[]>;
   listByOwnerId(ownerId: string): Promise<Vault[]>;
-  updateMetadata(vaultId: string, metadata: Record<string, unknown>): Promise<void>;
+  /**
+   * Merge-free metadata overwrite, guarded the same way as `save` when
+   * `expectedVersion` is supplied.
+   */
+  updateMetadata(
+    vaultId: string,
+    metadata: Record<string, unknown>,
+    expectedVersion?: number,
+  ): Promise<void>;
 }
 
 export interface ICredentialRepository {
-  save(credential: Credential): Promise<Credential>;
+  /** Same `expectedVersion` contract as `IVaultRepository.save`. */
+  save(credential: Credential, expectedVersion?: number): Promise<Credential>;
   findById(id: CredentialId): Promise<Credential | null>;
   findByVaultId(vaultId: VaultId): Promise<Credential[]>;
   findBySecretRef(secretRef: string): Promise<Credential | null>;

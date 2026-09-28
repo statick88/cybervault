@@ -6,6 +6,7 @@
 
 import type { Server, IncomingMessage, ServerResponse } from "http";
 import { createServer } from "http";
+import { randomUUID } from "crypto";
 import * as https from "https";
 import { readFileSync } from "fs";
 import { resolve as resolvePath } from "path";
@@ -1207,6 +1208,17 @@ export class ApiServer {
           this.releaseShareKekSecret,
         );
 
+        // H3 — THE REFERENCE IS MINTED HERE, NOT TAKEN FROM THE BODY.
+        // `secretRef` used to be read straight out of the request and stored:
+        // an authenticated attacker could choose the value another user's
+        // credential was already using, and the release-share store's
+        // `ON CONFLICT DO UPDATE` would then overwrite that user's wrapped
+        // Release Share with this one. The body's `secretRef` is now IGNORED
+        // — deliberately ignored rather than rejected, so a client that still
+        // sends one gets a normal 201 with the server-chosen reference in
+        // `record.releaseShareRef` instead of a new failure mode.
+        const secretRef = randomUUID();
+
         const result = await useCase.execute({
           origin: typeof data.origin === "string" ? data.origin : "",
           username: typeof data.username === "string" ? data.username : "",
@@ -1214,7 +1226,7 @@ export class ApiServer {
           title: typeof data.title === "string" ? data.title : "",
           totpSeedBase32:
             typeof data.totpSeedBase32 === "string" ? data.totpSeedBase32 : undefined,
-          secretRef: typeof data.secretRef === "string" ? data.secretRef : "",
+          secretRef,
           vek,
         });
 
@@ -1636,32 +1648,99 @@ export class ApiServer {
   }
 
   /**
+   * H6 — TLS is decided HERE, from the environment as it is at STARTUP, and a
+   * failure to honour it REFUSES to start instead of degrading.
+   *
+   * Two fail-open paths existed:
+   *
+   *  1. `HTTPS_ENABLED` defaulted to `false`, so a production deployment that
+   *     simply forgot the variable served every credential over plaintext
+   *     HTTP with no complaint.
+   *  2. With `HTTPS_ENABLED=true` but an unreadable key or certificate, the
+   *     `catch` logged a warning and started a PLAINTEXT HTTP server anyway —
+   *     "falling back to HTTP". The operator asked for TLS and got the exact
+   *     opposite, silently.
+   *
+   * Both now throw. Reading the environment here rather than consulting
+   * `SECURITY_CONFIG` (frozen when the module was first imported) means the
+   * decision follows `start()` and can be exercised per test case.
+   *
+   * This guards SERVER STARTUP, not a request, so no previously-valid request
+   * is refused — the only behaviour that changes is that a misconfigured
+   * production process now fails to boot instead of leaking.
+   */
+  private assertTlsConfiguration(): {
+    httpsEnabled: boolean;
+    tlsKeyPath: string;
+    tlsCertPath: string;
+  } {
+    // Re-read at startup: SECURITY_CONFIG is a snapshot taken when the module
+    // was first imported, so it cannot see a value set afterwards — and the
+    // paths have to come from the SAME place as the check, otherwise the guard
+    // could validate one file while the server reads another.
+    const httpsEnabled = process.env.HTTPS_ENABLED === "true";
+    const isProduction = process.env.NODE_ENV === "production";
+    const tlsKeyPath = process.env.TLS_KEY_PATH || SECURITY_CONFIG.TLS_KEY_PATH;
+    const tlsCertPath = process.env.TLS_CERT_PATH || SECURITY_CONFIG.TLS_CERT_PATH;
+
+    if (isProduction && !httpsEnabled) {
+      throw new Error(
+        "Refusing to start: NODE_ENV is \"production\" but HTTPS is not enabled. " +
+          "Set HTTPS_ENABLED=true and configure TLS_CERT_PATH and TLS_KEY_PATH, " +
+          "or terminate TLS in front of this process and say so explicitly. " +
+          "Serving credentials over plaintext HTTP is not an acceptable fallback.",
+      );
+    }
+
+    if (httpsEnabled) {
+      try {
+        readFileSync(resolvePath(tlsKeyPath));
+        readFileSync(resolvePath(tlsCertPath));
+      } catch (error) {
+        throw new Error(
+          "Refusing to start: HTTPS_ENABLED=true but the TLS key or certificate " +
+            `could not be read (key=${tlsKeyPath}, cert=${tlsCertPath}). ` +
+            "Serving plaintext HTTP instead would defeat the setting, so startup is aborted. " +
+            `Underlying error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    return { httpsEnabled, tlsKeyPath, tlsCertPath };
+  }
+
+  /**
    * Inicia el servidor HTTP/HTTPS
    */
   public async start(port: number = 3000): Promise<Server> {
+    const { httpsEnabled, tlsKeyPath, tlsCertPath } = this.assertTlsConfiguration();
+
     return new Promise((resolvePromise, reject) => {
       let server: any;
 
-      if (SECURITY_CONFIG.HTTPS_ENABLED) {
+      if (httpsEnabled) {
         try {
           const options = {
-            key: readFileSync(resolvePath(SECURITY_CONFIG.TLS_KEY_PATH)),
-            cert: readFileSync(resolvePath(SECURITY_CONFIG.TLS_CERT_PATH)),
+            // Same paths the guard just validated — never the frozen snapshot.
+            key: readFileSync(resolvePath(tlsKeyPath)),
+            cert: readFileSync(resolvePath(tlsCertPath)),
           };
           server = https.createServer(options, (req, res) =>
             this.handleRequest(req, res),
           );
           logger.info(`🔒 HTTPS Server started on port ${port}`, "ApiServer");
         } catch (error) {
-          logger.warn(
-            "HTTPS certificates not found, falling back to HTTP",
-            "ApiServer",
+          // Unreachable for a bad path — assertTlsConfiguration() already
+          // refused. Kept as a hard failure rather than a fallback so this
+          // branch can never regress into serving plaintext.
+          reject(
+            new Error(
+              `Refusing to start: TLS material became unreadable while binding the HTTPS server: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            ),
           );
-          server = createServer((req, res) => this.handleRequest(req, res));
-          logger.info(
-            `⚠️  HTTP Server started on port ${port} (no HTTPS)`,
-            "ApiServer",
-          );
+          return;
         }
       } else {
         server = createServer((req, res) => this.handleRequest(req, res));
@@ -1752,14 +1831,19 @@ if (require.main === module) {
 
   connectRedis().catch(() => {});
 
-  startServer({ port }).catch((err) =>
+  startServer({ port }).catch((err) => {
+    // H6: a refused startup must not leave a half-alive process. The TLS guard
+    // throws precisely when serving would be unsafe, so exiting non-zero is the
+    // only correct response — logging and carrying on would keep the process
+    // (and whatever it already bound) around in the unsafe state.
     logger.error(
       "Server startup failed",
       "ApiServer",
       undefined,
       err instanceof Error ? err.message : String(err),
-    ),
-  );
+    );
+    process.exit(1);
+  });
 
   const shutdown = async () => {
     logger.info("Shutting down...", "ApiServer");

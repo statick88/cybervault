@@ -31,6 +31,14 @@ export interface CredentialProps {
   createdAt: Date;
   updatedAt: Date;
   lastUsed?: Date;
+  /**
+   * Optimistic-lock counter (H5). Owned by the DATABASE, never written by the
+   * application — repositories read it on load and hand it back as
+   * `expectedVersion` on the next write. Distinct from `version`, which is the
+   * CRYPTOGRAPHIC entry version folded into the HKDF salt and must never be
+   * repurposed.
+   */
+  lockVersion?: number;
 }
 
 /** Credential creation input */
@@ -130,6 +138,11 @@ export class Credential {
 
   get lastUsed(): Date | undefined {
     return this.props.lastUsed;
+  }
+
+  /** Optimistic-lock counter as read from the repository (H5). */
+  get lockVersion(): number | undefined {
+    return this.props.lockVersion;
   }
 
   // Type guards
@@ -328,6 +341,7 @@ export class Credential {
     createdAt: string;
     updatedAt: string;
     lastUsed?: string;
+    lockVersion?: number | string;
   }): Credential {
     return new Credential({
       id: CredentialId.fromString(obj.id),
@@ -346,6 +360,10 @@ export class Credential {
       createdAt: new Date(obj.createdAt),
       updatedAt: new Date(obj.updatedAt),
       lastUsed: obj.lastUsed ? new Date(obj.lastUsed) : undefined,
+      // PostgreSQL returns BIGINT columns as strings.
+      lockVersion: obj.lockVersion === undefined || obj.lockVersion === null
+        ? undefined
+        : Number(obj.lockVersion),
     });
   }
 
@@ -369,6 +387,7 @@ export class Credential {
     createdAt: string;
     updatedAt: string;
     lastUsed?: string;
+    lockVersion?: number;
   } {
     const plain: any = {
       id: this.props.id.toString(),
@@ -386,6 +405,7 @@ export class Credential {
       createdAt: this.props.createdAt.toISOString(),
       updatedAt: this.props.updatedAt.toISOString(),
       lastUsed: this.props.lastUsed?.toISOString(),
+      lockVersion: this.props.lockVersion,
     };
 
     if (this.props.releaseShareRef !== undefined) {
@@ -413,6 +433,7 @@ export class Credential {
     createdAt: string;
     updatedAt: string;
     lastUsed?: string;
+    lockVersion?: number;
   } {
     return {
       id: this.props.id.toString(),
@@ -429,6 +450,7 @@ export class Credential {
       createdAt: this.props.createdAt.toISOString(),
       updatedAt: this.props.updatedAt.toISOString(),
       lastUsed: this.props.lastUsed?.toISOString(),
+      lockVersion: this.props.lockVersion,
     };
   }
 }

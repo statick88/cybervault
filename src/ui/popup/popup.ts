@@ -330,8 +330,17 @@ async function handleUnlock(): Promise<void> {
       throw new Error(unlock.error ?? "Frase maestra incorrecta o error al descifrar");
     }
 
-    // Store encrypted vault data locally (ciphertext only)
-    await writeStorage({ [VAULT_KEY]: { ...vault, metadata: { encryptedData: unlockData.encryptedData } } });
+    // Store encrypted vault data locally (ciphertext only).
+    //
+    // encryptedData must be a TOP-LEVEL field: loadCredentials() reads
+    // vaultData.encryptedData, and the single writer above used to nest it
+    // under metadata, so the guard there was always undefined and the popup
+    // rendered "No credentials yet" after every successful unlock. The vault
+    // list from GET /api/v1/vaults is a toSafeObject() that carries no
+    // encryptedData either, so the spread never supplied one either.
+    await writeStorage({
+      [VAULT_KEY]: { ...vault, encryptedData: unlockData.encryptedData },
+    });
 
     // Show unlocked view
     isUnlocked = true;
@@ -598,7 +607,7 @@ async function saveCredentialsEncrypted(): Promise<void> {
 
   const encrypted = await encryptCredentialData(JSON.stringify(credentials));
   if (encrypted) {
-    await writeStorage({ [VAULT_KEY]: { ...vaultData, metadata: { encryptedData: encrypted } } });
+    await writeStorage({ [VAULT_KEY]: { ...vaultData, encryptedData: encrypted } });
   }
 }
 

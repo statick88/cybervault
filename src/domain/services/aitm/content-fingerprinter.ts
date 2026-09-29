@@ -71,7 +71,13 @@ export class ContentFingerprinter {
       a.externalResources.length,
       b.externalResources.length
     );
-    matches += 0.1 * (sharedResources / (maxResources || 1));
+    // `maxResources || 1` scored two pages that BOTH have zero external
+    // resources as 0/1 = 0 instead of 0/0 = full credit. A page with no
+    // resources matches another such page perfectly, so byte-identical
+    // fingerprints reported 90.0% and only just cleared the >= 0.9 pass
+    // threshold: any unrelated drift in another component turned an identical
+    // page into a warning. Treat the both-empty case as an exact match.
+    matches += 0.1 * (maxResources === 0 ? 1 : sharedResources / maxResources);
 
     return matches / total;
   }

@@ -200,7 +200,12 @@ export function getOperationsByCategory(category: string): CapabilityOperation[]
  * Validate operation code
  */
 export function isValidOperation(operation: string): operation is CapabilityOperation {
-  return operation in OPERATIONS_REGISTRY;
+  // `in` walks the prototype chain, so "__proto__", "toString", "constructor",
+  // "valueOf" and every other inherited Object.prototype member all report
+  // true. This is a type guard: when it lies, TypeScript narrows the string to
+  // CapabilityOperation and the invalid value flows on into authorization
+  // decisions already compiled and believed valid. Own properties only.
+  return Object.prototype.hasOwnProperty.call(OPERATIONS_REGISTRY, operation);
 }
 
 /**

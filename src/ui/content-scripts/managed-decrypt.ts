@@ -153,8 +153,14 @@ export async function requestReleaseShare(
           resolve({ success: false, error: chrome.runtime.lastError.message });
         } else if (!response?.ok) {
           resolve({ success: false, error: response?.error });
+        } else if (!response.data?.releaseShare) {
+          // An OK response carrying no share is not a success. Reporting
+          // success:true with an undefined share hands the caller a "you have
+          // the key" answer with no key behind it, and this envelope is the
+          // root of trust for decrypting a managed credential.
+          resolve({ success: false, error: "Release response contained no share" });
         } else {
-          resolve({ success: true, releaseShare: response.data?.releaseShare });
+          resolve({ success: true, releaseShare: response.data.releaseShare });
         }
       },
     );

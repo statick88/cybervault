@@ -371,7 +371,13 @@ export class MasterRecoveryUseCase {
       },
       keyMaterial,
       { name: "AES-GCM", length: 256 },
-      false,
+      // Must be extractable: the line below calls exportKey("raw") to hand the
+      // raw KEK bytes to wrapVek, which re-imports them for AES-GCM. Declaring
+      // it non-extractable here made every recovery path throw
+      // InvalidAccessError: key is not extractable, so account recovery could
+      // never complete. The PBKDF2 keyMaterial above stays non-extractable;
+      // only the derived AES key needs to be exportable for this design.
+      true,
       ["encrypt", "decrypt"],
     );
     const exported = await crypto.subtle.exportKey("raw", kek);

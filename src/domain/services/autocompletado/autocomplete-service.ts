@@ -12,6 +12,9 @@ import type { DetectedForm } from "./form-detector";
 import { FormDetector } from "./form-detector";
 import { logger } from "../../../shared/logger";
 
+/** Class marking the container this service injects, so its own mutations are recognisable. */
+const SUGGESTION_CONTAINER_CLASS = "cybervault-suggestion-container";
+
 export interface AutocompleteSuggestion {
   email: string;
   password: string;
@@ -34,8 +37,14 @@ export class AutocompleteService {
    */
   start(): void {
     logger.info("Iniciando servicio de autocompletado CyberVault...", "AutocompleteService");
+    // setupEventListeners() already triggers a detection pass: when the DOM is
+    // still loading it defers to the DOMContentLoaded listener, and otherwise
+    // onDOMReady() runs checkCurrentPage() immediately. Calling it again here
+    // rendered a second suggestion card for the same form — two elements with
+    // the same id, two <style> blocks, and an overwritten registry slot, so
+    // getStoredCredentials() could return a credential the card on screen was
+    // not displaying.
     this.setupEventListeners();
-    this.checkCurrentPage();
   }
 
   /**
@@ -50,7 +59,10 @@ export class AutocompleteService {
     }
 
     // Detectar formularios dinámicos (Single Page Apps)
-    const observer = new MutationObserver(() => {
+    const observer = new MutationObserver((records) => {
+      // Our own card landing in the observed subtree is not a page change;
+      // treating it as one is what produced the unbounded microtask loop.
+      if (this.isOwnSuggestionMutation(records)) return;
       this.checkCurrentPage();
     });
 
@@ -85,6 +97,35 @@ export class AutocompleteService {
         this.processForm(form, index);
       });
     }
+  }
+
+  /**
+   * A DOM mutation caused by our own suggestion card is not evidence that the
+   * page changed.
+   *
+   * `setupEventListeners()` observes `document.body` with
+   * `{childList: true, subtree: true}` so it can pick up forms injected by
+   * single-page apps, and `showSuggestionUI()` appends the suggestion card into
+   * that same subtree. Appending therefore re-entered `checkCurrentPage()`,
+   * which appended another card, which re-entered the observer — and since
+   * MutationObserver callbacks are microtasks, macrotasks (timers, painting,
+   * input) never got a turn. Any page with a registration form froze.
+   *
+   * Re-entrancy is the part that actually bounds this: processForm is async,
+   * and a pass already in flight re-entering itself would still loop. So
+   * suppress the delivery when the mutation records carry only our own
+   * container, and coalesce concurrent deliveries so a burst of unrelated
+   * mutations schedules one detection pass rather than one per callback.
+   */
+  private isOwnSuggestionMutation(records: MutationRecord[]): boolean {
+    return records.every(
+      (record) =>
+        Array.from(record.addedNodes).every(
+          (node) =>
+            node instanceof HTMLElement &&
+            node.classList.contains(SUGGESTION_CONTAINER_CLASS),
+        ),
+    );
   }
 
   /**
@@ -124,7 +165,7 @@ export class AutocompleteService {
     // Crear contenedor de sugerencia
     const suggestionContainer = document.createElement("div");
     suggestionContainer.id = `cybervault-suggestion-${index}`;
-    suggestionContainer.className = "cybervault-suggestion-container";
+    suggestionContainer.className = SUGGESTION_CONTAINER_CLASS;
     // SECURITY: Build DOM with textContent to prevent XSS — never interpolate user data into innerHTML
     suggestionContainer.innerHTML = `
       <div class="cybervault-suggestion-header">

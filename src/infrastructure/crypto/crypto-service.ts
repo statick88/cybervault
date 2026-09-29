@@ -155,8 +155,17 @@ export class CryptoService {
    * @returns Datos originales
    */
   async decrypt(encryptedData: string, masterKey: string): Promise<string> {
-    // Decode base64
-    const combined = base64ToBinary(encryptedData);
+    // Decoding happens outside the try below, so malformed base64 escaped with
+    // the decoder's own message ("Invalid character"). That is a distinguishable
+    // error channel: a caller could tell "this input is not even base64" from
+    // "this input decrypted under the wrong key". The class contract is a
+    // single generic failure, so decode inside the guarded region too.
+    let combined: Uint8Array;
+    try {
+      combined = base64ToBinary(encryptedData);
+    } catch {
+      throw new Error("Decryption failed");
+    }
 
     // Extract components: salt|iv|ciphertext
     const saltLength = CRYPTO_CONFIG.PBKDF2.SALT_LENGTH;

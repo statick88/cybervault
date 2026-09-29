@@ -26,3 +26,10 @@ coverage/
 
 # SonarQube scanner working directory (generated)
 .scannerwork/
+
+# CodeGraph local index (39M SQLite, regenerable with `codegraph init`)
+.codegraph/
+
+# Editor/agent scratch that is not part of the product
+paper-v2-corrected.docx.backup
+

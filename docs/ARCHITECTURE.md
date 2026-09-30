@@ -50,10 +50,12 @@ Both Node processes are written in TypeScript with `"module": "commonjs"`
                  │ HTTPS/HTTP + Bearer JWT          │ HTTPS/HTTP
                  ▼                                  ▼
   ┌──────────── Core API ────────────┐   ┌──────── Plus API ─────────┐
-  │  session auth (auth.ts:196)      │   │  no caller auth (see §6)  │
-  │  pins PLUS_PUBLIC_KEY (env)      │   │  holds Ed25519 signing key│
-  │  holds Release Share KEK (env)   │   │  issues capabilities      │
-  │  wraps Release Shares            │   │  issues step-up challenges│
+  │  session auth (auth.ts:196)      │   │  X-Service-Secret on every │
+  │  pins PLUS_PUBLIC_KEY (env)      │   │  route but /health,/ready │
+  │  holds Release Share KEK (env)   │   │  holds Ed25519 signing key│
+  │  wraps Release Shares            │   │  issues capabilities      │
+  │  SIGNS step-up approvals (R3)    │   │  issues step-up challenges│
+  │  pins CORE_APPROVAL key (R3)     │   │  verifies approvals (R3)   │
   └────────────┬─────────────────────┘   └────────────┬──────────────┘
                │                                      │
                ▼                                      ▼
@@ -191,7 +193,14 @@ Core configuration — `docker-compose.yml:58`).
    risk, and challenge state. **[intended only]** as far as "decides before it
    signs" — the ordering is enforced by code position, not by a type that makes
    signing unreachable.
-4. `CapabilityIssuer.issue` (`plus/domain/services/capability-issuer.ts:96`)
+4. **The step-up is an approval, not a PIN (R3).** The direction of signing is
+   inverted for the third factor: Core signs the user's decision
+   (`POST /api/v1/step-up/approve`) and Plus verifies it against a pinned Core
+   key (`POST /api/v1/challenges/approve`) before issuing. Core can prove the
+   user owns the credential; Plus is the issuer, so it does not need to. The
+   approval is a distinct artifact type from the capability, with its own `typ`
+   in the protected header, so neither can satisfy the other's verifier.
+5. `CapabilityIssuer.issue` (`plus/domain/services/capability-issuer.ts:96`)
    builds the payload, signs it, and **self-verifies its own signature** as
    defense in depth (`plus/domain/services/capability-issuer.ts:134`).
 
@@ -277,36 +286,43 @@ need a valid Bearer token and vault ownership to spend it at Core.
 
 ## 6. Plus API surface
 
-### 6.1 Plus API has no caller authentication
+### 6.1 Plus API caller authentication (was: none — resolved in R1)
 
-`routeRequest` (`plus/api/server.ts:791`–`820`) dispatches eight routes and
-performs no authentication step:
+`routeRequest` used to dispatch every route with no authentication step at all.
+`PLUS_SERVICE_SECRET` was declared and read nowhere, CORS was `*`, and
+`checkRateLimitOrError` was a stub returning `true`. See threat-model R1 for the
+consequences.
 
-| Route | Handler |
-|---|---|
-| `GET /health` | `handleHealth` (`plus/api/server.ts:241`) |
-| `GET /ready` | `handleReady` (`plus/api/server.ts:252`) |
-| `POST /api/v1/capabilities/request` | `handleCapabilitiesRequest` (`plus/api/server.ts:401`) |
-| `POST /api/v1/entitlements/check` | `handleEntitlementsCheck` (`plus/api/server.ts:536`) |
-| `POST /api/v1/challenges/trigger` | `handleChallengeTrigger` (`plus/api/server.ts:615`) |
-| `POST /api/v1/challenges/verify` | `handleChallengeVerify` (`plus/api/server.ts:661`) |
-| `GET /api/v1/crypto/public-key` | `handlePublicKey` (`plus/api/server.ts:696`) |
-| `POST /api/v1/audit` | `handleAudit` (`plus/api/server.ts:712`) |
+Now:
 
-Supporting facts, all verified:
+| Route | Handler | Auth |
+|---|---|---|
+| `GET /health` | `handleHealth` | open — a probe carries no credential |
+| `GET /ready` | `handleReady` | open, same reason |
+| `POST /api/v1/capabilities/request` | `handleCapabilitiesRequest` | `X-Service-Secret` |
+| `POST /api/v1/entitlements/check` | `handleEntitlementsCheck` | `X-Service-Secret` |
+| `POST /api/v1/challenges/trigger` | `handleChallengeTrigger` | `X-Service-Secret` |
+| `POST /api/v1/challenges/approve` | `handleChallengeApprove` | `X-Service-Secret` |
+| `GET /api/v1/crypto/public-key` | `handlePublicKey` | `X-Service-Secret` |
+| `POST /api/v1/audit` | `handleAudit` | `X-Service-Secret` |
 
-- `PlusConfig.serviceSecret` exists (`plus/api/server.ts:110`) but is **read
-  nowhere else in `plus/`**. The extension *does* send `X-Service-Secret`,
-  `X-Core-Service`, and an `Authorization` header on capability requests
-  (`src/background/auditor.ts:398`–`400`); the Plus server never inspects them.
-- `userId` is taken from the request body (`plus/api/server.ts:401`).
-- CORS is `Access-Control-Allow-Origin: *`
-  (`plus/api/server.ts:757`) — versus Core, which pins one origin
-  (`src/infrastructure/api/middleware/cors.ts:3`).
-- Rate limiting is a **no-op**: `checkRateLimitOrError` returns `true`
-  unconditionally with the comment "Simple in-memory rate limiting (production
-  would use Redis)" (`plus/api/server.ts:236`–`239`). Core's equivalent
-  actually calls `checkRateLimit` (`src/infrastructure/api/server.ts:397`–`398`).
+Supporting facts:
+
+- `authenticateServiceRequest` compares `X-Service-Secret` against
+  `PLUS_CONFIG.serviceSecret` with `timingSafeEqual`, because a byte-wise
+  compare leaks the length and the matching prefix through response timing.
+  Failure messages never echo either side.
+- `/api/v1/crypto/public-key` is behind the secret too, deliberately: handing
+  the signing key to any origin is how an attacker learns the key Core pins.
+- CORS is an exact-match allow-list from `PLUS_ALLOWED_ORIGINS`
+  (`plus/api/server.ts`), never a suffix match, and unset admits nothing —
+  fails closed. A native caller such as the service worker is unaffected by
+  CORS.
+- Rate limiting is a per-IP sliding window, 60 requests per minute, with an
+  opportunistic sweep. In-process, therefore per-replica — threat-model R7.
+- `POST /api/v1/challenges/verify` was removed in R3 and replaced by
+  `POST /api/v1/challenges/approve`, which verifies Core's signed approval
+  instead of a PIN.
 
 ### 6.2 Single signing key
 

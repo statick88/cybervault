@@ -81,8 +81,8 @@ without a test failing, it is marked **[intended only]**.
 | T10 | Read the VEK from disk | VEK is only ever in `chrome.storage.session`, never `chrome.storage.local` | `src/infrastructure/crypto/master-key-manager.ts:36`–`46` (`STORAGE_KEYS` has no local slot for it), written at `:196` | Enforced |
 | T11 | Recover plaintext Release Shares from the database | Only `wrapped_share` is stored; AEAD with `secretRef` as additional authenticated data; zeroized after use | `src/infrastructure/db/migrations/002_release_shares.sql:1`, `src/infrastructure/crypto/release-share-kek.ts:181`, `src/application/use-cases/managed-release.use-case.ts:185` | Enforced |
 | T12 | Unwrap with a wrong-length KEK secret | Refuses unless exactly 32 bytes | `src/infrastructure/crypto/release-share-kek.ts:103`, `:144` | Enforced |
-| T13 | Persist a step-up PIN in plaintext via the metadata column | `sanitizeMetadata` strips `generatedPin` on every write path | `plus/infrastructure/repositories/PostgresChallengeRepository.ts:112`, key at `:49`, applied at `:184` | Enforced |
-| T14 | Brute-force the step-up PIN by repeated verification | Per-user lockout after 5 failures for 15 minutes, plus 3 attempts per challenge and a 10-minute TTL | `plus/domain/services/challenge.ts` (`verifyPin`, `registerWrongPin`) | Enforced (R4 resolved); the PIN space itself is R3 |
+| T13 | Persist a step-up PIN in plaintext via the metadata column | The PIN no longer exists; `sanitizeMetadata` still strips the key defensively | `plus/infrastructure/repositories/PostgresChallengeRepository.ts` | Enforced (vacuous since R3) |
+| T14 | Brute-force the step-up factor by repeated verification | There is nothing to brute-force: the factor is a signed approval, unforgeable and single-use | `src/infrastructure/crypto/ed25519-approval.ts`, `plus/domain/services/challenge.ts` (`verifyApproval`) | Enforced (R3); human consent is R11 |
 | T15 | Use a 7-day refresh token as a 7-day session | `authenticate` requires `type === "access"` | `src/infrastructure/api/auth.ts:191`, `:222` | Enforced |
 | T16 | Point Core at a caller-supplied verification key | The key is never read from the body | `src/infrastructure/api/server.ts:1021`–`1030` | Enforced |
 | T17 | Run production in plaintext HTTP | Both servers refuse to start | `src/infrastructure/api/server.ts:1675` (called at `:1719`); `plus/api/server.ts:851` (called at `:892`) | Enforced |
@@ -98,6 +98,8 @@ without a test failing, it is marked **[intended only]**.
 
 Listed because they are real, not because they are severe. Severity is
 subjective and not from any scoring system.
+
+| T26 | Replay a step-up approval to release the same credential twice | `jti` consumed atomically before anything is issued, plus the challenge state machine refuses a second completion | `plus/domain/services/challenge.ts` (`verifyApproval`), shared JTI store | Enforced |
 
 ### R1 — RESOLVED — the Plus API authenticated nobody (was High, design)
 
@@ -158,25 +160,64 @@ credentials still wins; `rediss://` keeps its scheme.
 The JTI TTL is bounded by the capability TTL, so the window equals the
 capability lifetime, not infinity.
 
-### R3 — Step-up PIN has no delivery channel, and a small space (Medium)
+### R3 — RESOLVED — the third factor was unobtainable (was Medium)
 
-Verified facts:
+This was worse than it was written up as, and correcting the record matters more
+than the fix.
 
-- `createChallenge` addresses the email to the literal `user@example.com`
-  (`plus/domain/services/challenge.ts:265`).
-- `plus/api/main.ts` passes no `emailService`, so `PlusApiServer` uses
-  `NoOpEmailService` (`plus/api/server.ts:134`).
-- Therefore in the shipped configuration **nothing delivers the PIN to the
-  user**, and `generatedPin` has no production reader (it is stripped before
-  persistence anyway — T13).
+**The PIN was never delivered to anyone.** `createChallenge` generated a 6-digit
+PIN, stored only `HMAC-SHA256(pinSalt, pin)`, and discarded the plaintext. It
+was never emailed (`sendChallengeEmail` receives only a URL holding the
+`challengeId`, and `generateChallengeHtml` never mentioned a PIN), never
+returned (`createChallenge` returns `{challengeId, expiresAt}`), never logged,
+and `PostgresChallengeRepository.sanitizeMetadata` stripped
+`metadata.generatedPin` before persistence. The only surviving copy was
+in-memory, where the tests read it off a fake repository.
 
-Independently: the PIN is 6 digits (`plus/domain/services/challenge.ts:395`–`414`),
-~10⁶ values, stored as `HMAC-SHA256(pinSalt, pin)` via `computePinHmac`
-(`plus/domain/services/challenge.ts`). A DB reader can enumerate it offline:
-~10⁶ HMACs is seconds of work, and R4's lockout does not help an attacker who
-already holds the table. **[intended only]** — `src/infrastructure/db/migrations/005_plus_schema.sql:23`–`25`
-claims a database administrator reading the table "gains nothing that lets them
-pass the third factor"; the code does not make that true for a 6-digit space.
+So the third factor was not weak. It was **unobtainable**: a user could trigger
+a challenge, receive an id, and never receive a PIN, so every submission
+failed. The step-up was un-completable in the shipped configuration while 1595
+tests passed.
+
+R4's per-user PIN lockout was, as a consequence, guarding a lock with no key
+behind it.
+
+**Why the suite was green.** Every test of this flow sat on one side of the
+Core/Plus boundary. The Plus suite constructed its own server; the extension
+suite stubbed `fetch` and answered 200 regardless of headers. Nothing crossed
+it. The PIN-reading helper in
+`tests/plus/capability-request-step-up.test.ts` bypassed the exact point where
+the PIN was lost.
+
+**Resolution.** The PIN is removed entirely and the factor is the user's
+decision:
+
+    popup shows the site and operation  ->  the user approves
+    ->  Core signs an Ed25519 approval  ->  Plus verifies it against a pinned
+    Core public key  ->  Plus issues the capability
+
+Core signs because it can prove the user owns the credential; Plus verifies
+because it is the issuer. `src/infrastructure/crypto/ed25519-approval.ts` is a
+separate artifact type from the capability, with its own `typ` in the protected
+header, so a capability can never satisfy the approval verifier or vice versa.
+
+**Limitations, stated rather than implied away:**
+
+- A signed approval proves **Core** authorised the release. It does not by
+  itself prove a **human** clicked: a compromised background worker holding a
+  live session token can call `POST /api/v1/step-up/approve` itself and receive
+  a validly signed approval. What signing does buy is unforgeability,
+  tamper-evidence, single-use, a short TTL, binding to one exact credential, and
+  a real audit record. Closing the human-in-the-loop gap needs re-proof at
+  approve time — passphrase re-entry or a WebAuthn assertion — and is
+  deliberately **out of scope** here. This is R11.
+- The DB columns `pin_hmac` and `pin_salt` remain (written as empty strings).
+  Dropping them gains nothing and would need a migration over real rows.
+
+*Verified:* `tests/integration/step-up-approval-flow.test.ts` boots both
+services, signs with a real Core key and verifies with a real Plus key, and
+completes the release with no PIN anywhere in the exchange. That test's absence
+is what hid the defect.
 
 ### R4 — RESOLVED — the step-up PIN was brute-forceable (was Medium)
 
@@ -219,11 +260,20 @@ exactly five.
 *Still relies on:* the 6-digit PIN space itself, and the PIN reaching the user
 out of band. Both are R3.
 
-### R5 — DB read ⇒ offline PIN recovery (Low–Medium)
+### R5 — RESOLVED — DB read ⇒ offline PIN recovery (was Low–Medium)
 
-Follows from R3: `pin_hmac` + `pin_salt` are sufficient to brute-force ~10⁶
-candidates without any further access. This is the one asset in §2 whose
-"hashed at rest" property does not meaningfully resist its adversary model.
+Was: `pin_hmac` + `pin_salt` were sufficient to enumerate ~10⁶ candidates
+offline, so a database administrator gained exactly what the third factor was
+supposed to prevent. `src/infrastructure/db/migrations/005_plus_schema.sql`
+claimed the opposite; the claim was false and is now moot.
+
+*Resolution:* the PIN no longer exists. There is no credential material stored
+per challenge to enumerate, so there is nothing to attack with a stolen table.
+The empty `pin_hmac` / `pin_salt` columns hold no secret.
+
+Note this makes R5 a *consequence* of R3 rather than an independent fix. Removing
+the guessable secret removed the offline attack with it — which is why the
+migration's claim needed no correction so much as deletion of its premise.
 
 ### R6 — No server-to-server authentication channel exists (Low today, structural)
 
@@ -282,6 +332,41 @@ box the extension does not reach the containers. Correctable through
 `core_base_url` / `plus_base_url` in `chrome.storage.local`, but not wired by
 default.
 
+### R11 — The approval proves authorisation, not a human (Medium, accepted)
+
+Introduced by R3, and stated rather than buried.
+
+`POST /api/v1/step-up/approve` (`src/infrastructure/api/server.ts`) signs an
+approval for any authenticated caller who names a credential they own. The
+signature proves **Core** authorised that exact release. It does not prove a
+person decided to.
+
+A compromised background worker (`src/background/auditor.ts`) holding a live
+session token can therefore call the endpoint itself, obtain a validly signed
+approval, and complete the step-up with no user present. The popup's approve
+button is the intended control; it is not a cryptographic one.
+
+What the signature *does* prevent, and this is not nothing:
+
+- Forging or editing an approval.
+- Replaying one against a different credential, operation or secret.
+- Replaying one after it expires, or a second time (the `jti` is consumed
+  atomically before anything is issued).
+- Using an approval without Core's key.
+- Doing any of it without leaving an audit record in Core.
+
+*Accepted because:* closing it requires the user to re-prove something at
+approve time — a passphrase re-entry, or a WebAuthn assertion bound to the
+challenge. That is a materially larger change than the release flow, and it
+interacts with R9 (MV3 eviction would drop an in-flight WebAuthn ceremony).
+Shipping a signature that is genuinely unforgeable and honestly scoped is
+better than not shipping it; shipping it *as if* it proved human consent would
+not be.
+
+*To close:* add a proof-of-possession step to `POST /api/v1/step-up/approve`,
+and require it to be bound to `challengeId` so it cannot be lifted onto another
+release.
+
 ---
 
 ## 6. Explicitly out of scope
@@ -301,7 +386,7 @@ default.
 
 | Claim | How |
 |---|---|
-| Test baseline: 1595 passed / 0 failed / 17 skipped, 88 passed + 3 skipped suites | Re-ran `npx jest --silent` this session; exit 0 |
+| Test baseline: 1645 passed / 0 failing / 17 skipped, 91 passed + 3 skipped suites | Re-ran `npx jest --silent` this session; exit 0 |
 | Type baseline: 0 errors | Re-ran `npx tsc --noEmit` this session; exit 0 |
 | Composition of the 17 skipped tests | Counted: 10 in `tests/integration/ipfs-adapter.test.ts` (gated on `IPFS_API_URL`), 2 + 2 + 3 in the three suites gated on `CYBERVAULT_TEST_DATABASE_URL` |
 | `ipfs-http-client` cannot be `require`d | Executed `require('ipfs-http-client')` → `ERR_PACKAGE_PATH_NOT_EXPORTED`; confirmed the emitted `dist/src/infrastructure/ipfs/ipfs-adapter.js:75` uses `require`; executed the compiled adapter → in-memory fallback, `isHealthy() === false` |
@@ -313,6 +398,11 @@ default.
 | The PIN lockout is per user, not per challenge (R4) | 9 cases: threshold trip, correct PIN refused while locked, reset on success, a *new* challenge still refused, malformed PIN rejected |
 | The lockout increment is atomic (R4) | Live PostgreSQL 16: 5 concurrent `recordFailedPinAttempt` calls returned exactly `[1,2,5,4,3]`; second `npm run db:migrate` applied 0 migrations |
 | `save()` cannot clear a lock (R4) | The lockout columns are absent from its INSERT column list and from its `ON CONFLICT` clause |
+| The step-up is obtainable end to end (R3) | `tests/integration/step-up-approval-flow.test.ts` boots Core AND Plus, signs with a real Core key, verifies with a real Plus pinned key, and completes the release. 6 cases; the suite turns red when the pinned Core key is wrong, so it bites |
+| No PIN exists anywhere in the new flow | No route accepts one; the popup has no PIN input in the DOM (asserted); no approve-path request body carries a `pin` key; the signed token contains no PIN material |
+| A Core user cannot approve someone else's credential (R3) | Live server: 404 with the identical message as "no such credential", so ids cannot be enumerated |
+| An approval for the wrong credential is refused (R3) | Live Plus: 400, with a genuine Core signature on a mismatched `secretRef` |
+| An approval signed by an unpinned key is refused (R3) | Live Plus: 400 |
 | `verifyCapabilityCore` / `consumeCapabilityJti` are dead | No matches outside their definitions in `src/` or `plus/` |
 | All `path:line` citations in both documents | Automated check over every citation: the file exists, the line number is in range, and the cited line was read back and compared against the claim it supports. The first pass found 29 structural defects (non-existent path, ambiguous basename, or out-of-range line) plus several wrong-but-in-range line numbers; all were corrected before this document was finalised. Final result: **248 citations, 0 problems.** |
 

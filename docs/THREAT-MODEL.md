@@ -70,7 +70,7 @@ without a test failing, it is marked **[intended only]**.
 | # | Attack | Defence | Enforcement point | Status |
 |---|---|---|---|---|
 | T1 | Replay a stolen capability against a different credential or vault | `verifyCapabilityBindings` compares `userId`, `resourceId`, `secretRef`, `deviceId` field by field; `resourceId`/`secretRef` come from Core's own store, not the request | `src/infrastructure/crypto/ed25519-capability.ts:432`; expected context built at `src/infrastructure/api/server.ts:1080`–`1086` | Enforced |
-| T2 | Replay the same capability twice | JTI consumed atomically before any secret material is read | `src/infrastructure/crypto/jti-store.ts:177`, called at `src/application/use-cases/managed-release.use-case.ts:157` | Enforced — but see R2 |
+| T2 | Replay the same capability twice | JTI consumed atomically before any secret material is read, backed by Redis in the shipped topology | `src/infrastructure/crypto/jti-store.ts`, called at `src/application/use-cases/managed-release.use-case.ts:157` | Enforced (was per-process — R2 resolved) |
 | T3 | Forge a capability by supplying your own public key in the request | The request body's key material is ignored; `PLUS_PUBLIC_KEY` is pinned configuration loaded in the constructor | `src/infrastructure/api/server.ts:1021`–`1030`, `src/infrastructure/crypto/ed25519-capability.ts:168` | Enforced |
 | T4 | Use a capability after its TTL | `capabilityTtlSeconds` checked before JTI consumption | `src/application/use-cases/managed-release.use-case.ts:153`–`156` | Enforced |
 | T5 | Skip capability verification by leaving `PLUS_PUBLIC_KEY` unset | Both verification sites fail closed with an explicit refusal | `src/application/use-cases/managed-release.use-case.ts:211`, `:440` | Enforced |
@@ -82,7 +82,7 @@ without a test failing, it is marked **[intended only]**.
 | T11 | Recover plaintext Release Shares from the database | Only `wrapped_share` is stored; AEAD with `secretRef` as additional authenticated data; zeroized after use | `src/infrastructure/db/migrations/002_release_shares.sql:1`, `src/infrastructure/crypto/release-share-kek.ts:181`, `src/application/use-cases/managed-release.use-case.ts:185` | Enforced |
 | T12 | Unwrap with a wrong-length KEK secret | Refuses unless exactly 32 bytes | `src/infrastructure/crypto/release-share-kek.ts:103`, `:144` | Enforced |
 | T13 | Persist a step-up PIN in plaintext via the metadata column | `sanitizeMetadata` strips `generatedPin` on every write path | `plus/infrastructure/repositories/PostgresChallengeRepository.ts:112`, key at `:49`, applied at `:184` | Enforced |
-| T14 | Brute-force the step-up PIN by repeated verification | 3 attempts per challenge, 10-minute TTL | `plus/domain/services/challenge.ts:308` (attempts), `:215` (TTL), `:216` (`maxAttempts`) | Enforced — but see R4 |
+| T14 | Brute-force the step-up PIN by repeated verification | Per-user lockout after 5 failures for 15 minutes, plus 3 attempts per challenge and a 10-minute TTL | `plus/domain/services/challenge.ts` (`verifyPin`, `registerWrongPin`) | Enforced (R4 resolved); the PIN space itself is R3 |
 | T15 | Use a 7-day refresh token as a 7-day session | `authenticate` requires `type === "access"` | `src/infrastructure/api/auth.ts:191`, `:222` | Enforced |
 | T16 | Point Core at a caller-supplied verification key | The key is never read from the body | `src/infrastructure/api/server.ts:1021`–`1030` | Enforced |
 | T17 | Run production in plaintext HTTP | Both servers refuse to start | `src/infrastructure/api/server.ts:1675` (called at `:1719`); `plus/api/server.ts:851` (called at `:892`) | Enforced |
@@ -99,36 +99,61 @@ without a test failing, it is marked **[intended only]**.
 Listed because they are real, not because they are severe. Severity is
 subjective and not from any scoring system.
 
-### R1 — The Plus API authenticates nobody (High, design)
+### R1 — RESOLVED — the Plus API authenticated nobody (was High, design)
 
-`routeRequest` (`plus/api/server.ts:791`–`820`) has no auth step. Concretely:
+`routeRequest` had no auth step at all. Concretely, as it stood:
 
-- `userId` comes from the request body (`plus/api/server.ts:401`).
-- `PLUS_SERVICE_SECRET` is defined (`plus/api/server.ts:110`) and **read
-  nowhere**; the headers the extension sends (`src/background/auditor.ts:398`–`400`)
-  are never inspected.
-- CORS is `*` (`plus/api/server.ts:757`).
-- Rate limiting is a stub returning `true` (`plus/api/server.ts:236`–`239`).
+- `userId` came from the request body.
+- `PLUS_SERVICE_SECRET` was defined (`plus/api/server.ts`) and **read nowhere**;
+  the headers the extension sends (`src/background/auditor.ts`) were never
+  inspected.
+- CORS was `*`.
+- `checkRateLimitOrError` was a stub returning `true`.
 
-*Why it is not fatal today:* Plus only **issues** capabilities and challenges.
-Spending one requires a valid Core Bearer token and vault ownership
-(`src/infrastructure/api/server.ts:1592`, `:1014`). So an anonymous caller can
-probe entitlements and drive challenge creation, but cannot read a credential.
+Any anonymous caller could probe entitlements for an arbitrary `userId`,
+drive challenge creation, and attempt PIN verification — the last being the
+sharp edge, because `/api/v1/challenges/verify` is the gate that completes a
+step-up.
 
-*What it does expose:* `POST /api/v1/challenges/trigger` and
-`POST /api/v1/challenges/verify` are reachable without credentials, and
-`handleEntitlementsCheck` will answer for any `userId` it is given.
+*Resolution* (`a8c217b`):
 
-### R2 — Replay protection is process-local in the shipped topology (Medium)
+- Every route except `/health` and `/ready` now requires `X-Service-Secret`,
+  compared in constant time (a byte-wise compare leaks the length and the
+  matching prefix through response timing). Failure messages never echo either
+  side. A readiness probe has no business carrying a credential, so those two
+  stay open by design.
+- `/api/v1/crypto/public-key` is behind the secret too. Handing the signing
+  key to any origin is how an attacker learns the key Core pins.
+- The rate limit is real: a per-IP sliding window, 60 requests per minute, with
+  an opportunistic sweep so IP rotation cannot grow the map for the lifetime of
+  the process.
+- CORS is an exact-match allow-list from `PLUS_ALLOWED_ORIGINS`, never a suffix
+  match, and unset admits nothing — fails closed. A native caller such as the
+  service worker is unaffected by CORS.
 
-`createJtiStore` (`src/infrastructure/crypto/jti-store.ts:143`) picks Redis only
-when `REDIS_URL` is set and is not the localhost default. Compose sets
-`REDIS_HOST`/`REDIS_PORT` (`docker-compose.yml:43`–`44`) and **never**
-`REDIS_URL`. Therefore:
+*Residual, now tracked as R7:* the rate limit is in-process and therefore
+per-replica. Behind more than one Plus instance the effective limit multiplies.
 
-- A Core restart clears all consumed JTIs — previously spent capabilities
-  become spendable again until their own TTL expires.
-- Two Core replicas do not share state; each has its own consumed set.
+### R2 — RESOLVED — replay protection was process-local (was Medium)
+
+`createJtiStore` picks Redis only when `REDIS_URL` is set and is not the
+localhost default. Compose set `REDIS_HOST`/`REDIS_PORT` and **never**
+`REDIS_URL`, so every consumed JTI lived in the Core process:
+
+- A Core restart cleared all consumed JTIs — previously spent capabilities
+  became spendable again until their own TTL expired.
+- Two Core replicas did not share state; each kept its own consumed set.
+
+*Why it was never wired:* the store connected with no credential at all, while
+`redis-server` runs with `--requirepass`. Connecting that way fails, which is
+almost certainly why nobody ever set the variable.
+
+*Resolution* (`c143c24`): `REDIS_URL=redis://redis:6379` in compose (the
+service name deliberately does not match the localhost sentinel, which stays
+the development case), and the client now embeds `REDIS_PASSWORD`,
+percent-encoded so a password containing `@` or `/` cannot truncate the
+authority and connect to the wrong host. A URL that already carries
+credentials still wins; `rediss://` keeps its scheme.
 
 The JTI TTL is bounded by the capability TTL, so the window equals the
 capability lifetime, not infinity.
@@ -147,18 +172,52 @@ Verified facts:
 
 Independently: the PIN is 6 digits (`plus/domain/services/challenge.ts:395`–`414`),
 ~10⁶ values, stored as `HMAC-SHA256(pinSalt, pin)` via `computePinHmac`
-(`plus/domain/services/challenge.ts:424`). Combined with R4, a DB reader can
-enumerate it offline. **[intended only]** — `src/infrastructure/db/migrations/005_plus_schema.sql:23`–`25`
+(`plus/domain/services/challenge.ts`). A DB reader can enumerate it offline:
+~10⁶ HMACs is seconds of work, and R4's lockout does not help an attacker who
+already holds the table. **[intended only]** — `src/infrastructure/db/migrations/005_plus_schema.sql:23`–`25`
 claims a database administrator reading the table "gains nothing that lets them
 pass the third factor"; the code does not make that true for a 6-digit space.
 
-### R4 — Challenge verification is unauthenticated and unthrottled (Medium)
+### R4 — RESOLVED — the step-up PIN was brute-forceable (was Medium)
 
-`POST /api/v1/challenges/verify` (`plus/api/server.ts:661`) requires only
-`challengeId` + `pin`. There is no session, no caller identity, and
-`checkRateLimitOrError` is a no-op (`plus/api/server.ts:236`). The
-per-challenge attempt counter (T14) is the only brake. Defeating it requires a
-new challenge per binding, which itself is unauthenticated (R1).
+The per-challenge attempt counter (T14, 3 attempts) was the only brake. It
+capped three guesses **per challenge**, so minting the next challenge reset the
+budget entirely. With R1's rate limit that is still 60 challenges/min × 3
+attempts = 180 guesses/min against a 6-digit PIN.
+
+*Resolution* (`c14e3ca`): the brake moved to the user row, so it outlives the
+challenge that earned it.
+
+- `failed_pin_attempts` and `locked_until` on `plus_users`
+  (migration `006_pin_lockout.sql`, additive and idempotent).
+- Five failures arm a 15-minute lock. Only a correct PIN clears it; an expired
+  lock re-arms on the next mistake rather than granting a fresh budget.
+- The lock is checked **before** any PIN HMAC is computed, and a locked user
+  receives exactly what a wrong PIN receives — same error string, same
+  `attemptsRemaining`. No HMAC means no timing oracle for the correct PIN, and
+  an identical message means the caller cannot distinguish "locked" from
+  "wrong".
+- `recordFailedPinAttempt` is an atomic
+  `failed_pin_attempts = failed_pin_attempts + 1 ... RETURNING`, not a
+  read-modify-write. Two concurrent guesses would otherwise overwrite each
+  other and hold the counter under the threshold indefinitely.
+- The two lockout columns are deliberately absent from `save()`'s column list
+  and from its `ON CONFLICT` clause, so upserting a stale entity cannot clear
+  a lock.
+- A PIN that is not exactly `PIN_LENGTH` characters is rejected before hashing
+  and is **not** counted — otherwise anyone reaching the route could lock an
+  account by sending five pieces of garbage.
+- An unknown user warns and no-ops rather than throwing, so the route is not a
+  user-enumeration oracle. SQL errors do rethrow: a broken lockout store must
+  fail closed, not open.
+- The lockout store is a **required** constructor argument, so no caller can
+  build a service that silently has no lockout.
+
+Verified against live PostgreSQL 16: five concurrent increments land at
+exactly five.
+
+*Still relies on:* the 6-digit PIN space itself, and the PIN reaching the user
+out of band. Both are R3.
 
 ### R5 — DB read ⇒ offline PIN recovery (Low–Medium)
 
@@ -168,10 +227,16 @@ candidates without any further access. This is the one asset in §2 whose
 
 ### R6 — No server-to-server authentication channel exists (Low today, structural)
 
-`PlusBridge` (`src/infrastructure/plus/plus-bridge.ts:102`) has no production
-caller, so there is no Core→Plus or Plus→Core traffic to secure. If a future
-change introduces one, `PLUS_SERVICE_SECRET` would need an actual reader — today
-it is decoration.
+`PlusBridge` (`src/infrastructure/plus/plus-bridge.ts:102`) still has no
+production caller, so there is no Core→Plus or Plus→Core traffic to secure.
+
+*Partly retired by R1:* `PLUS_SERVICE_SECRET` used to be decoration — declared
+and read nowhere. It now has a real reader in `plus/api/server.ts` and is
+enforced with a constant-time comparison. What remains true here is narrower:
+the extension→Plus channel is authenticated by a **shared symmetric secret**,
+which means every holder can both mint and verify, and there is no
+server-to-server identity. A future Core→Plus caller would need a channel of
+its own rather than reusing the extension's secret.
 
 ### R7 — Core CORS and rate limits are single-instance (Low)
 
@@ -179,7 +244,13 @@ it is decoration.
 load (default `http://localhost:3000`). `checkRateLimit`
 (`src/infrastructure/api/middleware/rate-limiter.ts:14`) is an in-memory map, so
 it is per-process and resets on restart. Core does have real rate limiting
-(`src/infrastructure/api/server.ts:397`–`398`) — unlike Plus (R1).
+(`src/infrastructure/api/server.ts:397`–`398`).
+
+This now also describes the **Plus** side: the rate limit R1 added is likewise
+an in-process map, so behind N Plus replicas the effective limit is N × 60/min
+rather than 60/min. Both limits belong to the "single instance" pattern, and
+both need a shared store — Redis is already a dependency, and R2 wires it for
+the JTI store, so the same mechanism applies here.
 
 ### R8 — TLS is the only transport control (Low, by design)
 
@@ -230,13 +301,18 @@ default.
 
 | Claim | How |
 |---|---|
-| Test baseline: 1561 passed / 0 failed / 17 skipped, 86 passed + 3 skipped suites | Re-ran `npx jest --silent` this session; exit 0 |
+| Test baseline: 1595 passed / 0 failed / 17 skipped, 88 passed + 3 skipped suites | Re-ran `npx jest --silent` this session; exit 0 |
 | Type baseline: 0 errors | Re-ran `npx tsc --noEmit` this session; exit 0 |
 | Composition of the 17 skipped tests | Counted: 10 in `tests/integration/ipfs-adapter.test.ts` (gated on `IPFS_API_URL`), 2 + 2 + 3 in the three suites gated on `CYBERVAULT_TEST_DATABASE_URL` |
 | `ipfs-http-client` cannot be `require`d | Executed `require('ipfs-http-client')` → `ERR_PACKAGE_PATH_NOT_EXPORTED`; confirmed the emitted `dist/src/infrastructure/ipfs/ipfs-adapter.js:75` uses `require`; executed the compiled adapter → in-memory fallback, `isHealthy() === false` |
-| Plus has no auth on its routes | Read `routeRequest` in full; searched `plus/api/server.ts` for `Authorization` / `X-Service-Secret` / `authenticate` — the only match is the outbound CORS header line |
-| `serviceSecret` has no reader | `grep -rn "serviceSecret" plus/` returns only its definition |
-| Compose sets no `REDIS_URL` | Key scan of `docker-compose.yml` |
+| Plus requires `X-Service-Secret` on every non-probe route (R1) | 7 new cases: both probes open; missing secret → 401; wrong secret → 401 with neither value echoed; all 5 minting routes → 401; public-key route → 401; authenticated request → 200; rate limit trips at exactly 60 |
+| `serviceSecret` now has a reader | `authenticateServiceRequest` in `plus/api/server.ts`, called from `routeRequest`; constant-time via `timingSafeEqual` |
+| CORS is no longer `*` | Exact-match allow-list from `PLUS_ALLOWED_ORIGINS`; unset admits nothing |
+| Compose sets `REDIS_URL` to the non-sentinel host (R2) | 2 cases assert the compose value directly, so the regression is caught at review time and not by reading the file |
+| Redis credentials are actually sent (R2) | `withRedisCredentials` unit-tested: encoding, scheme, pre-credentialed URL, no-password no-op |
+| The PIN lockout is per user, not per challenge (R4) | 9 cases: threshold trip, correct PIN refused while locked, reset on success, a *new* challenge still refused, malformed PIN rejected |
+| The lockout increment is atomic (R4) | Live PostgreSQL 16: 5 concurrent `recordFailedPinAttempt` calls returned exactly `[1,2,5,4,3]`; second `npm run db:migrate` applied 0 migrations |
+| `save()` cannot clear a lock (R4) | The lockout columns are absent from its INSERT column list and from its `ON CONFLICT` clause |
 | `verifyCapabilityCore` / `consumeCapabilityJti` are dead | No matches outside their definitions in `src/` or `plus/` |
 | All `path:line` citations in both documents | Automated check over every citation: the file exists, the line number is in range, and the cited line was read back and compared against the claim it supports. The first pass found 29 structural defects (non-existent path, ambiguous basename, or out-of-range line) plus several wrong-but-in-range line numbers; all were corrected before this document was finalised. Final result: **248 citations, 0 problems.** |
 

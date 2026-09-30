@@ -316,12 +316,57 @@ Also noted: `Strict-Transport-Security` is emitted on every response
 plain-HTTP dev responses, where browsers ignore it. Harmless, but it means the
 header's presence proves nothing about how the response arrived.
 
-### R9 — MV3 worker eviction drops security state (Low)
+### R9 — MV3 worker eviction fails OPEN at the extension layer (Medium, was Low)
 
-Step-up completion state (`src/background/auditor.ts:1036`, `:1046`, `:1049`)
-lives in worker memory. Eviction resets it, so the user is asked to step up
-again — a fail-closed outcome, not a fail-open one, but it means the guarantee is
-"at most one step-up per worker lifetime", not "at most one step-up ever".
+This entry previously read "fail-closed: the user is asked to step up
+again". That was a claim about behaviour. It has now been measured, and at
+the layer the claim named, it is false.
+
+Step-up state (`stepUpChallenges`, `challengedBindings`, `completedStepUps` —
+`src/background/auditor.ts:1044`, `:1054`, `:1057`) lives in worker memory.
+The gate that enforces the step-up is:
+
+    if (challengedBindings.has(key)) { ...refuse unless completed... }
+
+(`src/background/auditor.ts:991`)
+
+That is a **remembering** guard. After eviction the map is empty, `has(key)`
+is false, and the block is skipped entirely — so the question is not "does the
+user step up again" but "does the guard run at all". It does not.
+
+Measured, in `tests/extension/worker-eviction.test.ts`:
+
+1. Worker still remembering: release refused, `CHALLENGE_REQUIRED`.
+2. After a simulated eviction (module restart, fresh maps): the release is
+   **attempted anyway** — one call to `/capabilities/request` with no
+   challenge behind it.
+3. When Plus answers "granted" after that eviction, the release
+   **succeeds**. No step-up was ever completed, and the credential is
+   released.
+
+*What is actually true.* The extension's guarantee is "at most one step-up per
+worker lifetime", not "at most one step-up". After eviction there is no
+extension-side guarantee at all. The denial a user still sees comes from Plus
+refusing a capability request that has no completed challenge behind it — a
+network control, not a local one. The two-service defence becomes a
+one-service defence, and the surviving service is the one holding a
+capability-issuing key.
+
+*Why it is Medium and not High.* In the shipped configuration Plus does refuse,
+so the user-visible outcome is still a denial. The exposure is what happens
+when that one remaining control is wrong, misconfigured, or attacked — at which
+point there is nothing behind it. It is a single point of failure created by a
+lifecycle event, not an exploitable condition.
+
+*To close it* the extension must not depend on memory for a security decision.
+Either the gate becomes unconditional — every managed release calls Plus, and
+Plus is the sole authority on whether a step-up exists, with the extension
+treating "challengeRequired" as the only gate — or the decision moves into
+`chrome.storage.session`, which survives eviction, and the record is one the
+user cannot forge from the content-script side.
+
+Note this compounds **R11**: the approval that R3 introduced is signed and
+single-use, but the extension's decision to *ask for* it is not durable.
 
 ### R10 — Extension defaults and Compose ports disagree (Low, operational)
 
@@ -403,6 +448,8 @@ release.
 | A Core user cannot approve someone else's credential (R3) | Live server: 404 with the identical message as "no such credential", so ids cannot be enumerated |
 | An approval for the wrong credential is refused (R3) | Live Plus: 400, with a genuine Core signature on a mismatched `secretRef` |
 | An approval signed by an unpinned key is refused (R3) | Live Plus: 400 |
+| MV3 eviction is fail-OPEN at the extension layer (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps, then shows: guarded while memory is intact, attempted after eviction, and — with Plus answering "granted" — released with no step-up ever completed |
+| The eviction denial comes from Plus, not the extension (R9) | Same suite: after eviction a `/capabilities/request` is issued with no challenge behind it, so the guard contributed nothing |
 | `verifyCapabilityCore` / `consumeCapabilityJti` are dead | No matches outside their definitions in `src/` or `plus/` |
 | All `path:line` citations in both documents | Automated check over every citation: the file exists, the line number is in range, and the cited line was read back and compared against the claim it supports. The first pass found 29 structural defects (non-existent path, ambiguous basename, or out-of-range line) plus several wrong-but-in-range line numbers; all were corrected before this document was finalised. Final result: **248 citations, 0 problems.** |
 

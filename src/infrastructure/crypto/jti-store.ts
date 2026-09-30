@@ -86,13 +86,42 @@ export class InMemoryJtiStore implements IJtiStore {
 }
 
 /** Redis-backed JTI store for production/distributed deployments (ioredis) */
+/**
+ * Build a Redis URL that carries the deployment credential.
+ *
+ * R2: the deployment sets `REDIS_PASSWORD` and runs `redis-server` with
+ * `--requirepass`, but this client connected with no credential at all —
+ * which is why `REDIS_URL` was never set in the first place and replay
+ * protection silently stayed in-process. A consumed JTI was only consumed
+ * for the lifetime of one Core, so a restart made every already-spent
+ * capability spendable again, and two replicas each kept their own set.
+ *
+ * Credentials embedded in the URL still win; `REDIS_PASSWORD` is only the
+ * fallback for a URL that carries none. `rediss://` keeps its scheme.
+ */
+export function withRedisCredentials(
+  redisUrl: string,
+  password: string | undefined = process.env.REDIS_PASSWORD,
+): string {
+  if (redisUrl.includes("@")) return redisUrl;
+
+  const scheme = redisUrl.startsWith("rediss://") ? "rediss" : "redis";
+  const authority = redisUrl.replace(/^rediss?:\/\//, "");
+
+  // No credential configured: return the URL untouched rather than building
+  // `redis://:@host`, which some clients read as an empty username.
+  if (!password) return redisUrl;
+
+  return `${scheme}://:${encodeURIComponent(password)}@${authority}`;
+}
+
 export class RedisJtiStore implements IJtiStore {
   private client: Redis;
   private connected = false;
   private readonly keyPrefix = "cv:jti:";
 
   constructor(redisUrl: string) {
-    this.client = new Redis(redisUrl, {
+    this.client = new Redis(withRedisCredentials(redisUrl), {
       maxRetriesPerRequest: 3,
       retryStrategy: (times) => (times > 3 ? null : Math.min(times * 100, 3000)),
       lazyConnect: true,

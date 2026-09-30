@@ -43,6 +43,12 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
+      # R2: `createJtiStore` only selects Redis when REDIS_URL is set, and
+      # compose never set it — so consumed JTIs lived in the Core process and a
+      # restart made every already-spent capability spendable again. The
+      # hostname deliberately is not `localhost`: the in-memory fallback also
+      # matches a localhost URL, which is exactly the development case.
+      - REDIS_URL=redis://redis:6379
       # H6: production refuses to start unless TLS is actually configured.
       # Pass-through only — compose never decides the value. A deployment that
       # sets NODE_ENV=production must also set these, or the container will

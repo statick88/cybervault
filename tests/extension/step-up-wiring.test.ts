@@ -17,6 +17,7 @@
 jest.setTimeout(120_000);
 
 import type { BackgroundMessage } from "../../src/background/message-types";
+import type { StepUpProof } from "../../src/infrastructure/crypto/step-up-proof";
 import { addToIndex, computeLookupToken, deriveDomainIndexKey, emptyIndex, type OpaqueIndex } from "../../src/domain/services/autofill/domain-index";
 import { deriveManagedEntryKey } from "../../src/infrastructure/crypto/hkdf-derivation";
 import { binaryToBase64 } from "../../src/shared/utils";
@@ -297,6 +298,22 @@ function releaseMessage(binding: Binding): BackgroundMessage {
   };
 }
 
+/**
+ * A structurally complete R11 proof bound to `challengeId`.
+ *
+ * The worker never verifies proof material — it forwards it verbatim and
+ * Core decides — so the value can be a stand-in; what must be real is the
+ * binding, which is what these tests watch travel the wire.
+ */
+function approveProof(challengeId: string): StepUpProof {
+  return {
+    type: "passphrase",
+    challengeId,
+    approvalChallengeId: `ac-${challengeId}`,
+    value: "ab".repeat(64),
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Suite                                                              */
 /* ------------------------------------------------------------------ */
@@ -443,7 +460,11 @@ describe("D1 — every Plus call presents the service secret (R1 regression)", (
     expect(challengeId).toBeDefined();
     calls.length = 0;
 
-    await dispatch({ type: "APPROVE_STEP_UP", challengeId: challengeId as string });
+    await dispatch({
+      type: "APPROVE_STEP_UP",
+      challengeId: challengeId as string,
+      proof: approveProof(challengeId as string),
+    });
 
     const call = callsTo("/api/v1/challenges/approve").at(-1);
     expect(call).toBeDefined();
@@ -492,7 +513,7 @@ describe("step-up senders reach Plus", () => {
   it("APPROVE_STEP_UP signs with Core, then forwards the approval to Plus", async () => {
     calls.length = 0;
 
-    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1" });
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1", proof: approveProof("ch-1") });
 
     expect(reply).toEqual({ ok: true, data: { verified: true } });
 
@@ -507,6 +528,7 @@ describe("step-up senders reach Plus", () => {
       "challengeId",
       "credentialId",
       "operation",
+      "proof",
     ]);
     expect(signed.body).not.toHaveProperty("secretRef");
     expect(signed.body).not.toHaveProperty("userId");
@@ -533,7 +555,11 @@ describe("step-up senders reach Plus", () => {
     const started = await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
     const challengeId = (started.data as { challengeId?: string } | undefined)?.challengeId;
 
-    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: challengeId as string });
+    const reply = await dispatch({
+      type: "APPROVE_STEP_UP",
+      challengeId: challengeId as string,
+      proof: approveProof(challengeId as string),
+    });
 
     expect(reply).toEqual({ ok: true, data: { verified: true } });
     withSuccessFlag = true;
@@ -548,7 +574,11 @@ describe("step-up senders reach Plus", () => {
     const started = await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
     const challengeId = (started.data as { challengeId?: string } | undefined)?.challengeId;
 
-    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: challengeId as string });
+    const reply = await dispatch({
+      type: "APPROVE_STEP_UP",
+      challengeId: challengeId as string,
+      proof: approveProof(challengeId as string),
+    });
 
     expect(reply).toMatchObject({ ok: false, error: "the approval was not accepted" });
     approveSucceeds = true;
@@ -557,7 +587,7 @@ describe("step-up senders reach Plus", () => {
   it("never sends a PIN on the approve path", async () => {
     calls.length = 0;
 
-    await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1" });
+    await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1", proof: approveProof("ch-1") });
 
     for (const call of callsTo("/api/v1/step-up/approve").concat(callsTo("/api/v1/challenges/approve"))) {
       expect(call.body).not.toHaveProperty("pin");
@@ -572,7 +602,7 @@ describe("step-up senders reach Plus", () => {
     calls.length = 0;
     coreApproveFails = true;
 
-    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1" });
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1", proof: approveProof("ch-1") });
 
     // A Core refusal must not be forwarded verbatim: its reason could say
     // "credential not found" or "no signing key configured", which is more than
@@ -585,10 +615,50 @@ describe("step-up senders reach Plus", () => {
   it("refuses an unknown challenge without contacting Plus", async () => {
     calls.length = 0;
 
-    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "never-issued" });
+    const reply = await dispatch({
+      type: "APPROVE_STEP_UP",
+      challengeId: "never-issued",
+      proof: approveProof("never-issued"),
+    });
 
     expect(reply).toMatchObject({ ok: false, error: "the approval was not accepted" });
     expect(callsTo("/api/v1/challenges/verify")).toHaveLength(0);
+  });
+
+  it("R11 — refuses an approval with NO proof before contacting anyone", async () => {
+    calls.length = 0;
+    // The chrome channel is untyped at runtime: forge the message exactly the
+    // way a compromised content script holding only the bearer token would.
+    const forged = {
+      type: "APPROVE_STEP_UP",
+      challengeId: "ch-1",
+    } as unknown as BackgroundMessage;
+
+    const reply = await dispatch(forged);
+
+    expect(reply).toMatchObject({ ok: false, error: "the approval was not accepted" });
+    // Neither Core nor Plus heard about it: no signature attempt, no
+    // challenge round trip — the token alone buys nothing.
+    expect(callsTo("/api/v1/step-up/approve")).toHaveLength(0);
+    expect(callsTo("/api/v1/challenges/approve")).toHaveLength(0);
+  });
+
+  it("R11 — forwards the proof to Core verbatim, bound to the challenge", async () => {
+    calls.length = 0;
+    await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
+    calls.length = 0;
+
+    const challengeId = "ch-1";
+    const proof = approveProof(challengeId);
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId, proof });
+    expect(reply).toMatchObject({ ok: true });
+
+    // The worker neither rewraps nor enriches it: Core sees exactly what the
+    // popup built, under the binding the challenge was issued for.
+    const [signed] = callsTo("/api/v1/step-up/approve");
+    expect(signed.body?.proof).toEqual(proof);
+    expect(signed.body?.challengeId).toBe(challengeId);
+    expect((signed.body?.proof as { challengeId?: string }).challengeId).toBe(challengeId);
   });
 
   it("refuses to start a challenge for an incomplete binding", async () => {
@@ -633,7 +703,11 @@ describe("a completed step-up releases its own binding and no other", () => {
     expect(started.ok).toBe(true);
     const challengeId = (started.data as { challengeId: string }).challengeId;
 
-    const verified = await dispatch({ type: "APPROVE_STEP_UP", challengeId });
+    const verified = await dispatch({
+      type: "APPROVE_STEP_UP",
+      challengeId,
+      proof: approveProof(challengeId),
+    });
     expect(verified).toEqual({ ok: true, data: { verified: true } });
 
     // The pending list now names only the binding that is still owed.

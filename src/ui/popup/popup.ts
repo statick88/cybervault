@@ -15,6 +15,16 @@ import type {
   BackgroundMessage,
   BackgroundResponse,
 } from "../../background/message-types";
+// R11 — proof material is built HERE, in the popup: the only context where
+// the passphrase is typed or `navigator.credentials` may be invoked. The
+// module is browser-safe by design (no node:crypto), so esbuild's browser
+// bundle gets the exact same PBKDF2 algebra Core verifies with.
+import type { StepUpProof } from "../../infrastructure/crypto/step-up-proof";
+import {
+  base64UrlToBytes,
+  bytesToBase64Url,
+  derivePassphraseProof,
+} from "../../infrastructure/crypto/step-up-proof";
 
 /*
  * The message contract above is IMPORTED, not redeclared. This file used to
@@ -124,6 +134,9 @@ const stepUpDetail = $<HTMLParagraphElement>("#step-up-detail");
 const stepUpSubmit = $<HTMLButtonElement>("#step-up-submit");
 const stepUpDismiss = $<HTMLButtonElement>("#step-up-dismiss");
 const stepUpError = $<HTMLParagraphElement>("#step-up-error");
+// R11 — the passphrase proof field and the device enrollment button.
+const stepUpPassphrase = $<HTMLInputElement>("#step-up-passphrase");
+const stepUpRegister = $<HTMLButtonElement>("#step-up-register");
 
 /* ------------------------------------------------------------------ */
 /*  State                                                              */
@@ -136,6 +149,15 @@ let authToken: string | null | undefined = null;
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/**
+ * TypeScript 5.9 types `BufferSource` as `ArrayBufferView<ArrayBuffer>`, but
+ * a `Uint8Array` from `base64UrlToBytes` is `Uint8Array<ArrayBufferLike>`.
+ * The repo widens at exactly this boundary (`as unknown as BufferSource` in
+ * EncryptionService and step-up-proof); this is the same widening, named
+ * once, for the `navigator.credentials` calls below.
+ */
+const asSource = (bytes: Uint8Array): BufferSource => bytes as unknown as BufferSource;
 
 const API_BASE = "http://localhost:3010";
 
@@ -627,6 +649,21 @@ async function saveCredentialsEncrypted(): Promise<void> {
 let pendingChallengeId: string | null = null;
 let pendingBinding: { credentialId: string; origin: string; operation: "AUTOFILL" | "TOTP" } | null = null;
 
+/** The approval-challenge shape Core returns (phase 1 of R11). */
+interface ApprovalChallenge {
+  approvalChallengeId: string;
+  /** The binding id: the release challengeId for release, the row id for enroll. */
+  challengeId: string;
+  purpose: "release" | "enroll";
+  challenge: string;
+  salt: string;
+  userSalt: string;
+  rpId: string | null;
+  hasAuthenticator: boolean;
+  credentialIds: string[];
+  expiresAt: number;
+}
+
 function showStepUp(status: string): void {
   stepUpStatus.textContent = status;
   stepUpError.hidden = true;
@@ -635,9 +672,16 @@ function showStepUp(status: string): void {
 
 function hideStepUp(): void {
   stepUpPanel.hidden = true;
-  // R3: the panel no longer holds a secret, so there is nothing to clear. The
-  // PIN it used to collect was never a secret the user possessed either.
   stepUpDetail.textContent = "";
+  // R11: unlike R3's empty panel, the panel now holds typed material — a
+  // passphrase in the input. It is never persisted, but it must not survive
+  // the panel either.
+  stepUpPassphrase.value = "";
+}
+
+function showStepUpError(message: string): void {
+  stepUpError.textContent = message;
+  stepUpError.hidden = false;
 }
 
 async function checkPendingStepUp(): Promise<void> {
@@ -654,6 +698,9 @@ async function checkPendingStepUp(): Promise<void> {
   }
 
   pendingBinding = binding;
+  // A different release means different proof material: never let a passphrase
+  // typed for one challenge be reused as if it belonged to the next.
+  stepUpPassphrase.value = "";
   showStepUp(`Step-up required for ${binding.origin}. Requesting a challenge…`);
 
   const started = await sendMessage<{ challengeId: string }>({
@@ -661,8 +708,7 @@ async function checkPendingStepUp(): Promise<void> {
     binding,
   });
   if (!started.ok || !started.data?.challengeId) {
-    stepUpError.textContent = started.error ?? "The challenge could not be started.";
-    stepUpError.hidden = false;
+    showStepUpError(started.error ?? "The challenge could not be started.");
     return;
   }
 
@@ -676,31 +722,299 @@ async function checkPendingStepUp(): Promise<void> {
   stepUpSubmit.disabled = false;
 }
 
+/**
+ * Phase 1 — fetch the one-time material a proof is bound to, directly from
+ * Core (the same Bearer-authenticated `fetch` pattern as login and vaults).
+ *
+ * Called fresh on EVERY attempt: a failed proof burns the row server-side,
+ * so reusing a previous response would fail even with correct material.
+ * The response never contains anything a stolen token could turn into a
+ * valid proof on its own — `salt`/`userSalt` are useless without the
+ * passphrase, and the WebAuthn parts are useless without the authenticator.
+ */
+async function fetchApprovalChallenge(
+  challengeId: string,
+  purpose: "release" | "enroll",
+): Promise<ApprovalChallenge | { error: string }> {
+  if (!authToken) return { error: "You are not signed in." };
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/step-up/approval-challenge`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ challengeId, purpose }),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      approvalChallenge?: ApprovalChallenge;
+      error?: string;
+    };
+    if (!res.ok || !body.approvalChallenge) {
+      // Deliberately generic: which part of the request failed is not the
+      // popup's business to narrate.
+      return { error: body.error ?? "The approval challenge is unavailable." };
+    }
+    return body.approvalChallenge;
+  } catch {
+    return { error: "Could not reach the approval service." };
+  }
+}
+
+/**
+ * Build a WebAuthn assertion for `challenge`, or null when no authenticator
+ * is available / the ceremony was cancelled or failed.
+ *
+ * Cancellation returns null WITHOUT an inline error so the caller can steer
+ * the user toward the passphrase fallback instead of dead-ending on
+ * "NotAllowedError".
+ */
+async function getWebAuthnAssertionProof(
+  challenge: ApprovalChallenge,
+): Promise<StepUpProof | null> {
+  if (
+    !challenge.hasAuthenticator ||
+    !challenge.rpId ||
+    !challenge.credentialIds.length ||
+    !navigator.credentials?.get
+  ) {
+    return null;
+  }
+  try {
+    const credential = (await navigator.credentials.get({
+      publicKey: {
+        challenge: asSource(base64UrlToBytes(challenge.challenge)),
+        rpId: challenge.rpId,
+        allowCredentials: challenge.credentialIds.map((id) => ({
+          id: asSource(base64UrlToBytes(id)),
+          type: "public-key" as const,
+        })),
+        userVerification: "required" as const,
+        timeout: 60_000,
+      },
+    })) as PublicKeyCredential | null;
+    if (!credential?.response) return null;
+    const response = credential.response as AuthenticatorAssertionResponse;
+    return {
+      type: "webauthn",
+      challengeId: challenge.challengeId,
+      approvalChallengeId: challenge.approvalChallengeId,
+      credentialId: bytesToBase64Url(new Uint8Array(credential.rawId)),
+      clientDataJSON: bytesToBase64Url(new Uint8Array(response.clientDataJSON)),
+      authenticatorData: bytesToBase64Url(new Uint8Array(response.authenticatorData)),
+      signature: bytesToBase64Url(new Uint8Array(response.signature)),
+    };
+  } catch {
+    // User cancelled, the authenticator is unavailable, or the browser
+    // refused — all answered by the passphrase fallback, not an error here.
+    return null;
+  }
+}
+
+/**
+ * Turn the phase-1 challenge + what the user provided into a proof.
+ *
+ * Precedence is deliberate:
+ *   1. a filled passphrase field → passphrase proof (an explicit choice);
+ *   2. else a registered device → WebAuthn assertion (the stronger factor);
+ *   3. else → a message that names what the user must do.
+ *
+ * The passphrase path derives LOCALLY: hop 1 reproduces `users.hash` from
+ * the typed passphrase and `userSalt`, hop 2 binds it to this one challenge.
+ * Core receives only the hop-2 value — never the passphrase.
+ */
+async function buildApprovalProof(
+  challenge: ApprovalChallenge,
+): Promise<StepUpProof | { error: string }> {
+  const passphrase = stepUpPassphrase.value;
+  if (passphrase) {
+    try {
+      const value = await derivePassphraseProof(
+        passphrase,
+        challenge.userSalt,
+        challenge.challengeId,
+        challenge.salt,
+      );
+      return {
+        type: "passphrase",
+        challengeId: challenge.challengeId,
+        approvalChallengeId: challenge.approvalChallengeId,
+        value,
+      };
+    } catch {
+      return { error: "The approval proof could not be derived." };
+    }
+  }
+
+  const assertion = await getWebAuthnAssertionProof(challenge);
+  if (assertion) return assertion;
+
+  if (challenge.hasAuthenticator) {
+    return {
+      error: "The device check was not completed. Try again, or enter your passphrase.",
+    };
+  }
+  return { error: "Enter your passphrase to approve this release." };
+}
+
 async function handleSubmitStepUp(): Promise<void> {
   if (!pendingChallengeId) {
-    stepUpError.textContent = "There is no pending approval.";
-    stepUpError.hidden = false;
+    showStepUpError("There is no pending approval.");
     return;
   }
 
   stepUpSubmit.disabled = true;
+  stepUpError.hidden = true;
   try {
-    // No secret is sent. The message carries the challenge to approve, and the
-    // background obtains Core's signature for it.
-    const verified = await sendMessage({ type: "APPROVE_STEP_UP", challengeId: pendingChallengeId });
-    if (!verified.ok) {
-      stepUpError.textContent = verified.error ?? "the approval was not accepted";
-      stepUpError.hidden = false;
-      // A refused approval leaves the challenge open, so the user can retry
-      // without re-triggering from scratch.
+    // Phase 1: one-time material, fetched fresh for this attempt.
+    const challenge = await fetchApprovalChallenge(pendingChallengeId, "release");
+    if ("error" in challenge) {
+      showStepUpError(challenge.error);
       return;
     }
 
+    const proof = await buildApprovalProof(challenge);
+    if ("error" in proof) {
+      showStepUpError(proof.error);
+      return;
+    }
+
+    // Phase 2: the worker forwards the proof verbatim — it never sees the
+    // passphrase, and cannot forge a proof it does not build.
+    const verified = await sendMessage({
+      type: "APPROVE_STEP_UP",
+      challengeId: pendingChallengeId,
+      proof,
+    });
+    if (!verified.ok) {
+      showStepUpError(verified.error ?? "the approval was not accepted");
+      // The approval challenge was burned by the failed attempt; the typed
+      // material must not linger to be silently reused against the next one.
+      stepUpPassphrase.value = "";
+      return;
+    }
+
+    stepUpPassphrase.value = "";
     pendingChallengeId = null;
     pendingBinding = null;
     stepUpStatus.textContent = "Approved. Retry the fill to release the credential.";
     stepUpDetail.textContent = "";
+  } catch {
+    showStepUpError("The approval could not be completed.");
   } finally {
+    stepUpSubmit.disabled = false;
+    stepUpRegister.disabled = false;
+  }
+}
+
+/**
+ * R11 — bind an authenticator so later releases can use a real assertion
+ * instead of the passphrase fallback. Runs WHILE the release stays pending:
+ * registration is proof-gated server-side with its own one-time challenge
+ * (purpose `enroll`), and a proof minted for enrollment can never approve a
+ * release (the server checks `purpose` on the consumed row).
+ */
+async function handleRegisterStepUp(): Promise<void> {
+  if (!pendingChallengeId) {
+    showStepUpError("There is no pending approval to register from.");
+    return;
+  }
+
+  stepUpRegister.disabled = true;
+  stepUpSubmit.disabled = true;
+  stepUpError.hidden = true;
+  try {
+    const challenge = await fetchApprovalChallenge(pendingChallengeId, "enroll");
+    if ("error" in challenge) {
+      showStepUpError(challenge.error);
+      return;
+    }
+
+    const proof = await buildApprovalProof(challenge);
+    if ("error" in proof) {
+      showStepUpError(proof.error);
+      return;
+    }
+
+    if (!challenge.rpId || !navigator.credentials?.create) {
+      showStepUpError("This browser cannot register an approval device.");
+      return;
+    }
+    const userId = await readStorage<string>(USER_ID_KEY);
+    const email = await readStorage<string>("cybervault_email");
+    if (!userId || !email) {
+      showStepUpError("Your account could not be identified.");
+      return;
+    }
+
+    const created = (await navigator.credentials.create({
+      publicKey: {
+        challenge: asSource(base64UrlToBytes(challenge.challenge)),
+        rp: { id: challenge.rpId, name: "Cyber Vault" },
+        user: {
+          // Stable per account: the authenticator uses it to distinguish
+          // credentials of the same relying party.
+          id: new TextEncoder().encode(userId),
+          name: email,
+          displayName: email,
+        },
+        // ES256 only — the server's verifier exists for exactly this alg.
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        authenticatorSelection: {
+          userVerification: "required",
+          residentKey: "preferred",
+        },
+        // Attestation would send a device-identifying statement Core has no
+        // policy for; the assertion path verifies with the bare key.
+        attestation: "none",
+        timeout: 60_000,
+      },
+    })) as PublicKeyCredential | null;
+    if (!created?.response) {
+      showStepUpError("The device was not registered.");
+      return;
+    }
+
+    const attestation = created.response as AuthenticatorAttestationResponse;
+    const publicKey = attestation.getPublicKey?.();
+    if (!publicKey) {
+      // Without the key there is nothing to verify later assertions against.
+      showStepUpError("The device was not registered.");
+      return;
+    }
+    const getTransports = (
+      attestation as unknown as { getResponseTransports?: () => string[] }
+    ).getResponseTransports;
+    const transports =
+      typeof getTransports === "function" ? getTransports.call(attestation) : [];
+
+    const res = await fetch(`${API_BASE}/api/v1/step-up/authenticator/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken ?? ""}`,
+      },
+      body: JSON.stringify({
+        proof,
+        credentialId: bytesToBase64Url(new Uint8Array(created.rawId)),
+        // DER SubjectPublicKeyInfo, exactly `getPublicKey()` returned — the
+        // server parses SPKI (with COSE accepted) and normalizes to raw.
+        publicKey: bytesToBase64Url(new Uint8Array(publicKey)),
+        alg: -7,
+        transports,
+      }),
+    });
+    if (!res.ok) {
+      showStepUpError("The device could not be registered.");
+      return;
+    }
+
+    stepUpPassphrase.value = "";
+    stepUpStatus.textContent = "Device registered. Approve the release when ready.";
+  } catch {
+    showStepUpError("The device could not be registered.");
+  } finally {
+    stepUpRegister.disabled = false;
     stepUpSubmit.disabled = false;
   }
 }
@@ -742,7 +1056,11 @@ addBtn.addEventListener("click", showAddForm);
 addCancel.addEventListener("click", hideAddForm);
 addSave.addEventListener("click", handleAddCredential);
 stepUpSubmit.addEventListener("click", handleSubmitStepUp);
+stepUpRegister.addEventListener("click", handleRegisterStepUp);
 stepUpDismiss.addEventListener("click", handleDismissStepUp);
+stepUpPassphrase.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") handleSubmitStepUp();
+});
 optionsLink.addEventListener("click", (e) => {
   e.preventDefault();
   openOptions();

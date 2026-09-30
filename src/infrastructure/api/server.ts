@@ -6,7 +6,7 @@
 
 import type { Server, IncomingMessage, ServerResponse } from "http";
 import { createServer } from "http";
-import { randomUUID } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
 import * as https from "https";
 import { readFileSync } from "fs";
 import { resolve as resolvePath } from "path";
@@ -15,6 +15,9 @@ import type {
   IVaultRepository,
   ICredentialRepository,
   IReleaseShareStore,
+  IStepUpApprovalChallengeStore,
+  IStepUpAuthenticatorStore,
+  StepUpApprovalChallenge,
 } from "../../domain/repositories";
 import { VaultId, CredentialId } from "../../domain/value-objects/ids";
 import { EncryptionService } from "../../infrastructure/crypto/EncryptionService";
@@ -28,10 +31,20 @@ import {
   generateRefreshToken,
   verifyToken,
   getUserByEmail,
+  getUserById,
   createUser,
   verifyPassword,
   type AuthenticatedRequest,
 } from "./auth";
+import {
+  precheckProofShape,
+  readWebAuthnConfig,
+  verifyStepUpProof,
+} from "./step-up-approval";
+import {
+  APPROVAL_CHALLENGE_TTL_MS,
+  bytesToBase64Url,
+} from "../crypto/step-up-proof";
 
 import { swaggerMiddleware } from "./swagger";
 import { connectRedis, disconnectRedis } from "../redis";
@@ -60,6 +73,7 @@ import {
   PostgresVaultRepository,
   PostgresCredentialRepository,
   createReleaseShareStore,
+  createStepUpProofStores,
 } from "../../infrastructure/repositories";
 import { loadReleaseShareKekSecret } from "../../infrastructure/crypto/release-share-kek";
 import {
@@ -124,6 +138,15 @@ export class ApiServer {
   /** Base64 32-byte secret behind the Release Share KEK. Null => release refuses. */
   private releaseShareKekSecret: Uint8Array | null;
   /**
+   * R11 — the one-time approval challenges (WebAuthn challenge + passphrase
+   * salt) and the user's registered authenticators. Same factory rule as the
+   * Release Share store: Postgres when configured, in-memory otherwise, and
+   * no constructor parameter for them — the selection logic lives with the
+   * factory, which is unit-tested on its own.
+   */
+  private stepUpChallenges: IStepUpApprovalChallengeStore;
+  private stepUpAuthenticators: IStepUpAuthenticatorStore;
+  /**
    * PINNED Ed25519 capability verification key (`PLUS_PUBLIC_KEY`). Loaded once
    * from configuration, never from a request. Null => every managed release
    * refuses with the missing variable named.
@@ -143,6 +166,9 @@ export class ApiServer {
     this.credentialRepository = credentialRepository;
 
     this.releaseShareStore = createReleaseShareStore();
+    const stepUpStores = createStepUpProofStores();
+    this.stepUpChallenges = stepUpStores.challenges;
+    this.stepUpAuthenticators = stepUpStores.authenticators;
     this.releaseShareKekSecret = loadReleaseShareKekSecret(
       process.env.RELEASE_SHARE_KEK_SECRET,
     );
@@ -1521,6 +1547,19 @@ export class ApiServer {
         await this.routeStepUpApprove(req, res);
         break;
 
+      // R11 — the one-time challenge a human-presence proof is bound to.
+      // Issued per request, never accepted without being consumed.
+      case "/api/v1/step-up/approval-challenge":
+        await this.routeStepUpApprovalChallenge(req, res);
+        break;
+
+      // R11 — register an approval authenticator. Proof-gated like approve:
+      // without it a stolen bearer token could enroll its own key and defeat
+      // R11 in a single request.
+      case "/api/v1/step-up/authenticator/register":
+        await this.routeStepUpAuthenticatorRegister(req, res);
+        break;
+
       // API info
       case "/api":
         await this.routeApiInfo(req, res);
@@ -1624,6 +1663,241 @@ export class ApiServer {
     await this.handleAuthRoute(req, res, () => this.handleStepUpApprove(req, res));
   }
 
+  private async routeStepUpApprovalChallenge(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "POST") {
+      this.sendError(res, 405, "Method not allowed");
+      return;
+    }
+    await this.handleAuthRoute(req, res, () => this.handleApprovalChallenge(req, res));
+  }
+
+  private async routeStepUpAuthenticatorRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "POST") {
+      this.sendError(res, 405, "Method not allowed");
+      return;
+    }
+    await this.handleAuthRoute(req, res, () => this.handleRegisterAuthenticator(req, res));
+  }
+
+  /**
+   * POST /api/v1/step-up/approval-challenge — issue the one-time material a
+   * human-presence proof is bound to (R11, T3).
+   *
+   * The response carries everything the CLIENT needs to build a proof without
+   * the proof ever being trustable on its own:
+   *
+   *   - `challenge`/`salt`     — per-row random material, never derived from
+   *     anything an attacker controls;
+   *   - `userSalt`             — `users.salt`, so the client can reproduce
+   *     `users.hash` from the passphrase locally. The passphrase itself never
+   *     travels to Core, and `userSalt` alone is worthless without it;
+   *   - `rpId`/`credentialIds` — what `navigator.credentials.get` needs,
+   *     present only when WebAuthn is configured (fail closed otherwise);
+   *   - `hasAuthenticator`     — false when unconfigured OR the user has not
+   *     registered one, so the popup never offers a path that cannot verify.
+   *
+   * `purpose` distinguishes a release approval from an authenticator
+   * enrollment. Both are proof-gated; a proof minted for one can never be
+   * consumed by the other (the purpose is checked at verification).
+   */
+  private async handleApprovalChallenge(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!userId) {
+      this.sendError(res, 401, "Authentication required");
+      return;
+    }
+
+    const data = await this.parseJsonBody(req);
+    const challengeId = typeof data.challengeId === "string" ? data.challengeId : "";
+    const purpose = data.purpose;
+    if (!challengeId) {
+      this.sendError(res, 400, "challengeId is required");
+      return;
+    }
+    if (purpose !== "release" && purpose !== "enroll") {
+      this.sendError(res, 400, "Unsupported purpose");
+      return;
+    }
+
+    const user = await getUserById(userId);
+    if (!user) {
+      // A valid access token whose subject no longer exists: no KDF material
+      // to offer, and no proof could ever verify. Fail closed.
+      this.sendError(res, 503, "Approval unavailable");
+      return;
+    }
+
+    const webauthn = readWebAuthnConfig();
+    const registered = await this.stepUpAuthenticators.listByUserId(userId);
+    // Credential ids are only advertised when assertions can actually be
+    // verified — an unconfigured rpId/origin must not present a usable path.
+    const credentialIds = webauthn.configured
+      ? registered.map((authenticator) => authenticator.credentialId)
+      : [];
+
+    const id = randomUUID();
+    const now = Date.now();
+    const row: StepUpApprovalChallenge = {
+      id,
+      // Release proofs bind to the release challengeId (the R3/Plus binding);
+      // enroll proofs have no release yet, so they bind to their own row id —
+      // the id Core itself minted, therefore not attacker-chosen.
+      bindingId: purpose === "release" ? challengeId : id,
+      userId,
+      purpose,
+      challenge: bytesToBase64Url(randomBytes(32)),
+      salt: randomBytes(32).toString("hex"),
+      rpId: webauthn.configured ? webauthn.rpId : null,
+      origin: webauthn.configured ? webauthn.origin : null,
+      createdAt: now,
+      expiresAt: now + APPROVAL_CHALLENGE_TTL_MS,
+      consumedAt: null,
+    };
+    await this.stepUpChallenges.save(row);
+
+    this.sendSuccess(res, 200, {
+      approvalChallenge: {
+        approvalChallengeId: row.id,
+        challengeId: row.bindingId,
+        purpose: row.purpose,
+        challenge: row.challenge,
+        salt: row.salt,
+        userSalt: user.salt,
+        rpId: row.rpId,
+        hasAuthenticator: credentialIds.length > 0,
+        credentialIds,
+        expiresAt: row.expiresAt,
+      },
+    });
+  }
+
+  /**
+   * POST /api/v1/step-up/authenticator/register — enroll a WebAuthn
+   * credential for R11 (T4).
+   *
+   * Proof-gated for the same reason approve is: an endpoint that trusts the
+   * bearer token alone would let a compromised worker enroll ITS OWN P-256
+   * key in one request and then mint assertions at will — R11 defeated from
+   * the inside. The proof is a passphrase (first authenticator) or an
+   * assertion from an already-registered one (subsequent authenticators),
+   * verified through the same `verifyStepUpProof` approve uses.
+   *
+   * The public key arrives as the DER SubjectPublicKeyInfo
+   * `AuthenticatorAttestationResponse.getPublicKey()` returns (WebAuthn
+   * Level 3), is normalized here to the raw `04||x||y` point, and is stored
+   * with the credential — never trusted as-is from an arbitrary encoding.
+   */
+  private async handleRegisterAuthenticator(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!userId) {
+      this.sendError(res, 401, "Authentication required");
+      return;
+    }
+
+    const data = await this.parseJsonBody(req);
+
+    // Structural checks BEFORE the challenge is consumed: a malformed request
+    // must not burn a legitimate in-flight enrollment challenge.
+    if (data.proof === null || typeof data.proof !== "object") {
+      this.sendError(res, 403, "Approval proof required");
+      return;
+    }
+    // No release challengeId exists for enroll — the binding is the row's own
+    // id, which verifyStepUpProof re-checks against the consumed row.
+    const shape = precheckProofShape(data.proof, null);
+    if ("status" in shape) {
+      this.sendError(res, shape.status, shape.error);
+      return;
+    }
+    const proof = shape.proof;
+
+    const credentialId = typeof data.credentialId === "string" ? data.credentialId : "";
+    const publicKey = typeof data.publicKey === "string" ? data.publicKey : "";
+    if (!credentialId || !publicKey) {
+      this.sendError(res, 400, "credentialId and publicKey are required");
+      return;
+    }
+    if (data.alg !== -7) {
+      // Only ES256 (-7): the COSE reader and the P-256 verifier exist for
+      // exactly this algorithm; anything else would be stored and then never
+      // verify.
+      this.sendError(res, 400, "Unsupported algorithm");
+      return;
+    }
+    const transports = Array.isArray(data.transports)
+      ? data.transports.filter((t): t is string => typeof t === "string")
+      : [];
+
+    const webauthn = readWebAuthnConfig();
+    if (!webauthn.configured) {
+      // Fail closed: a credential registered without a configured rpId/origin
+      // could never produce a verifiable assertion.
+      this.sendError(res, 503, "Authenticator registration is not configured");
+      return;
+    }
+
+    const user = await getUserById(userId);
+    if (!user) {
+      this.sendError(res, 503, "Approval unavailable");
+      return;
+    }
+
+    let keyBytes: Uint8Array;
+    try {
+      const { base64UrlToBytes } = await import("../crypto/step-up-proof");
+      keyBytes = base64UrlToBytes(publicKey);
+    } catch {
+      this.sendError(res, 400, "Invalid public key");
+      return;
+    }
+    // Validated now so a malformed key is refused at registration rather than
+    // at the first approval attempt, months later, when the user cannot tell
+    // why their authenticator stopped working.
+    const { parseP256PublicKey, bytesToBase64Url } = await import("../crypto/step-up-proof");
+    const rawPoint = parseP256PublicKey(publicKey);
+    if (!rawPoint) {
+      this.sendError(res, 400, "Invalid public key");
+      return;
+    }
+    const storedKey = bytesToBase64Url(rawPoint);
+
+    const row = await this.stepUpChallenges.consume(proof.approvalChallengeId, userId, Date.now());
+    if (!row) {
+      // Unknown, expired, already spent, or another user's row — one answer.
+      this.sendError(res, 403, "Approval proof rejected");
+      return;
+    }
+    const verification = await verifyStepUpProof(
+      proof,
+      row,
+      user,
+      "enroll",
+      this.stepUpAuthenticators,
+      webauthn,
+    );
+    if (!verification.ok) {
+      this.sendError(res, verification.status, verification.error);
+      return;
+    }
+
+    const saved = await this.stepUpAuthenticators.save({
+      credentialId,
+      userId,
+      publicKey: storedKey,
+      counter: 0,
+      transports,
+      createdAt: Date.now(),
+    });
+    if (!saved) {
+      // The id already belongs to someone else. Re-owning it would swap the
+      // public key under a stranger's authenticator.
+      this.sendError(res, 409, "This authenticator is already registered to another account");
+      return;
+    }
+
+    this.sendSuccess(res, 200, { registered: true, credentialId });
+  }
+
   /**
    * POST /api/v1/step-up/approve — sign a user's approval to release one
    * managed credential (R3, T3).
@@ -1668,6 +1942,61 @@ export class ApiServer {
     if (!isValidApprovalOperation(operation)) {
       this.sendError(res, 400, "Unsupported operation");
       return;
+    }
+
+    const challengeId = typeof data.challengeId === "string" ? data.challengeId : "";
+    if (!challengeId) {
+      this.sendError(res, 400, "challengeId is required");
+      return;
+    }
+
+    // R11 — human presence proof gate. BEFORE any credential ownership work:
+    // a stolen bearer token must die here on a missing/foreign proof instead
+    // of reaching approval bookkeeping, and refusing early leaves no
+    // enumeration oracle (the answer is the same whether the credential id
+    // exists or not).
+    const shape = precheckProofShape(data.proof, challengeId);
+    if ("status" in shape) {
+      this.sendError(res, shape.status, shape.error);
+      return;
+    }
+    const proof = shape.proof;
+
+    const user = await getUserById(userId);
+    if (!user) {
+      // Valid token, deleted subject: no KDF material, no proof could verify.
+      this.sendError(res, 503, "Approval unavailable");
+      return;
+    }
+
+    // Consume BEFORE verification: a captured assertion (or a guessing
+    // attacker) burns the row on the first failed attempt, so it can never be
+    // retried — the user simply requests a fresh challenge. Atomic and
+    // single-statement: two concurrent submissions race the guard, exactly
+    // one wins, both proof failures and replays end in the same 403.
+    const row = await this.stepUpChallenges.consume(proof.approvalChallengeId, userId, Date.now());
+    if (!row) {
+      // Unknown, expired, already spent, or another user's row — one answer.
+      this.sendError(res, 403, "Approval proof rejected");
+      return;
+    }
+
+    const verification = await verifyStepUpProof(
+      proof,
+      row,
+      user,
+      "release",
+      this.stepUpAuthenticators,
+      readWebAuthnConfig(),
+    );
+    if (!verification.ok) {
+      this.sendError(res, verification.status, verification.error);
+      return;
+    }
+    if (verification.credentialId && verification.signCount && verification.signCount > 0) {
+      // Advance the clone-detection counter on success only; implementations
+      // that never increment (platform authenticators) keep it at 0.
+      await this.stepUpAuthenticators.updateCounter(verification.credentialId, verification.signCount);
     }
 
     const { CredentialId } = await import("../../domain/value-objects/ids");
@@ -1716,7 +2045,6 @@ export class ApiServer {
     }
 
     const iat = Math.floor(Date.now() / 1000);
-    const challengeId = typeof data.challengeId === "string" ? data.challengeId : "";
 
     const signed = await signApproval(
       {

@@ -1491,6 +1491,14 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
  */
 async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<BackgroundResponse> {
   try {
+    // R11 — refuse before touching ANY state when the human-presence proof
+    // is absent. The message channel is untyped at runtime and forgeable by
+    // a compromised content script; Core would refuse the proof-less request
+    // anyway, but the worker must not even attempt it — a bearer token alone
+    // is exactly what R11 declares insufficient.
+    if (!msg.proof || typeof msg.proof !== "object") {
+      return { ok: false, error: "the approval was not accepted" };
+    }
     const entry = stepUpChallenges.get(msg.challengeId);
     if (!entry) {
       // Unknown challenge: refuse without contacting either service, so the
@@ -1532,6 +1540,10 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
           challengeId: msg.challengeId,
           credentialId: entry.binding.credentialId,
           operation: entry.binding.operation,
+          // R11 — forwarded verbatim. The worker never derives, rewraps or
+          // validates it beyond presence: the proof was built against Core's
+          // own challenge row, and only Core can say whether it matches.
+          proof: msg.proof,
         }),
         signal: controller.signal,
       });

@@ -87,6 +87,86 @@ export interface IUserRepository {
   setRecoveryKeyHash(userId: string, hash: string): Promise<void>;
 }
 
+/**
+ * One approval challenge Core issued for R11's human-presence proof.
+ *
+ * `bindingId` is what the proof binds to: the release `challengeId` for
+ * `purpose: "release"`, the row's own id for `purpose: "enroll"`. The
+ * WebAuthn `challenge` and the PBKDF2 `salt` are per-row random material —
+ * never derived from anything an attacker controls, never reused.
+ * `rpId`/`origin` are null exactly when WebAuthn is not configured, and a
+ * null there must make every webauthn proof against the row refuse.
+ */
+export interface StepUpApprovalChallenge {
+  readonly id: string;
+  readonly bindingId: string;
+  readonly userId: string;
+  readonly purpose: "release" | "enroll";
+  /** Base64url WebAuthn challenge. */
+  readonly challenge: string;
+  /** Hex per-approval PBKDF2 salt. */
+  readonly salt: string;
+  readonly rpId: string | null;
+  readonly origin: string | null;
+  /** Unix milliseconds (converted to TIMESTAMPTZ at the boundary). */
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly consumedAt: number | null;
+}
+
+/**
+ * Persistence port for approval challenges.
+ *
+ * `consume` is THE one-time-use guarantee: it must mark the row spent in one
+ * atomic step (a single guarded UPDATE in SQL; a synchronous check-and-set in
+ * memory) and return the row only to the caller that won the race. A
+ * read-then-write implementation would let a captured assertion be spent
+ * twice — R2's lesson: state that is not enforced where it is stored is not
+ * enforced at all.
+ */
+export interface IStepUpApprovalChallengeStore {
+  save(challenge: StepUpApprovalChallenge): Promise<void>;
+  /**
+   * Atomically consume `id` for `userId`: returns the row exactly once, or
+   * null when it is unknown, another user's, already consumed, or expired.
+   */
+  consume(id: string, userId: string, now: number): Promise<StepUpApprovalChallenge | null>;
+  /** Read without consuming — used by tests and operator diagnostics only. */
+  findById(id: string): Promise<StepUpApprovalChallenge | null>;
+}
+
+/**
+ * A WebAuthn credential the user registered as their approval authenticator.
+ * Only verification material lives here: credential id, the normalized
+ * P-256 public key (`04||x||y`, hex), the signature counter, transports.
+ * The private key never leaves the authenticator and never reaches Core.
+ */
+export interface StepUpAuthenticator {
+  /** Base64url of the credential's rawId — globally unique (PK). */
+  readonly credentialId: string;
+  readonly userId: string;
+  readonly publicKey: string;
+  readonly counter: number;
+  readonly transports: readonly string[];
+  readonly createdAt: number;
+}
+
+/**
+ * Persistence port for registered authenticators.
+ *
+ * `save` must refuse to re-own a credential id registered to a different
+ * user (return false) — overwriting someone else's public key would break
+ * their approvals, and re-binding their authenticator to us would be worse.
+ */
+export interface IStepUpAuthenticatorStore {
+  /** Register, or refresh the key material of the SAME owner. False if owned by another user. */
+  save(authenticator: StepUpAuthenticator): Promise<boolean>;
+  findByCredentialId(credentialId: string): Promise<StepUpAuthenticator | null>;
+  listByUserId(userId: string): Promise<StepUpAuthenticator[]>;
+  /** Persist a higher signature counter (clone detection advances it). */
+  updateCounter(credentialId: string, counter: number): Promise<void>;
+}
+
 export interface IVulnerabilityRepository {
   save(vulnerability: Vulnerability): Promise<Vulnerability>;
   findById(id: VulnerabilityId): Promise<Vulnerability | null>;

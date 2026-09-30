@@ -29,6 +29,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { bytesToBase64Url } from "../../src/infrastructure/crypto/step-up-proof";
+
 /* -------------------------------------------------------------------------- */
 /* chrome double                                                              */
 /* -------------------------------------------------------------------------- */
@@ -82,6 +84,41 @@ const storage = {
 };
 
 (globalThis as unknown as { chrome: unknown }).chrome = { runtime, storage };
+
+// jsdom ships no WebCrypto, and the R11 proof derivation is WebCrypto-only
+// (`crypto.subtle.deriveBits`). Without this the popup's `derivePassphraseProof`
+// throws, is swallowed by the catch, and surfaces as
+// "The approval proof could not be derived" — a test failure that looks like a
+// product bug and is really a missing test-environment global.
+// Installed at module scope, before `beforeAll` imports the popup: the popup
+// captures nothing, but the first `checkAuthState()` runs during import and
+// would otherwise already be missing WebCrypto.
+if (!globalThis.crypto?.subtle) {
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    writable: true,
+    value: require("crypto").webcrypto,
+  });
+}
+
+// jsdom also omits `TextEncoder`/`TextDecoder` as globals, and
+// `derivePassphraseProof` uses one to turn the passphrase into PBKDF2 key
+// material. Without it the call throws `TextEncoder is not defined`, the popup
+// swallows it, and the test reports "the approval proof could not be derived"
+// — which reads like a product defect and is really a missing harness global.
+for (const [name, impl] of [
+  ["TextEncoder", require("util").TextEncoder],
+  ["TextDecoder", require("util").TextDecoder],
+] as const) {
+  if (!(globalThis as Record<string, unknown>)[name]) {
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value: impl,
+    });
+  }
+}
+
 
 const fetchMock = jest.fn(
   async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -775,7 +812,100 @@ describe("unlock with a pending step-up", () => {
     operation: "AUTOFILL" as const,
   };
 
+  /* ---- R11 doubles ------------------------------------------------- */
+
+  /**
+   * The phase-1 challenge Core issues. The popup fetches this ITSELF (same
+   * Bearer-authenticated fetch as login), so the worker double never sees it.
+   */
+  const APPROVAL_CHALLENGE = {
+    approvalChallengeId: "ac-1",
+    challengeId: "ch-1",
+    purpose: "release",
+    challenge: "aXNzdWVkLWNoYWxsZW5nZQ",
+    salt: "approval-salt",
+    userSalt: "user-salt",
+    rpId: "example.com",
+    hasAuthenticator: true,
+    credentialIds: ["cred-1"],
+    expiresAt: Date.now() + 120_000,
+  };
+
+  function answerApprovalChallenge(
+    overrides: Partial<typeof APPROVAL_CHALLENGE> = {},
+  ): void {
+    fetchHandler = (url) => {
+      if (url.endsWith("/api/v1/step-up/approval-challenge")) {
+        return {
+          ok: true,
+          status: 200,
+          json: { approvalChallenge: { ...APPROVAL_CHALLENGE, ...overrides } },
+        };
+      }
+      return new Error(`unexpected fetch: ${url}`);
+    };
+  }
+
+  /** Canned assertion parts the WebAuthn double returns. */
+  const RAW_ID = new Uint8Array([1, 2, 3]);
+  const CLIENT_DATA = new Uint8Array([123, 125]); // "{}"
+  const AUTH_DATA = new Uint8Array(37).fill(1);
+  const SIGNATURE = new Uint8Array(64).fill(2);
+
+  const EXPECTED_WEBAUTHN_PROOF = {
+    type: "webauthn",
+    challengeId: "ch-1",
+    approvalChallengeId: "ac-1",
+    credentialId: bytesToBase64Url(RAW_ID),
+    clientDataJSON: bytesToBase64Url(CLIENT_DATA),
+    authenticatorData: bytesToBase64Url(AUTH_DATA),
+    signature: bytesToBase64Url(SIGNATURE),
+  };
+
+  function installAuthenticatorDouble(): void {
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      writable: true,
+      value: {
+        get: jest.fn(async () => ({
+          // The popup wraps each part with `new Uint8Array(...)`, which
+          // accepts a Uint8Array as-is.
+          rawId: RAW_ID,
+          response: {
+            clientDataJSON: CLIENT_DATA,
+            authenticatorData: AUTH_DATA,
+            signature: SIGNATURE,
+          },
+        })),
+      },
+    });
+  }
+
+  /** Poll until the popup has sent `predicate`-matching message (proof
+   * derivation is deliberately slow — PBKDF2 at users.hash parameters — so a
+   * fixed settle() cannot wait for it). */
+  async function waitForApprove(timeoutMs = 90_000): Promise<any> {
+    const start = Date.now();
+    for (;;) {
+      const call = runtime.sendMessage.mock.calls.find(
+        ([m]) => m?.type === "APPROVE_STEP_UP",
+      );
+      if (call) return call[0];
+      if (Date.now() - start > timeoutMs) {
+        throw new Error("timed out waiting for APPROVE_STEP_UP");
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
   async function unlockWithPendingBinding(): Promise<void> {
+    // Sign in FIRST. The popup holds `authToken` as module state assigned
+    // during login, and `fetchApprovalChallenge` refuses without it — so an
+    // unlock-first sequence can never request an approval challenge, and the
+    // proof is never built. Order matters: `submitLogin` installs its own
+    // `fetchHandler`, so it has to run before `routeUnlock` overwrites it.
+    await signIn();
+
     routeUnlock({
       worker: (message) => {
         switch (message.type) {
@@ -823,7 +953,33 @@ describe("unlock with a pending step-up", () => {
     expect(document.querySelector("#step-up-pin")).toBeNull();
   });
 
+  it("R11 — cannot approve with neither a passphrase nor a device", async () => {
+    await unlockWithPendingBinding();
+    // No registered authenticator in the challenge, no WebAuthn API called,
+    // empty passphrase field: there is nothing to prove WITH.
+    answerApprovalChallenge({ hasAuthenticator: false, credentialIds: [] });
+    $("#step-up-passphrase").value = "";
+
+    click($("#step-up-submit"));
+    await settle();
+
+    expect($("#step-up-error").hidden).toBe(false);
+    expect($("#step-up-error").textContent).toBe(
+      "Enter your passphrase to approve this release.",
+    );
+    // Nothing left the popup: no approval message, so the worker — and Core —
+    // were never asked.
+    expect(
+      runtime.sendMessage.mock.calls.some(([m]) => m?.type === "APPROVE_STEP_UP"),
+    ).toBe(false);
+    // The pending challenge survives: the user can now type the passphrase.
+    expect($("#step-up-submit").disabled).toBe(false);
+  });
+
   it("surfaces the worker's rejection and re-enables the button", async () => {
+    await unlockWithPendingBinding();
+    answerApprovalChallenge();
+    installAuthenticatorDouble();
     messageHandler = (message) =>
       message.type === "APPROVE_STEP_UP"
         ? { ok: false, error: "the approval was not accepted" }
@@ -831,31 +987,51 @@ describe("unlock with a pending step-up", () => {
     click($("#step-up-submit"));
     await settle();
 
+    // The R11 proof travels with the challenge: built here, in the popup —
+    // the only context where the authenticator may be invoked.
     expect(runtime.sendMessage).toHaveBeenCalledWith({
       type: "APPROVE_STEP_UP",
       challengeId: "ch-1",
+      proof: EXPECTED_WEBAUTHN_PROOF,
     });
     expect($("#step-up-error").textContent).toBe("the approval was not accepted");
     // A refused approval leaves the challenge open, so the button comes back.
     expect($("#step-up-submit").disabled).toBe(false);
   });
 
-  it("sends no secret when approving", async () => {
-    messageHandler = (message) =>
-      message.type === "APPROVE_STEP_UP" ? { ok: true, data: {} } : { ok: true, data: {} };
+  it("sends the derived passphrase proof — never the passphrase itself", async () => {
+    await unlockWithPendingBinding();
+    // No device: the passphrase path, derived locally at users.hash
+    // parameters (two PBKDF2 hops — deliberately slow, hence waitForApprove).
+    answerApprovalChallenge({ hasAuthenticator: false, credentialIds: [] });
+    const passphrase = "hunter2-not-on-the-wire";
+    $("#step-up-passphrase").value = passphrase;
+    messageHandler = () => ({ ok: true, data: {} });
+
     click($("#step-up-submit"));
     await settle();
+    const approve = await waitForApprove();
 
-    // Exactly the challenge id. A `pin` field here would be the old flow
-    // wearing the new message name.
-    const approveCall = runtime.sendMessage.mock.calls.find(
-      ([m]) => m.type === "APPROVE_STEP_UP",
-    );
-    expect(approveCall).toBeDefined();
-    expect(Object.keys(approveCall![0])).toEqual(["type", "challengeId"]);
-  });
+    // Exactly these three: no PIN field ever came back under a new name, and
+    // the proof is one-time derived material, not something the user knows.
+    expect(Object.keys(approve)).toEqual(["type", "challengeId", "proof"]);
+    expect(approve).not.toHaveProperty("pin");
+    expect(approve.proof).toMatchObject({
+      type: "passphrase",
+      challengeId: "ch-1",
+      approvalChallengeId: "ac-1",
+    });
+    // 64 bytes, hex — and the raw passphrase appears nowhere on the wire.
+    expect(approve.proof.value).toMatch(/^[0-9a-f]{128}$/);
+    expect(approve.proof.value).not.toContain(passphrase);
+    expect(JSON.stringify(approve)).not.toContain(passphrase);
+    // The field is cleared as soon as the material has been used.
+    expect($("#step-up-passphrase").value).toBe("");
+  }, 120_000);
 
   it("accepts the approval and clears the challenge", async () => {
+    // The successful approval above already moved the panel to its approved
+    // state; re-clicking with nothing pending must not disturb it.
     messageHandler = (message) =>
       message.type === "APPROVE_STEP_UP" ? { ok: true, data: {} } : { ok: true, data: {} };
     click($("#step-up-submit"));

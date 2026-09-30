@@ -119,6 +119,43 @@ const createMockCredentialsGenerator = () =>
 
 const ORIGIN = "https://github.com";
 const SECRET_REF = "ref-e2e-stepup";
+const REGISTER_PASSWORD = "strongpass123";
+
+/* ------------------------------------------------------------------ */
+/*  R11 — the human-presence proof, over the wire                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Phase 1: the one-time material Core issues for a proof. Runs against the
+ * real route, so what the popup would receive is exactly what is asserted.
+ */
+async function fetchApprovalChallenge(token: string, challengeId: string): Promise<any> {
+  const res = await request(coreServer)
+    .post("/api/v1/step-up/approval-challenge")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ challengeId, purpose: "release" });
+  expect(res.status).toBe(200);
+  expect(res.body.approvalChallenge).toBeDefined();
+  return res.body.approvalChallenge;
+}
+
+/** Derive the passphrase proof exactly as the popup does — same algebra. */
+async function passphraseProof(password: string, challenge: any): Promise<Record<string, unknown>> {
+  const { derivePassphraseProof } = await import(
+    "../../src/infrastructure/crypto/step-up-proof"
+  );
+  return {
+    type: "passphrase",
+    challengeId: challenge.challengeId,
+    approvalChallengeId: challenge.approvalChallengeId,
+    value: await derivePassphraseProof(
+      password,
+      challenge.userSalt,
+      challenge.challengeId,
+      challenge.salt,
+    ),
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Keys                                                               */
@@ -239,15 +276,14 @@ afterAll(async () => {
  */
 async function getAuthToken(): Promise<{ token: string; userId: string }> {
   const email = `r3-${Date.now()}-${Math.random().toString(36).slice(2)}@test.com`;
-  const password = "strongpass123";
   const registered = await request(coreServer)
     .post("/api/v1/auth/register")
-    .send({ email, password });
+    .send({ email, password: REGISTER_PASSWORD });
   expect(registered.status).toBeLessThan(400);
 
   const login = await request(coreServer)
     .post("/api/v1/auth/login")
-    .send({ email, password });
+    .send({ email, password: REGISTER_PASSWORD });
   expect(login.status).toBe(200);
   const token = login.body.token as string;
 
@@ -323,11 +359,17 @@ describe("R3 — the step-up is obtainable, end to end", () => {
     const { challengeId } = (await triggered.json()) as { challengeId: string };
     expect(challengeId).toBeTruthy();
 
-    /* ---- 2. Core signs the approval the user's decision authorises. ---- */
+    /* ---- 2. R11 phase 1: the one-time material the proof binds to. ---- *
+     * The release challengeId alone buys nothing anymore: every approval
+     * must carry a proof Core verified against its own stored row. */
+    const approvalChallenge = await fetchApprovalChallenge(token, challengeId);
+    const proof = await passphraseProof(REGISTER_PASSWORD, approvalChallenge);
+
+    /* ---- 3. Core verifies the human presence, then signs. ------------- */
     const approved = await request(coreServer)
       .post("/api/v1/step-up/approve")
       .set("Authorization", `Bearer ${token}`)
-      .send({ challengeId, credentialId, operation: "AUTOFILL" });
+      .send({ challengeId, credentialId, operation: "AUTOFILL", proof });
 
     expect(approved.status).toBe(200);
     expect(approved.body.approval).toBeDefined();
@@ -354,7 +396,7 @@ describe("R3 — the step-up is obtainable, end to end", () => {
     expect(approved.body.approval.payload.secretRef).toBe(SECRET_REF);
     expect(JSON.stringify(approved.body.approval)).not.toMatch(/"pin"/i);
 
-    /* ---- 3. Plus verifies it and issues the capability. -------------- */
+    /* ---- 4. Plus verifies it and issues the capability. -------------- */
     const approvedFor = await fetch(`${plusBase}/api/v1/challenges/approve`, {
       method: "POST",
       headers: {
@@ -487,13 +529,77 @@ describe("R3 — the step-up is obtainable, end to end", () => {
     vaultRepo.add({ id: vaultId, ownerId: owner.userId, name: "v" });
     const credentialId = await seedManagedCredential(owner.userId, vaultId);
 
+    // The stranger passes the R11 gate with a fully valid proof of THEIR OWN
+    // presence — and still cannot sign for someone else's credential. A
+    // proof-less request here would 403 at the gate and prove nothing about
+    // ownership.
+    const approvalChallenge = await fetchApprovalChallenge(stranger.token, "ch-x");
+    const proof = await passphraseProof(REGISTER_PASSWORD, approvalChallenge);
+
     const res = await request(coreServer)
       .post("/api/v1/step-up/approve")
       .set("Authorization", `Bearer ${stranger.token}`)
-      .send({ challengeId: "ch-x", credentialId, operation: "AUTOFILL" });
+      .send({ challengeId: "ch-x", credentialId, operation: "AUTOFILL", proof });
 
     // Identical to "no such credential", so this cannot enumerate ids.
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Credential not available for release");
+  });
+
+  it("R11 — refuses an approval with no proof, whatever else is valid", async () => {
+    const { token } = await getAuthToken();
+
+    const res = await request(coreServer)
+      .post("/api/v1/step-up/approve")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ challengeId: "ch-noproof", credentialId: "cred-anything", operation: "AUTOFILL" });
+
+    // The gate runs before credential ownership, so the answer says nothing
+    // about whether the credential exists — no enumeration oracle.
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval proof required");
+  });
+
+  it("R11 — a wrong passphrase burns the challenge, so the right one cannot then be used", async () => {
+    const { token } = await getAuthToken();
+
+    const approvalChallenge = await fetchApprovalChallenge(token, "ch-burn");
+    const wrong = await passphraseProof("not-the-passphrase", approvalChallenge);
+
+    const refused = await request(coreServer)
+      .post("/api/v1/step-up/approve")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ challengeId: "ch-burn", credentialId: "cred-anything", operation: "AUTOFILL", proof: wrong });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toBe("Approval proof rejected");
+
+    // Consume-before-verify: the failed attempt already spent the row, so the
+    // CORRECT proof against the SAME approval challenge is now worthless. A
+    // captured (or guessed) proof gets exactly one try.
+    const correct = await passphraseProof(REGISTER_PASSWORD, approvalChallenge);
+    const replayed = await request(coreServer)
+      .post("/api/v1/step-up/approve")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ challengeId: "ch-burn", credentialId: "cred-anything", operation: "AUTOFILL", proof: correct });
+    expect(replayed.status).toBe(403);
+    expect(replayed.body.error).toBe("Approval proof rejected");
+  });
+
+  it("R11 — a proof minted for another release cannot be presented here", async () => {
+    const { token } = await getAuthToken();
+
+    const otherRelease = await fetchApprovalChallenge(token, "ch-other");
+    const proof = await passphraseProof(REGISTER_PASSWORD, otherRelease);
+    // Rebind it to this release's challengeId — the exact cross-challenge
+    // replay R11 exists to refuse.
+    const rebound = { ...(proof as any), challengeId: "ch-here" };
+
+    const res = await request(coreServer)
+      .post("/api/v1/step-up/approve")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ challengeId: "ch-here", credentialId: "cred-anything", operation: "AUTOFILL", proof: rebound });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval proof rejected");
   });
 });

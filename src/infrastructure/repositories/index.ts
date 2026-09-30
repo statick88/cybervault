@@ -8,6 +8,11 @@ export {
   createReleaseShareStore,
   type ReleaseShareStoreEnv,
 } from "./release-share-store-factory";
+export {
+  createStepUpProofStores,
+  type StepUpProofStoreEnv,
+  type StepUpProofStores,
+} from "./step-up-proof-store-factory";
 
 // Tipos de repositorios para facilitar la inyección de dependencias
 export type {
@@ -16,4 +21,8 @@ export type {
   IVulnerabilityRepository,
   IReleaseShareStore,
   WrappedReleaseShare,
+  IStepUpApprovalChallengeStore,
+  IStepUpAuthenticatorStore,
+  StepUpApprovalChallenge,
+  StepUpAuthenticator,
 } from "../../domain/repositories";

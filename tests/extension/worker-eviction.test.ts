@@ -473,9 +473,19 @@ describe("R9 — what eviction actually does", () => {
     const challengeId = (started as { data: { challengeId: string } }).data.challengeId;
 
     // Plus accepts the approval once it considers the challenge completable —
-    // `plusHasCompletedStepUp` is that switch.
+    // `plusHasCompletedStepUp` is that switch. The R11 proof travels with it:
+    // the worker refuses an approval that has none.
     plusHasCompletedStepUp = true;
-    const approved = await dispatch({ type: "APPROVE_STEP_UP", challengeId });
+    const approved = await dispatch({
+      type: "APPROVE_STEP_UP",
+      challengeId,
+      proof: {
+        type: "passphrase",
+        challengeId,
+        approvalChallengeId: `ac-${challengeId}`,
+        value: "ab".repeat(64),
+      },
+    });
     expect(approved).toMatchObject({ ok: true, data: { verified: true } });
 
     calls.length = 0;

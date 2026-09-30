@@ -96,6 +96,31 @@ export async function getUserByEmail(email: string): Promise<StoredUser | undefi
   return entry?.user;
 }
 
+/**
+ * Look up the caller behind a verified access token (R11).
+ *
+ * The proof verification for `POST /api/v1/step-up/approve` needs the
+ * stored `hash`/`salt` of the AUTHENTICATED user — the token proves who is
+ * asking; this supplies the material the passphrase proof is checked
+ * against. Fails closed at the caller: an unknown userId is refused, never
+ * treated as "no proof required".
+ *
+ * The in-memory backend is keyed by email (the login shape), so a userId
+ * lookup scans — acceptable for the dev/test fallback it serves, where the
+ * map is small and approvals are rare.
+ */
+export async function getUserById(userId: string): Promise<StoredUser | undefined> {
+  const repo = getRepo();
+  if (repo) {
+    const user = await repo.findById(userId);
+    return user ?? undefined;
+  }
+  for (const entry of inMemoryStore.values()) {
+    if (entry.user.userId === userId) return entry.user;
+  }
+  return undefined;
+}
+
 export async function createUser(
   email: string,
   password: string,

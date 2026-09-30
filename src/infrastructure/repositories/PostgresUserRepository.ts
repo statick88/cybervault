@@ -41,6 +41,17 @@ export class PostgresUserRepository {
     return { userId: row.user_id, email: row.email, hash: row.hash, salt: row.salt };
   }
 
+  /** By primary key — what R11's proof verification needs for a token's userId. */
+  async findById(userId: string): Promise<StoredUser | null> {
+    const result = await this.pool.query(
+      "SELECT user_id, email, hash, salt FROM users WHERE user_id = $1",
+      [userId],
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return { userId: row.user_id, email: row.email, hash: row.hash, salt: row.salt };
+  }
+
   async create(user: StoredUser): Promise<void> {
     await this.pool.query(
       "INSERT INTO users (user_id, email, hash, salt) VALUES ($1, $2, $3, $4)",

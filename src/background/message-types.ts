@@ -17,6 +17,10 @@
  * @module background/message-types
  */
 
+// Type-only: the proof shape is shared with the popup (which builds one) and
+// the worker (which only forwards it). The module stays side-effect free.
+import type { StepUpProof } from "../infrastructure/crypto/step-up-proof";
+
 export const MESSAGE_TYPES = {
   /* AiTM / trust */
   VALIDATE_DOMAIN: "VALIDATE_DOMAIN",
@@ -217,13 +221,26 @@ export interface StartStepUpMessage {
 /**
  * The user approved the release a challenge was started for.
  *
- * Carries no secret. The whole point of R3 is that the third factor is the
- * user's decision, not something they know: Core signs the decision, so this
- * message carries only the challenge to approve.
+ * Carries no secret — but since R11 it carries the human-presence proof,
+ * computed by the popup (the context where the passphrase entry or the
+ * WebAuthn authenticator actually lives) and bound to this challenge. The
+ * proof is not a secret either: it is one-time material that Core verifies
+ * and immediately burns. What it proves is that a human at the popup — not
+ * a script holding only the bearer token — made this decision.
+ *
+ * The worker never computes it: a compromised worker sees only the finished
+ * proof, and Core refuses anything it cannot verify against its own stored
+ * challenge row.
  */
 export interface ApproveStepUpMessage {
   type: typeof MESSAGE_TYPES.APPROVE_STEP_UP;
   challengeId: string;
+  /**
+   * Required. Typed as required so every producer is forced to construct one
+   * at compile time; the worker still re-checks at runtime because messages
+   * arrive from an untyped chrome channel that a content script can forge.
+   */
+  proof: StepUpProof;
 }
 
 export type BackgroundMessage =

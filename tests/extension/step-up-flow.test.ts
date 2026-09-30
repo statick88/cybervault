@@ -397,7 +397,21 @@ describe("service-worker step-up handlers", () => {
 
   it("deletes a challenge once it is completed, so it cannot be replayed", () => {
     const b = body("handleApproveStepUp");
-    expect(b).toMatch(/if \(body\.success\) \{[\s\S]*?stepUpChallenges\.delete/);
+    // The success condition is a two-armed check: `success === true` for a Plus
+    // that wraps its payload, or a capability present for one that does not.
+    // Matching on either arm keeps this pinned to the behaviour rather than to
+    // one response shape.
+    expect(b).toMatch(
+      /if \(body\.success === true \|\| body\.capabilityToken !== undefined\) \{[\s\S]*?stepUpChallenges\.delete/,
+    );
+  });
+
+  it("never treats a 2xx with neither flag nor capability as a completion", () => {
+    // The other half of the same rule. Accepting a bare 200 would record a
+    // completion that never happened, which is worse than the bug it replaces:
+    // the user believes they approved a release that was refused.
+    const b = body("handleApproveStepUp");
+    expect(b).not.toMatch(/if \(res\.ok\) \{/);
   });
 
   it("deletes an expired challenge", () => {

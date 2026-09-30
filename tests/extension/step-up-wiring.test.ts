@@ -87,6 +87,9 @@ const calls: RecordedCall[] = [];
 /** "challenge" → Plus demands a third factor; "grant" → it issues a token. */
 let capabilityMode: "challenge" | "grant" = "challenge";
 let coreApproveFails = false;
+let approveSucceeds = true;
+/** Whether Plus wraps its approve payload in `{ success: true }`. */
+let withSuccessFlag = true;
 /** When true, Core's managed-release answers 500. */
 let coreFails = false;
 
@@ -133,7 +136,20 @@ globalThis.fetch = (async (input: unknown, init?: { method?: string; headers?: R
     return jsonResponse(200, { approval: { payload: { typ: "step-up-approval" }, signature: "sig", protectedHeader: "hdr" } });
   }
   if (url.endsWith("/api/v1/challenges/approve")) {
-    return jsonResponse(200, { success: true });
+    // Faithful to Plus: `sendSuccess` does not wrap its payload, so the real
+    // response carries the capability and a `success` flag, and a refusal
+    // carries neither. The old stub returned a bare `{ success: true }` with
+    // no capability, which is a shape Plus never produces — and the extension
+    // was reading that flag as the only signal.
+    if (!approveSucceeds) {
+      return jsonResponse(400, { error: "the approval was not accepted" });
+    }
+    // `withSuccessFlag` models the two shapes the client must both accept:
+    // today's Plus sends `success: true`, and a Plus whose `sendSuccess` does
+    // not wrap sends only the capability. Both have to record a completion.
+    return withSuccessFlag
+      ? jsonResponse(200, { success: true, capabilityToken: CAPABILITY_TOKEN })
+      : jsonResponse(200, { capabilityToken: CAPABILITY_TOKEN });
   }
   if (url.endsWith("/api/v1/challenges/verify")) {
     // Retired in R3. Kept as a 404 so any surviving caller fails loudly
@@ -501,6 +517,41 @@ describe("step-up senders reach Plus", () => {
     expect(approved.url).toBe(`${PLUS}/api/v1/challenges/approve`);
     expect(approved.headers.Authorization).toBe(`Bearer ${TOKEN}`);
     expect(Object.keys(approved.body ?? {}).sort()).toEqual(["approval", "challengeId"]);
+  });
+
+  it("records a completion when Plus answers with only a capability and no success flag", async () => {
+    // The regression this pins: a Plus whose `sendSuccess` does not wrap its
+    // payload sends `{ capabilityToken }` with no `success` flag, so reading
+    // that flag as the only signal reported every real approval as refused
+    // while the capability had been issued. Asserting on a stub that also sent
+    // `success: true` would have passed against the broken code, which is why
+    // the flag is switched OFF here.
+    approveSucceeds = true;
+    withSuccessFlag = false;
+    calls.length = 0;
+
+    const started = await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
+    const challengeId = (started.data as { challengeId?: string } | undefined)?.challengeId;
+
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: challengeId as string });
+
+    expect(reply).toEqual({ ok: true, data: { verified: true } });
+    withSuccessFlag = true;
+  });
+
+  it("refuses the approval when Plus answers without a capability", async () => {
+    // The other half: accepting a 2xx with nothing in it would record a
+    // completion that never happened, which is worse than the bug it replaces.
+    approveSucceeds = false;
+    calls.length = 0;
+
+    const started = await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
+    const challengeId = (started.data as { challengeId?: string } | undefined)?.challengeId;
+
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: challengeId as string });
+
+    expect(reply).toMatchObject({ ok: false, error: "the approval was not accepted" });
+    approveSucceeds = true;
   });
 
   it("never sends a PIN on the approve path", async () => {

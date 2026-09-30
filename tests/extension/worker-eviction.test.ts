@@ -5,19 +5,37 @@
  *
  * The threat model claimed eviction is "fail-closed: the user is asked to step
  * up again". That is a claim about behaviour, and nobody had tested it. The
- * gate in `handleReleaseCredential` reads:
+ * gate in `handleReleaseCredential` read:
  *
  *     if (challengedBindings.has(key)) { ...refuse unless completed... }
  *
  * An `if (has)` gate is a *remembering* gate. When the worker is evicted the
  * maps are empty, `has(key)` is false, and the block is skipped entirely — so
- * the first question is not "does the user step up again" but "does the gate
- * run at all".
+ * the first question was not "does the user step up again" but "does the gate
+ * run at all". It did not: the release went out with no step-up behind it and
+ * the only control still refusing was Plus. One service, not two.
+ *
+ * The fix moved the AUTHORITY out of worker memory. What decides whether a
+ * release may go through lives in `chrome.storage.session`, which eviction does
+ * not touch; worker memory keeps only the fast path — the part that may refuse
+ * early and may never allow. These four cases pin that shape:
+ *
+ *   1. worker intact, step-up unfinished → refused, and without a second
+ *      round trip the fast path exists to save;
+ *   2. after eviction → the release still ASKS Plus. A restarted worker must
+ *      not pretend to know the answer it no longer has;
+ *   3. after eviction, with Plus granting anyway → still refused, and refused
+ *      BY THE EXTENSION: a misbehaving or misconfigured Plus is precisely the
+ *      single point of failure R9 was filed about;
+ *   4. a step-up completed in this session → the retry goes through, because a
+ *      gate that only ever refuses is fail-closed and useless.
  *
  * A restarted module is the honest way to simulate eviction: fresh maps, no
  * leftover state, exactly what a 30-second idle timeout produces. The same
  * harness shape as step-up-wiring.test.ts, with a `jest.resetModules()` between
- * phases so the second phase gets a genuinely new module instance.
+ * phases so the second phase gets a genuinely new module instance. Session
+ * storage survives that restart on purpose — it is what the fix relies on, so
+ * moving the gate back into memory would break case 3 and nothing else.
  */
 
 import type { BackgroundMessage } from "../../src/background/message-types";
@@ -180,8 +198,11 @@ globalThis.fetch = (async (input: unknown, init?: { method?: string; headers?: R
     return json(200, { approval: { payload: {}, signature: "s", protectedHeader: "h" } });
   }
   if (url.endsWith("/api/v1/challenges/approve")) {
+    // `handleApproveStepUp` reads `success` off this body — the same contract
+    // step-up-wiring.test.ts stubs — so "Plus accepts the approval" and "Plus
+    // will issue capabilities" are one flag here, not two.
     return plusHasCompletedStepUp
-      ? json(200, { capabilityToken: CAPABILITY_TOKEN })
+      ? json(200, { success: true, capabilityToken: CAPABILITY_TOKEN })
       : json(400, { error: "no completed challenge" });
   }
   if (url.endsWith("/api/v1/crypto/public-key")) {
@@ -329,7 +350,7 @@ afterAll(() => {
 });
 
 describe("R9 — what eviction actually does", () => {
-  it("a gated release is refused while the worker remembers the challenge", async () => {
+  it("an unfinished step-up is refused, and refused without a second round trip", async () => {
     plusHasCompletedStepUp = false;
     calls.length = 0;
 
@@ -338,20 +359,23 @@ describe("R9 — what eviction actually does", () => {
     const first = await dispatch(releaseMessage());
     expect(first).toMatchObject({ ok: false, error: "CHALLENGE_REQUIRED" });
 
-    // Second attempt, same worker: now the gate has something to remember, and
-    // the release is still refused because nothing was completed.
+    // Second attempt, same worker: still refused because nothing was completed
+    // — and refused from memory, without spending the network call the fast
+    // path exists to save. It may say no on its own; it may never say yes.
     const second = await dispatch(releaseMessage());
     expect(second).toMatchObject({ ok: false, error: "CHALLENGE_REQUIRED" });
+    expect(callsTo("/api/v1/capabilities/request").length).toBe(1);
   });
 
-  it("after eviction the worker forgets, and the release is ATTEMPTED anyway", async () => {
+  it("after eviction the release still asks Plus instead of guessing", async () => {
     /* ---- Start from a worker that has NOT yet been challenged for this
-     * binding. Test 1 left `challengedBindings` populated in the shared module
-     * instance (both tests talk to the same `auditor`), so without this
-     * bootstrap the dispatch below is refused by the gate before a single byte
-     * leaves the extension, and the "reaches Plus" premise underneath it is
-     * false. The binding has to be learned first and forgotten afterwards —
-     * forgetting something that was never learned proves nothing. */
+     * binding. The case above left `challengedBindings` populated in the shared
+     * module instance (every case here talks to the same `auditor`), so without
+     * this bootstrap the dispatch below would be answered by the fast path
+     * before a single byte left the extension, and the "reaches Plus" premise
+     * underneath it would be false. The binding has to be learned first and
+     * forgotten afterwards — forgetting something that was never learned proves
+     * nothing. */
     jest.resetModules();
     (globalThis as unknown as { chrome: unknown }).chrome = undefined;
     installChrome();
@@ -367,7 +391,8 @@ describe("R9 — what eviction actually does", () => {
 
     /* ---- Simulate MV3 eviction: a genuinely fresh module instance. ----
      * `jest.resetModules()` plus a fresh import gives new `new Map()`s, which
-     * is exactly what a 30-second idle timeout produces. */
+     * is exactly what a 30-second idle timeout produces. Session storage
+     * survives it, on purpose. */
     jest.resetModules();
     (globalThis as unknown as { chrome: unknown }).chrome = undefined;
     installChrome();
@@ -377,39 +402,86 @@ describe("R9 — what eviction actually does", () => {
 
     const afterEviction = await dispatch(releaseMessage());
 
-    // The gate `if (challengedBindings.has(key))` is now FALSE, because the
-    // worker no longer remembers this release ever needed a step-up. So the
-    // block is skipped and the release is attempted with no challenge behind
-    // it at all.
+    // The in-memory fast path has nothing to say — the maps are empty — so the
+    // worker does not pretend to know a decision it no longer holds. It asks
+    // Plus, and Plus (as it must) re-derives the requirement and answers
+    // "challenge required". Only then does the extension record the binding as
+    // owed again, so the next attempt does not need a second call.
     //
-    // The threat model calls this fail-closed. It is not, at this layer: the
-    // guard is a remembering guard, and eviction erases the memory. The
-    // request to Plus still goes out, and Plus refuses it because there is no
-    // completed challenge — so the outcome is still a denial, but it comes
-    // from the network, not from the extension.
+    // What is pinned here is the ROUND TRIP: the answer may come from memory
+    // (refusing early), never instead of the decision it has no right to make.
     const askedPlus = callsTo("/api/v1/capabilities/request");
     expect(askedPlus.length).toBe(1);
     expect(afterEviction).toMatchObject({ ok: false, error: "CHALLENGE_REQUIRED" });
   });
 
-  it("so the denial survives only because Plus re-derives it, not because the extension gated it", async () => {
-    // This is the honest statement of where the guarantee lives. If Plus were
-    // to answer "granted" — which it must not without a completed challenge —
-    // the extension would have released the credential after eviction, having
-    // never gated this binding itself.
+  it("after eviction a granting Plus cannot release a binding this session gated", async () => {
+    /* Self-contained — and deliberately so: an earlier draft inherited the
+     * challenge recorded by the case above, which makes a case that only proves
+     * something when another case ran first. Challenge, evict, then let Plus
+     * grant: three phases, one case, no ordering dependency. */
     jest.resetModules();
     (globalThis as unknown as { chrome: unknown }).chrome = undefined;
     installChrome();
+
+    plusHasCompletedStepUp = false;
     calls.length = 0;
     await import("../../src/background/auditor");
 
-    plusHasCompletedStepUp = true; // simulate a Plus that grants
+    // 1. Plus demands a step-up, so this session records the binding as owed.
+    const owed = await dispatch(releaseMessage());
+    expect(owed).toMatchObject({ ok: false, error: "CHALLENGE_REQUIRED" });
 
+    // 2. Evict: fresh maps, nothing remembered in the worker. The gate itself
+    // must NOT be a casualty of that eviction — it lives in
+    // `chrome.storage.session`, which MV3 leaves untouched when the worker dies.
+    jest.resetModules();
+    (globalThis as unknown as { chrome: unknown }).chrome = undefined;
+    installChrome();
+
+    calls.length = 0;
+    await import("../../src/background/auditor");
+
+    // 3. Plus now grants — the misbehaving service R9 was filed about.
+    plusHasCompletedStepUp = true;
     const reply = await dispatch(releaseMessage());
 
-    // No step-up was ever completed in this worker, yet the release goes
-    // through. That is the fail-open the threat model denies.
-    expect(reply.ok).toBe(true);
+    // The extension refuses on its own authority. Plus decides what is OWED;
+    // the session decides what has been PAID; this binding was owed and never
+    // paid, so nothing is released — no matter what the network says.
+    expect(reply.ok).toBe(false);
+    expect(reply).toMatchObject({ error: "CHALLENGE_REQUIRED" });
+    expect(callsTo("/api/v1/capabilities/request").length).toBe(1);
+    expect(JSON.stringify(reply)).not.toContain(PASSWORD);
+  });
+
+  it("a step-up completed in this session releases on an immediate retry", async () => {
+    // A gate that only ever refuses would be fail-closed and useless. Run the
+    // real third-factor path — challenge, approval, completion — and check the
+    // retry goes through, with one round trip for the credential itself.
+    plusHasCompletedStepUp = false;
+    calls.length = 0;
+
+    const refused = await dispatch(releaseMessage());
+    expect(refused).toMatchObject({ ok: false, error: "CHALLENGE_REQUIRED" });
+
+    const started = await dispatch({
+      type: "START_STEP_UP",
+      binding: { credentialId: MANAGED_ID, origin: ORIGIN, operation: "AUTOFILL" },
+    });
+    expect(started.ok).toBe(true);
+    const challengeId = (started as { data: { challengeId: string } }).data.challengeId;
+
+    // Plus accepts the approval once it considers the challenge completable —
+    // `plusHasCompletedStepUp` is that switch.
+    plusHasCompletedStepUp = true;
+    const approved = await dispatch({ type: "APPROVE_STEP_UP", challengeId });
+    expect(approved).toMatchObject({ ok: true, data: { verified: true } });
+
+    calls.length = 0;
+    const released = await dispatch(releaseMessage());
+    expect(released.ok).toBe(true);
+    expect(released.data).toMatchObject({ username: "octocat", password: PASSWORD });
     expect(callsTo("/api/v1/capabilities/request").length).toBe(1);
   });
 });

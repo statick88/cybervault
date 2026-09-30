@@ -273,10 +273,14 @@ async function handleLockVault(
       "cybervault_session_key",
       "cybervault_unlock_time",
       "cybervault_unlock_state",
+      // The gate goes with the session that recorded it: a completion is an
+      // authorisation to spend key material, and this code already promises
+      // (below) that none of it outlives the lock.
+      STEP_UP_GATE_KEY,
     ]);
 
     // Confirm the VEK is actually gone rather than assuming the removal worked.
-    const remaining = await chrome.storage.session.get([STORE_KEYS.SESSION_VEK]);
+    const remaining = await chrome.storage.session.get([STORE_KEYS.SESSION_VEK, STEP_UP_GATE_KEY]);
     const stillPresent = typeof remaining[STORE_KEYS.SESSION_VEK] === "string";
 
     if (stillPresent) {
@@ -285,6 +289,14 @@ async function handleLockVault(
         "Auditor",
       );
       return { ok: false, error: "lock failed to clear session VEK" };
+    }
+
+    // Same verification for the gate: a removal that did not remove would
+    // leave a step-up completion spendable by whoever unlocks next, which is
+    // exactly what the line below refuses to promise.
+    if (STEP_UP_GATE_KEY in remaining) {
+      logger.error("Lock did not clear the step-up gate; a completion may survive the next unlock", "Auditor");
+      return { ok: false, error: "lock failed to clear step-up gate" };
     }
 
     // Key material is gone, so every in-flight third factor with it: a
@@ -667,13 +679,22 @@ async function isSessionUnlocked(): Promise<boolean> {
  * where it is read rather than by a timer the service worker could be asleep
  * for. Leaving the material in place until someone asks would make "locked" a
  * statement about the UI rather than about the key.
+ *
+ * The step-up gate goes with it: it was recorded against THIS unlock session,
+ * so a completion must not be spendable by whoever unlocks next — the same
+ * promise `handleLockVault` makes, kept for the expiry path too. Forgetting an
+ * "owed" entry here is safe because it is re-derived from Plus on the next
+ * release rather than carried forward as still true.
  */
 async function expireSessionKeyMaterial(): Promise<void> {
+  challengedBindings.clear();
+  completedStepUps.clear();
   await chrome.storage.session.remove([
     STORE_KEYS.SESSION_VEK,
     "cybervault_session_key",
     "cybervault_unlock_time",
     "cybervault_unlock_state",
+    STEP_UP_GATE_KEY,
   ]);
 }
 
@@ -982,12 +1003,18 @@ async function handleReleaseCredential(
     };
     const key = bindingKey(binding);
 
-    // A release whose policy demanded a third factor stays gated on that
-    // factor until it has been completed FOR THIS BINDING. `canRetryRelease`
-    // is the same check the domain module exists to enforce: a challenge
-    // satisfied for one credential, origin or operation never authorizes a
-    // different one, and a step-up that has not been completed authorizes
-    // nothing at all.
+    /* FAST PATH — a refusal this worker already knows how to give, without
+     * spending a round trip. Deny only: it may STOP a release, never START
+     * one, so forgetting it after an eviction can cost a question to Plus but
+     * can never authorise anything. That asymmetry is the whole point — while
+     * this `if` was the only gate, eviction emptied `challengedBindings`, the
+     * block was skipped, and the release went out with no step-up behind it
+     * (measured, not theorised: tests/extension/worker-eviction.test.ts).
+     *
+     * `canRetryRelease` is the check the domain module exists to enforce: a
+     * step-up satisfied for one credential, origin or operation never
+     * authorises a different one, and a step-up that has not been completed
+     * authorises nothing at all. */
     if (challengedBindings.has(key)) {
       const retry = canRetryRelease(completedStepUps.get(key) ?? null, binding);
       if (!retry.ok) {
@@ -1008,14 +1035,31 @@ async function handleReleaseCredential(
     );
 
     if (outcome.ok) {
-      // The step-up, when there was one, is spent by exactly this release.
-      challengedBindings.delete(key);
-      completedStepUps.delete(key);
+      /* AUTHORITATIVE CHECK — Plus's grant is necessary, not sufficient.
+       *
+       * Asked after the round trip, not before it. In front of the trip a
+       * restarted worker cannot tell "this binding owes a step-up" from "this
+       * worker has never heard of this binding" — both look like an empty map
+       * — so refusing from persisted state before asking would turn every
+       * post-eviction release into a refusal nobody questioned, and Plus's own
+       * answer (the other half of the two-service defence) would never be
+       * heard. Deny early, allow late: the cheap check may stop a release
+       * early, only the full path may start one. */
+      if (await sessionOwesStepUp(key, binding)) {
+        // Record it HERE too, so the next retry is refused by the fast path
+        // instead of buying another round trip to relearn the same answer.
+        await rememberChallenged(key, binding);
+        return { ok: false, error: "CHALLENGE_REQUIRED", data: { code: "CHALLENGE_REQUIRED" } };
+      }
+
+      // The step-up, when there was one, is spent by exactly this release —
+      // in memory and in the record an eviction would otherwise hand back.
+      await spendStepUp(key);
       return { ok: true, data: outcome.credential };
     }
 
     if (outcome.code === "CHALLENGE_REQUIRED") {
-      challengedBindings.set(key, binding);
+      await rememberChallenged(key, binding);
     }
 
     // Denials are a normal, expected outcome. The page receives the code so it
@@ -1040,6 +1084,10 @@ async function handleReleaseCredential(
  * storage access a handle on an in-flight third factor. A service-worker
  * restart drops the registry, which forces a new challenge — the safe direction
  * to fail.
+ *
+ * Note what is NOT covered by that argument: the GATE below (what is owed and
+ * what has been paid). Dropping an in-flight ceremony fails closed; dropping
+ * the gate fails open, which is the whole of R9.
  */
 const stepUpChallenges = new Map<string, { binding: StepUpBinding; expiresAt: number }>();
 
@@ -1050,10 +1098,14 @@ const stepUpChallenges = new Map<string, { binding: StepUpBinding; expiresAt: nu
  * waiting on one is what lets `handleReleaseCredential` refuse a retry that has
  * no completed step-up behind it, instead of spending a round trip to learn
  * what Plus would have said again.
+ *
+ * This map is the FAST PATH — what this worker remembers, consulted to refuse
+ * early. It is no longer the authority: eviction erases it, and R9 measured
+ * what that costs. The authority is `STEP_UP_GATE_KEY` in session storage.
  */
 const challengedBindings = new Map<string, StepUpBinding>();
 
-/** Completed step-ups, keyed by the binding they were completed for. */
+/** Completed step-ups, keyed by the binding they were completed for. Same split: fast path, not authority. */
 const completedStepUps = new Map<string, StepUpSession>();
 
 /**
@@ -1067,21 +1119,201 @@ function bindingKey(binding: StepUpBinding): string {
   return JSON.stringify([binding.credentialId, binding.origin, binding.operation]);
 }
 
+/* ------------------------------------------------------------------ */
+/*  The gate that survives an eviction (R9)                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Session storage key holding the gate: `challenged` and `completed`, keyed by
+ * `bindingKey`.
+ *
+ * WHY IT IS NOT ONLY IN MEMORY
+ * ----------------------------
+ * `challengedBindings` answers "does this release owe a step-up?". A gate held
+ * solely in worker memory is erased by the very lifecycle event the threat
+ * model claimed it survived: MV3 evicts the worker after ~30s idle, the map
+ * comes back empty, `has(key)` is false, and the block that refused the release
+ * never runs. The extension then has no gate at all — the denial a user still
+ * sees comes from Plus, i.e. one service instead of two.
+ *
+ * WHY `storage.session` AND NOT `storage.local`
+ * ---------------------------------------------
+ * 1. Content scripts cannot write it. `storage.session` is TRUSTED_CONTEXTS
+ *    unless someone widens it explicitly (see `keepStepUpGatePrivate`), while
+ *    `storage.local` is open to content scripts by default — and a compromised
+ *    page can drive its own content script, so `.local` would let a page
+ *    pre-mark a binding as completed and turn this fix into a bypass.
+ * 2. It is memory-only and cleared when the browser closes, so a completion
+ *    cannot outlive the session it was granted in.
+ * 3. The VEK lives in the same area: "the gate is unreadable" and "the vault
+ *    is locked" therefore cannot disagree about a release.
+ *
+ * NOT persisted: `stepUpChallenges`. An in-flight ceremony is not a gate
+ * decision; dropping it on eviction forces a new challenge, which is the safe
+ * direction for something that must never be replayed.
+ */
+const STEP_UP_GATE_KEY = "cybervault_stepup_gate";
+
+interface PersistedStepUpGate {
+  challenged: Record<string, StepUpBinding>;
+  completed: Record<string, StepUpSession>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Re-assert that nothing outside the trusted contexts can reach the gate.
+ *
+ * The default already is TRUSTED_CONTEXTS — that default is load-bearing, not
+ * incidental: it is what makes "the content script cannot write the gate" a
+ * property of the platform instead of a convention this codebase follows. This
+ * pins it, so a later `setAccessLevel(TRUSTED_AND_UNTRUSTED_CONTEXTS)` or a
+ * changed runtime default cannot silently hand `completed` to a page.
+ * A no-op where the runtime or a test double does not offer the API.
+ */
+function keepStepUpGatePrivate(): void {
+  try {
+    const area = chrome.storage?.session as
+      | { setAccessLevel?: (options: { accessLevel: "TRUSTED_CONTEXTS" }) => Promise<void> }
+      | undefined;
+    if (typeof area?.setAccessLevel !== "function") return;
+    void area.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
+  } catch {
+    // A runtime that refuses keeps its default, which is already trusted-only.
+    // Failing to harden must never be able to break the worker.
+  }
+}
+keepStepUpGatePrivate();
+
+/**
+ * Read the persisted gate. Never throws, never invents state.
+ *
+ * A record that is missing, malformed or unreadable reads as "nothing owed" —
+ * and that is not a hole, because the same storage area holds the VEK: an area
+ * we cannot read yields no key material either, so `releaseCredential` answers
+ * VAULT_LOCKED before anything could move. Swallowing here also keeps a storage
+ * outage from surfacing in the release path as an error code the page has no
+ * use for.
+ */
+async function readPersistedGate(): Promise<PersistedStepUpGate> {
+  try {
+    const stored = await chrome.storage.session.get([STEP_UP_GATE_KEY]);
+    const raw: unknown = stored[STEP_UP_GATE_KEY];
+    if (!isRecord(raw)) return { challenged: {}, completed: {} };
+    return {
+      // Only whole records are accepted. `canRetryRelease` re-checks the
+      // binding and the `completed` flag, so a half-written entry fails the
+      // gate rather than passing it.
+      challenged: isRecord(raw.challenged)
+        ? (raw.challenged as Record<string, StepUpBinding>)
+        : {},
+      completed: isRecord(raw.completed) ? (raw.completed as Record<string, StepUpSession>) : {},
+    };
+  } catch {
+    return { challenged: {}, completed: {} };
+  }
+}
+
+/** One writer at a time: concurrent releases would otherwise race the
+ *  read-modify-write below and drop each other's binding. */
+let stepUpGateWrite: Promise<void> = Promise.resolve();
+
+/**
+ * Read-modify-write one mutation into the persisted gate.
+ *
+ * Errors are swallowed on purpose: memory still gates THIS worker, so a failed
+ * persist can only cost the part of the gate that survives a restart. Failing
+ * the release the user is watching would trade a real refusal for a storage
+ * hiccup.
+ */
+function persistGateChange(change: (gate: PersistedStepUpGate) => void): Promise<void> {
+  const write = stepUpGateWrite.then(async () => {
+    try {
+      const gate = await readPersistedGate();
+      change(gate);
+      await chrome.storage.session.set({ [STEP_UP_GATE_KEY]: gate });
+    } catch (err) {
+      logger.warn("step-up gate could not be persisted", "Auditor", { error: String(err) });
+    }
+  });
+  stepUpGateWrite = write;
+  return write;
+}
+
+async function rememberChallenged(key: string, binding: StepUpBinding): Promise<void> {
+  challengedBindings.set(key, binding);
+  await persistGateChange((gate) => {
+    gate.challenged[key] = binding;
+  });
+}
+
+async function rememberCompleted(key: string, session: StepUpSession): Promise<void> {
+  completedStepUps.set(key, session);
+  await persistGateChange((gate) => {
+    gate.completed[key] = session;
+  });
+}
+
+/** One release spent both halves of the gate for this binding. */
+async function spendStepUp(key: string): Promise<void> {
+  challengedBindings.delete(key);
+  completedStepUps.delete(key);
+  await persistGateChange((gate) => {
+    delete gate.challenged[key];
+    delete gate.completed[key];
+  });
+}
+
+/**
+ * Does this browser session still owe a step-up for `binding`?
+ *
+ * Asked AFTER Plus has answered, and it can disagree with Plus: a grant from a
+ * Plus that is wrong, misconfigured or attacked is exactly the single point of
+ * failure R9 was filed about, so this session's own record of what it refused
+ * gets the last word. Memory is consulted when it knows the binding (it is
+ * already loaded, and it holds everything it ever wrote); otherwise the
+ * persisted record decides. A binding neither has ever seen owes nothing here —
+ * that release is Plus's call, as it always was.
+ */
+async function sessionOwesStepUp(key: string, binding: StepUpBinding): Promise<boolean> {
+  if (challengedBindings.has(key)) {
+    return !canRetryRelease(completedStepUps.get(key) ?? null, binding).ok;
+  }
+  const gate = await readPersistedGate();
+  const owed: StepUpBinding | undefined = gate.challenged[key];
+  if (!owed) return false;
+  const completed: StepUpSession | undefined = gate.completed[key];
+  return !canRetryRelease(completed ?? null, binding).ok;
+}
+
 /**
  * The bindings a step-up is still owed for.
  *
  * The content script that hit the denial is gone by the time the user reaches
  * the popup, so the worker is the only place that still knows which release
  * was refused. This hands that binding back so the popup can start a challenge
- * for it rather than inventing one.
+ * for it rather than inventing one — and it reads the persisted gate too, so an
+ * eviction between the denial and the popup opening does not silently drop the
+ * pending item the user was about to act on.
  */
 async function handleGetPendingStepUp(
   _msg: GetPendingStepUpMessage,
 ): Promise<BackgroundResponse> {
   try {
+    const gate = await readPersistedGate();
+    const challenged = new Map<string, StepUpBinding>(Object.entries(gate.challenged));
+    for (const [key, binding] of challengedBindings) challenged.set(key, binding);
+
+    const completed = new Set<string>([
+      ...Object.keys(gate.completed),
+      ...completedStepUps.keys(),
+    ]);
+
     const pending: StepUpBinding[] = [];
-    for (const [key, binding] of challengedBindings) {
-      if (!completedStepUps.has(key)) pending.push(binding);
+    for (const [key, binding] of challenged) {
+      if (!completed.has(key)) pending.push(binding);
     }
     return { ok: true, data: pending };
   } catch (err) {
@@ -1337,15 +1569,22 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
         return { ok: false, error: "the approval was not accepted" };
       }
 
-      const body = (await res.json()) as { success?: boolean };
+      const body = (await res.json()) as { success?: boolean; capabilityToken?: unknown };
 
-      if (body.success) {
+      // A 2xx alone is not treated as success: Plus's `sendSuccess` does not
+      // wrap every payload in `{ success: true }`, so a missing flag used to
+      // read as `undefined` and report a completed approval as refused. The
+      // capability itself is the real signal — an approve that issued nothing
+      // has not approved anything.
+      if (body.success === true || body.capabilityToken !== undefined) {
         // One-shot: a completed challenge cannot be replayed.
         stepUpChallenges.delete(msg.challengeId);
         // Record the completion against the binding the challenge was started
         // for, which is what `canRetryRelease` compares a later retry with.
-        // The session carries no secret — only the binding and the expiry.
-        completedStepUps.set(bindingKey(entry.binding), {
+        // The session carries no secret — only the binding and the expiry —
+        // and it is persisted because the retry it authorises has to survive
+        // an eviction as much as the refusal it answers does.
+        await rememberCompleted(bindingKey(entry.binding), {
           challengeId: msg.challengeId,
           binding: entry.binding,
           expiresAt: entry.expiresAt,

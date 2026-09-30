@@ -803,7 +803,14 @@ export class PlusApiServer {
         return;
       }
 
+      // `success: true` is explicit rather than implied by a 200. The
+      // extension's `handleApproveStepUp` decides whether to record a
+      // completion from this flag, and when it was absent the flag read
+      // `undefined` — so every real approval was reported back to the user as
+      // refused while the capability had in fact been issued. Every Jest stub
+      // returned `success: true`, which is why no test caught it.
       this.sendSuccess(res, 200, {
+        success: true,
         capabilityToken: result.capabilityToken,
       });
     } catch (error) {

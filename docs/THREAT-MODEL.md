@@ -316,57 +316,62 @@ Also noted: `Strict-Transport-Security` is emitted on every response
 plain-HTTP dev responses, where browsers ignore it. Harmless, but it means the
 header's presence proves nothing about how the response arrived.
 
-### R9 — MV3 worker eviction fails OPEN at the extension layer (Medium, was Low)
+### R9 — RESOLVED — the step-up gate did not survive MV3 eviction (was Medium; filed as Low)
 
-This entry previously read "fail-closed: the user is asked to step up
-again". That was a claim about behaviour. It has now been measured, and at
-the layer the claim named, it is false.
+The entry used to claim eviction was "fail-closed: the user is asked to step up
+again". That was a claim about behaviour nobody had tested, and at the layer it
+named it was false.
 
-Step-up state (`stepUpChallenges`, `challengedBindings`, `completedStepUps` —
-`src/background/auditor.ts:1044`, `:1054`, `:1057`) lives in worker memory.
-The gate that enforces the step-up is:
+The gate in `handleReleaseCredential` read:
 
     if (challengedBindings.has(key)) { ...refuse unless completed... }
 
 (`src/background/auditor.ts:991`)
 
-That is a **remembering** guard. After eviction the map is empty, `has(key)`
-is false, and the block is skipped entirely — so the question is not "does the
-user step up again" but "does the guard run at all". It does not.
+That is a **remembering** guard. After eviction the map is empty, `has(key)` is
+false, and the block is skipped entirely — so the question was not "does the
+user step up again" but "does the guard run at all". It did not.
 
-Measured, in `tests/extension/worker-eviction.test.ts`:
-
-1. Worker still remembering: release refused, `CHALLENGE_REQUIRED`.
-2. After a simulated eviction (module restart, fresh maps): the release is
-   **attempted anyway** — one call to `/capabilities/request` with no
-   challenge behind it.
-3. When Plus answers "granted" after that eviction, the release
-   **succeeds**. No step-up was ever completed, and the credential is
-   released.
-
-*What is actually true.* The extension's guarantee is "at most one step-up per
-worker lifetime", not "at most one step-up". After eviction there is no
-extension-side guarantee at all. The denial a user still sees comes from Plus
-refusing a capability request that has no completed challenge behind it — a
-network control, not a local one. The two-service defence becomes a
-one-service defence, and the surviving service is the one holding a
+Measured in `tests/extension/worker-eviction.test.ts`: guarded while memory was
+intact, attempted after eviction, and — with Plus answering "granted" — released
+with no step-up ever completed. The denial a user still saw came from Plus
+refusing a capability request, so the two-service defence had quietly become a
+one-service defence, and the survivor was the one holding the
 capability-issuing key.
 
-*Why it is Medium and not High.* In the shipped configuration Plus does refuse,
-so the user-visible outcome is still a denial. The exposure is what happens
-when that one remaining control is wrong, misconfigured, or attacked — at which
-point there is nothing behind it. It is a single point of failure created by a
-lifecycle event, not an exploitable condition.
+*Resolution* (`4a3f89d`). The extension no longer remembers whether a release
+needed a step-up in order to decide whether to gate it. Authority is split by
+who decides what:
 
-*To close it* the extension must not depend on memory for a security decision.
-Either the gate becomes unconditional — every managed release calls Plus, and
-Plus is the sole authority on whether a step-up exists, with the extension
-treating "challengeRequired" as the only gate — or the decision moves into
-`chrome.storage.session`, which survives eviction, and the record is one the
-user cannot forge from the content-script side.
+- **Plus is the authority on what is *owed*.** It is consulted for every
+  release and answers `challengeRequired` for an incomplete step-up.
+- **The session is the authority on what has been *paid*.** A completion is
+  recorded in `chrome.storage.session`, and a release requires both.
+- The in-memory map keeps only a fast path that **may refuse early and may
+  never allow**.
 
-Note this compounds **R11**: the approval that R3 introduced is signed and
-single-use, but the extension's decision to *ask for* it is not durable.
+Neither pure option works, and the reasons are worth keeping:
+
+- "Let Plus be the only authority" fails on the granting-Plus case — if Plus
+  says yes, the release goes through, which is the defect itself.
+- "Deny from persisted state before the round trip" fails the case that must
+  still reach Plus, because after eviction the persisted state is identical
+  whether a challenge was ever started.
+
+`chrome.storage.session` rather than `.local`, deliberately: session storage is
+`TRUSTED_CONTEXTS` by default, so a content script cannot write it. A page able
+to pre-mark its own binding as completed would make the persistence worthless.
+Locking the vault removes the gate key and then **verifies** the removal,
+refusing to report a successful lock if the key survived.
+
+Bindings never challenged in a session remain Plus's decision, so the
+assurance-2 path and production behaviour are unchanged. Cost is one extra
+`storage.session` read per successful release; the round-trip count is
+unchanged.
+
+*Residual:* the gate trusts `chrome.storage.session` to be un-writable from a
+content script. That is a platform guarantee this project does not control and
+does not test. A page that could write it would restore the original defect.
 
 ### R10 — Extension defaults and Compose ports disagree (Low, operational)
 

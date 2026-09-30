@@ -557,8 +557,15 @@ async function handleGetPlusPublicKey(
   _msg: GetPlusPublicKeyMessage,
 ): Promise<BackgroundResponse> {
   try {
-    const plusConfig = await chrome.storage.local.get(["plus_base_url"]);
+    const plusConfig = await chrome.storage.local.get([
+      "plus_base_url",
+      "plus_service_secret",
+    ]);
     const baseUrl = plusConfig["plus_base_url"] || "http://localhost:3011";
+    // D1: R1 put the signing-key route behind the secret too, and this call
+    // sent nothing, so fetching Plus's public key has been failing with 401
+    // since. Found by checking every call site rather than the two I expected.
+    const serviceSecret = (plusConfig["plus_service_secret"] as string) || "";
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -566,6 +573,7 @@ async function handleGetPlusPublicKey(
     try {
       const response = await fetch(`${baseUrl}/api/v1/crypto/public-key`, {
         method: "GET",
+        headers: { "X-Service-Secret": serviceSecret },
         signal: controller.signal,
       });
 
@@ -1132,6 +1140,13 @@ async function triggerPlusChallenge(input: {
   secretRef: string;
   token: string;
   userId: string;
+  /**
+   * D1: R1 made every non-probe Plus route require `X-Service-Secret`, and
+   * this call sends only `X-Core-Service` — so it returns 401 and the whole
+   * step-up is dead. The two capability calls in this file already send the
+   * secret; these two were simply missed.
+   */
+  serviceSecret: string;
 }): Promise<ChallengeTriggerResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
@@ -1141,6 +1156,7 @@ async function triggerPlusChallenge(input: {
       headers: {
         "Content-Type": "application/json",
         "X-Core-Service": "cybervault-core",
+        "X-Service-Secret": input.serviceSecret,
         Authorization: `Bearer ${input.token}`,
       },
       body: JSON.stringify({
@@ -1198,12 +1214,20 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
     const auth = await chrome.storage.local.get([
       "cybervault_token",
       "cybervault_userId",
+      "plus_service_secret",
     ]);
     const token = auth["cybervault_token"] as string | undefined;
     const userId = auth["cybervault_userId"] as string | undefined;
     if (!token || !userId) return { ok: false, error: "not authenticated" };
+    const serviceSecret = (auth["plus_service_secret"] as string) || "";
 
-    const triggered = await triggerPlusChallenge({ binding, secretRef, token, userId });
+    const triggered = await triggerPlusChallenge({
+      binding,
+      secretRef,
+      token,
+      userId,
+      serviceSecret,
+    });
     if (!triggered.ok) {
       return triggered;
     }
@@ -1237,9 +1261,14 @@ async function handleSubmitStepUpPin(msg: SubmitStepUpPinMessage): Promise<Backg
       return { ok: false, error: "the PIN was not accepted" };
     }
 
-    const auth = await chrome.storage.local.get(["cybervault_token"]);
+    const auth = await chrome.storage.local.get([
+      "cybervault_token",
+      "plus_service_secret",
+    ]);
     const token = auth["cybervault_token"] as string | undefined;
     if (!token) return { ok: false, error: "not authenticated" };
+    // D1: same missing header as `triggerPlusChallenge`.
+    const serviceSecret = (auth["plus_service_secret"] as string) || "";
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
@@ -1249,6 +1278,7 @@ async function handleSubmitStepUpPin(msg: SubmitStepUpPinMessage): Promise<Backg
         headers: {
           "Content-Type": "application/json",
           "X-Core-Service": "cybervault-core",
+          "X-Service-Secret": serviceSecret,
           Authorization: `Bearer ${token}`,
         },
         // msg.pin is forwarded and never stored, logged or attached to the

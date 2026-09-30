@@ -368,6 +368,66 @@ describe("REQUEST_RELEASE_SHARE speaks Core's managed-release contract", () => {
   });
 });
 
+describe("D1 — every Plus call presents the service secret (R1 regression)", () => {
+  /**
+   * R1 put every non-probe Plus route behind `X-Service-Secret`. Four call
+   * sites existed; two sent the header and two did not, so the step-up and
+   * the public-key fetch returned 401 and managed release was dead in the
+   * real extension. The stubs above answer 200 unconditionally, which is
+   * exactly why the suite stayed green through it.
+   *
+   * Each case performs its own dispatch and inspects only the calls that
+   * dispatch produced, so ordering between describes cannot matter.
+   */
+  const PLUS_SECRET = "svc-secret";
+
+  it("presents the secret when asking for a capability", async () => {
+    // `RELEASE_CREDENTIAL` is the path that actually calls
+    // `/capabilities/request`; `REQUEST_RELEASE_SHARE` carries a capability
+    // the caller already holds and never asks Plus for one.
+    calls.length = 0;
+    capabilityMode = "grant";
+
+    const reply = await dispatch(releaseMessage(AUTOFILL_BINDING));
+    void reply;
+
+    const call = callsTo("/api/v1/capabilities/request").at(-1);
+    expect(call).toBeDefined();
+    expect(call!.headers["X-Service-Secret"]).toBe(PLUS_SECRET);
+  });
+
+  it("presents the secret when triggering a challenge", async () => {
+    calls.length = 0;
+
+    const reply = await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
+    void reply;
+
+    const call = callsTo("/api/v1/challenges/trigger").at(-1);
+    expect(call).toBeDefined();
+    expect(call!.headers["X-Service-Secret"]).toBe(PLUS_SECRET);
+  });
+
+  it("presents the secret when verifying a challenge", async () => {
+    calls.length = 0;
+
+    const started = await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
+    const challengeId = (started.data as { challengeId?: string } | undefined)?.challengeId;
+    expect(challengeId).toBeDefined();
+    calls.length = 0;
+
+    const reply = await dispatch({
+      type: "SUBMIT_STEP_UP_PIN",
+      challengeId: challengeId as string,
+      pin: "123456",
+    });
+    void reply;
+
+    const call = callsTo("/api/v1/challenges/verify").at(-1);
+    expect(call).toBeDefined();
+    expect(call!.headers["X-Service-Secret"]).toBe(PLUS_SECRET);
+  });
+});
+
 describe("step-up senders reach Plus", () => {
   it("START_STEP_UP triggers a challenge bound to the requested binding", async () => {
     calls.length = 0;

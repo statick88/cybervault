@@ -320,10 +320,20 @@ let emailService: RecordingEmailService;
 let server: Server | undefined;
 let base: string;
 
+/**
+ * R1: every route except /health and /ready now requires the service secret,
+ * so the caller has to present the same value the extension sends. The default
+ * matches PLUS_CONFIG.serviceSecret when PLUS_SERVICE_SECRET is unset.
+ */
+const SERVICE_SECRET = process.env.PLUS_SERVICE_SECRET || "dev-secret-change-in-production";
+
 async function post(path: string, body: unknown): Promise<{ status: number; body: any }> {
   const response = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Service-Secret": SERVICE_SECRET,
+    },
     body: JSON.stringify(body),
   });
   let parsed: any = null;
@@ -336,7 +346,9 @@ async function post(path: string, body: unknown): Promise<{ status: number; body
 }
 
 async function get(path: string): Promise<{ status: number; body: any }> {
-  const response = await fetch(`${base}${path}`);
+  const response = await fetch(`${base}${path}`, {
+    headers: { "X-Service-Secret": SERVICE_SECRET },
+  });
   return { status: response.status, body: await response.json() };
 }
 
@@ -717,5 +729,96 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
     expect(spoofed.status).toBe(403);
     expect(spoofed.body.error).toBe("Challenge not satisfied");
     expect(spoofed.body.capabilityToken).toBeUndefined();
+  });
+});
+
+/* ==========================================================================
+ * R1 — the service secret and the rate limit are now real
+ * ========================================================================== */
+
+describe("R1 — authentication and rate limiting", () => {
+  const raw = (path: string, method: string, headers: Record<string, string>) =>
+    fetch(`${base}${path}`, { method, headers });
+
+  it("leaves /health and /ready open, because a probe carries no credential", async () => {
+    for (const probe of ["/health", "/ready"]) {
+      const res = await raw(probe, "GET", {});
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("refuses a request with no X-Service-Secret at all", async () => {
+    const res = await raw(
+      "/api/v1/entitlements/check",
+      "POST",
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("Missing X-Service-Secret");
+  });
+
+  it("refuses a wrong secret without echoing it back", async () => {
+    const res = await raw(
+      "/api/v1/entitlements/check",
+      "POST",
+      { "Content-Type": "application/json", "X-Service-Secret": "guess" },
+    );
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe("Invalid X-Service-Secret");
+    expect(JSON.stringify(body)).not.toContain("guess");
+    expect(JSON.stringify(body)).not.toContain(SERVICE_SECRET);
+  });
+
+  it("refuses every credential-minting route when unauthenticated", async () => {
+    const routes = [
+      "/api/v1/capabilities/request",
+      "/api/v1/entitlements/check",
+      "/api/v1/challenges/trigger",
+      "/api/v1/challenges/verify",
+      "/api/v1/audit",
+    ];
+
+    for (const route of routes) {
+      const res = await raw(route, "POST", { "Content-Type": "application/json" });
+      expect(`${route} ${res.status}`).toBe(`${route} 401`);
+    }
+  });
+
+  it("refuses the public-key route too — it is not merely informational", async () => {
+    // Serving the signing key to any origin is how an attacker learns the key
+    // Core pins, so it is behind the same secret as the routes that use it.
+    const res = await raw("/api/v1/crypto/public-key", "GET", {});
+
+    expect(res.status).toBe(401);
+  });
+
+  it("still serves an authenticated request", async () => {
+    const res = await raw("/api/v1/crypto/public-key", "GET", {
+      "X-Service-Secret": SERVICE_SECRET,
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).publicKey).toEqual(expect.any(String));
+  });
+
+  it("rate-limits instead of accepting unbounded traffic", async () => {
+    // The limit is 60 per minute per IP; loopback is a single IP here.
+    const seen: number[] = [];
+    for (let i = 0; i < 75; i++) {
+      const res = await raw("/api/v1/crypto/public-key", "GET", {
+        "X-Service-Secret": SERVICE_SECRET,
+      });
+      seen.push(res.status);
+      if (res.status === 429) {
+        expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
+        break;
+      }
+    }
+
+    expect(seen).toContain(429);
+    expect(seen.filter((s) => s === 200).length).toBe(60);
   });
 });

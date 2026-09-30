@@ -14,6 +14,7 @@ import type { Server, IncomingMessage, ServerResponse } from "http";
 import { createServer } from "http";
 import { createServer as createHttpsServer } from "https";
 import { readFileSync } from "fs";
+import { timingSafeEqual } from "crypto";
 import { resolve } from "path";
 import { logger } from "@/shared/logger";
 import { metrics } from "@/shared/metrics";
@@ -112,8 +113,23 @@ const PLUS_CONFIG = {
   challengeBaseUrl: process.env.PLUS_CHALLENGE_BASE_URL || "http://localhost:3001",
 };
 
+/**
+ * Rate limit for the credential-minting endpoints, per client IP.
+ * R1: `checkRateLimitOrError` was a stub returning `true`, so capability
+ * issuance and challenge creation accepted unlimited traffic.
+ */
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 60;
+/** Cap on tracked IPs before an opportunistic sweep runs. */
+const RATE_LIMIT_MAX_IPS = 10_000;
+
+
 export class PlusApiServer {
   private activeConnections = 0;
+  /** Per-IP sliding window of request timestamps. See `checkRateLimitOrError`. */
+  private rateLimitHits = new Map<string, number[]>();
+  /** Exact-match browser origin allow-list. Empty means no browser is allowed. */
+  private readonly allowedOrigins: string[];
   private capabilityIssuer: ReturnType<typeof import("../domain/services/capability-issuer").getCapabilityIssuer>;
   private challengeService: ReturnType<typeof import("../domain/services/challenge").getChallengeService>;
   private riskEngine: ReturnType<typeof import("../domain/services/risk-engine").getRiskEngine>;
@@ -132,6 +148,10 @@ export class PlusApiServer {
     this.entitlementRepo = entitlementRepo;
     this.userRepo = userRepo;
     this.emailService = emailService || new NoOpEmailService();
+    this.allowedOrigins = (process.env.PLUS_ALLOWED_ORIGINS || "")
+      .split(",")
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0);
 
     // Initialize services.
     //
@@ -233,9 +253,88 @@ export class PlusApiServer {
     return { startTime, url };
   }
 
-  private checkRateLimitOrError(res: ServerResponse, ip: string): boolean {
-    // Simple in-memory rate limiting (production would use Redis)
+  /**
+   * R1: `routeRequest` had no auth step at all. `PLUS_SERVICE_SECRET` was
+   * declared in the config and the extension sent it as `X-Service-Secret`,
+   * but nothing ever compared the two — so any anonymous caller could drive
+   * challenge creation, probe entitlements for an arbitrary `userId`, and
+   * attempt PIN verification.
+   *
+   * `/health` and `/ready` stay open because a readiness probe has no business
+   * carrying a service credential. Everything else requires the secret.
+   *
+   * Compared in constant time: a byte-wise comparison leaks the length and the
+   * matching prefix of the secret through response timing.
+   */
+  private authenticateServiceRequest(req: IncomingMessage, res: ServerResponse): boolean {
+    const presented = req.headers["x-service-secret"];
+    const expected = PLUS_CONFIG.serviceSecret;
+
+    if (typeof presented !== "string" || presented.length === 0) {
+      this.sendError(res, 401, "Missing X-Service-Secret");
+      return false;
+    }
+
+    const a = Buffer.from(presented);
+    const b = Buffer.from(expected);
+    // timingSafeEqual throws on a length mismatch, so reject first.
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      this.sendError(res, 401, "Invalid X-Service-Secret");
+      return false;
+    }
+
     return true;
+  }
+
+  /**
+   * Real per-IP fixed-window limit. This was a stub returning `true`, so the
+   * endpoints that mint capabilities and challenges — the expensive, abusable
+   * ones — accepted unlimited traffic from a single caller.
+   *
+   * In-process, and therefore per-replica. Documented in the threat model as
+   * R7: behind more than one Plus instance the effective limit multiplies.
+   */
+  /**
+   * R1 follow-up: the allow-list for browser origins.
+   *
+   * Chrome extensions send `Origin: chrome-extension://<id>`, so the id must
+   * be configured. `PLUS_ALLOWED_ORIGINS` is a comma-separated list; entries
+   * are matched exactly, never by suffix, so `evil.com` cannot be admitted by
+   * listing `example.com`. An unset value admits nothing, which fails closed
+   * — a native caller such as the service worker is unaffected by CORS.
+   */
+  private isAllowedOrigin(origin: string): boolean {
+    if (this.allowedOrigins.length === 0) return false;
+    return this.allowedOrigins.includes(origin);
+  }
+
+  private checkRateLimitOrError(res: ServerResponse, ip: string): boolean {
+    const now = Date.now();
+    const windowMs = RATE_LIMIT_WINDOW_MS;
+    const hits = (this.rateLimitHits.get(ip) ?? []).filter((t) => now - t < windowMs);
+
+    if (hits.length >= RATE_LIMIT_MAX) {
+      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - hits[0])) / 1000));
+      res.setHeader("Retry-After", String(retryAfterSec));
+      this.sendError(res, 429, "Rate limit exceeded");
+      return false;
+    }
+
+    hits.push(now);
+    this.rateLimitHits.set(ip, hits);
+
+    // Opportunistic sweep so an attacker rotating IPs cannot grow the map
+    // without bound for the lifetime of the process.
+    if (this.rateLimitHits.size > RATE_LIMIT_MAX_IPS) this.sweepRateLimit(now);
+    return true;
+  }
+
+  private sweepRateLimit(now: number): void {
+    for (const [ip, hits] of this.rateLimitHits) {
+      if (hits.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) {
+        this.rateLimitHits.delete(ip);
+      }
+    }
   }
 
   private async handleHealth(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -257,7 +356,6 @@ export class PlusApiServer {
       riskEngine: "ok",
     };
     const allReady = Object.values(checks).every((v) => v === "ok");
-
     res.writeHead(allReady ? 200 : 503, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -753,10 +851,18 @@ export class PlusApiServer {
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("X-XSS-Protection", "1; mode=block");
 
-    // CORS
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // CORS. The wildcard was wrong twice over now that R1 is fixed: the
+    // extension authenticates with `X-Service-Secret`, so an origin allow-list
+    // is required for a browser to be able to send it at all, and echoing an
+    // arbitrary origin is what turns a same-origin API into a callable one
+    // from anywhere. No header is emitted for an origin that is not configured.
+    const origin = req.headers.origin;
+    if (typeof origin === "string" && this.isAllowedOrigin(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Service-Secret");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -789,6 +895,13 @@ export class PlusApiServer {
   }
 
   private async routeRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    // R1: the only two unauthenticated routes are the probes. Everything else
+    // requires the service secret the extension already sends.
+    const isProbe = url.pathname === "/health" || url.pathname === "/ready";
+    if (!isProbe && !this.authenticateServiceRequest(req, res)) {
+      return;
+    }
+
     switch (url.pathname) {
       case "/health":
         await this.handleHealth(req, res);

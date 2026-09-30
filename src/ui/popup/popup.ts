@@ -120,7 +120,7 @@ const optionsLink = $<HTMLAnchorElement>("#options-link");
 // Step-up (third factor)
 const stepUpPanel = $<HTMLDivElement>("#step-up-panel");
 const stepUpStatus = $<HTMLParagraphElement>("#step-up-status");
-const stepUpPin = $<HTMLInputElement>("#step-up-pin");
+const stepUpDetail = $<HTMLParagraphElement>("#step-up-detail");
 const stepUpSubmit = $<HTMLButtonElement>("#step-up-submit");
 const stepUpDismiss = $<HTMLButtonElement>("#step-up-dismiss");
 const stepUpError = $<HTMLParagraphElement>("#step-up-error");
@@ -618,8 +618,8 @@ async function saveCredentialsEncrypted(): Promise<void> {
 /*  and remembers WHICH release it refused. The content script that hit */
 /*  the denial is gone by the time the user opens the popup, so the     */
 /*  popup is the only place left to finish the flow: read the pending   */
-/*  binding, start a challenge for it, collect the PIN, submit it.      */
-/*  Without a sender here, START_STEP_UP and SUBMIT_STEP_UP_PIN were    */
+/*  binding, start a challenge for it, and take the user's approval.  */
+/*  Without a sender here, START_STEP_UP and APPROVE_STEP_UP were      */
 /*  route cases nothing ever reached.                                   */
 /* ------------------------------------------------------------------ */
 
@@ -635,7 +635,9 @@ function showStepUp(status: string): void {
 
 function hideStepUp(): void {
   stepUpPanel.hidden = true;
-  stepUpPin.value = "";
+  // R3: the panel no longer holds a secret, so there is nothing to clear. The
+  // PIN it used to collect was never a secret the user possessed either.
+  stepUpDetail.textContent = "";
 }
 
 async function checkPendingStepUp(): Promise<void> {
@@ -665,31 +667,39 @@ async function checkPendingStepUp(): Promise<void> {
   }
 
   pendingChallengeId = started.data.challengeId;
-  stepUpStatus.textContent = "Enter the PIN you received to release this credential.";
+  // R3: tell the user exactly what they are authorising. They are the one
+  // approving, so the site and the operation are the whole point of the
+  // prompt — a generic "confirm?" would make a blind click indistinguishable
+  // from a deliberate one.
+  stepUpStatus.textContent = "Approve releasing this credential to the site below?";
+  stepUpDetail.textContent = `${binding.origin} · ${binding.operation}`;
   stepUpSubmit.disabled = false;
 }
 
 async function handleSubmitStepUp(): Promise<void> {
-  const pin = stepUpPin.value.trim();
-  if (!pin || !pendingChallengeId) {
-    stepUpError.textContent = "Enter the PIN from the challenge message.";
+  if (!pendingChallengeId) {
+    stepUpError.textContent = "There is no pending approval.";
     stepUpError.hidden = false;
     return;
   }
 
   stepUpSubmit.disabled = true;
   try {
-    const verified = await sendMessage({ type: "SUBMIT_STEP_UP_PIN", challengeId: pendingChallengeId, pin });
+    // No secret is sent. The message carries the challenge to approve, and the
+    // background obtains Core's signature for it.
+    const verified = await sendMessage({ type: "APPROVE_STEP_UP", challengeId: pendingChallengeId });
     if (!verified.ok) {
-      stepUpError.textContent = verified.error ?? "the PIN was not accepted";
+      stepUpError.textContent = verified.error ?? "the approval was not accepted";
       stepUpError.hidden = false;
+      // A refused approval leaves the challenge open, so the user can retry
+      // without re-triggering from scratch.
       return;
     }
 
     pendingChallengeId = null;
     pendingBinding = null;
-    stepUpStatus.textContent = "Verified. Retry the fill to release the credential.";
-    stepUpPin.value = "";
+    stepUpStatus.textContent = "Approved. Retry the fill to release the credential.";
+    stepUpDetail.textContent = "";
   } finally {
     stepUpSubmit.disabled = false;
   }
@@ -732,9 +742,6 @@ addBtn.addEventListener("click", showAddForm);
 addCancel.addEventListener("click", hideAddForm);
 addSave.addEventListener("click", handleAddCredential);
 stepUpSubmit.addEventListener("click", handleSubmitStepUp);
-stepUpPin.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") handleSubmitStepUp();
-});
 stepUpDismiss.addEventListener("click", handleDismissStepUp);
 optionsLink.addEventListener("click", (e) => {
   e.preventDefault();

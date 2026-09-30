@@ -230,15 +230,32 @@ describe("PlusBridge", () => {
         json: () => Promise.resolve(mockResponse),
       });
 
-      const result = await bridge.verifyChallenge("challenge-123", "123456", "device-xyz");
+      // R3: no PIN. The caller forwards Core's signed approval, and Plus
+      // verifies it against its pinned key.
+      const approval = {
+        payload: { typ: "step-up-approval", challengeId: "challenge-123" },
+        signature: "sig",
+        protectedHeader: "header",
+      };
+
+      const result = await bridge.submitApproval("challenge-123", approval as never, "device-xyz");
 
       expect(global.fetch).toHaveBeenCalledWith(
-        "http://plus:3001/api/v1/challenges/verify",
+        "http://plus:3001/api/v1/challenges/approve",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ challengeId: "challenge-123", pin: "123456", deviceId: "device-xyz" }),
+          body: JSON.stringify({
+            challengeId: "challenge-123",
+            approval,
+            deviceId: "device-xyz",
+          }),
         }),
       );
+      // The body must not carry a PIN field, whatever else changes.
+      const body = JSON.parse(
+        (global.fetch as jest.Mock).mock.calls[0][1].body as string,
+      );
+      expect(body).not.toHaveProperty("pin");
       expect(result.capabilityToken).toBeDefined();
     });
   });

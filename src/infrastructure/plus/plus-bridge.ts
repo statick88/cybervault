@@ -7,6 +7,7 @@
 
 import type { CapabilityPayload } from "../crypto/ed25519-capability";
 import type { CapabilityOperation } from "../crypto/ed25519-capability";
+import type { SignedApproval } from "../crypto/ed25519-approval";
 import { logger } from "../../shared/logger";
 
 export interface PlusConfig {
@@ -188,22 +189,28 @@ export class PlusBridge {
 
   /**
    * Trigger a step-up challenge via Plus
-   * Plus creates challenge, sends email/PIN, returns challenge ID
+   *
+   * R3: this creates the challenge and returns its id. It no longer sends
+   * anything to the user — there is no PIN, and the third factor is now the
+   * user's approval, carried by `submitApproval`.
    */
   async triggerChallenge(request: ChallengeTriggerRequest): Promise<ChallengeTriggerResponse> {
     return this.request<ChallengeTriggerResponse>("/api/v1/challenges/trigger", "POST", request);
   }
 
   /**
-   * Verify a challenge response (PIN)
-   * Called by Core after user submits PIN via extension
+   * Submit Core's signed approval so Plus can issue the capability.
+   *
+   * Replaces `verifyChallenge(challengeId, pin)`. Plus verifies the approval
+   * against its pinned Core public key; it is never given a public key from
+   * the caller. No secret travels on this call — the approval IS the proof.
    */
-  async verifyChallenge(challengeId: string, pin: string, deviceId?: string): Promise<{
+  async submitApproval(challengeId: string, approval: SignedApproval, deviceId?: string): Promise<{
     success: boolean;
     capabilityToken?: CapabilityResponse["capabilityToken"];
     error?: string;
   }> {
-    return this.request("/api/v1/challenges/verify", "POST", { challengeId, pin, deviceId });
+    return this.request("/api/v1/challenges/approve", "POST", { challengeId, approval, deviceId });
   }
 
   /**

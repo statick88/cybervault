@@ -2,7 +2,7 @@
  * Step-up wiring and the managed-release round trip (service-worker side).
  *
  * WU-3 makes two dormant paths reachable: the third-factor senders the popup
- * drives (`START_STEP_UP`, `SUBMIT_STEP_UP_PIN`, `GET_PENDING_STEP_UP`) and the
+ * drives (`START_STEP_UP`, `APPROVE_STEP_UP`, `GET_PENDING_STEP_UP`) and the
  * managed release call. Both are pure HTTP contracts, so the only honest way
  * to test them is to stand in for the two servers and inspect what the worker
  * actually sends — a source assertion cannot tell a URL from a comment, and
@@ -86,6 +86,7 @@ const calls: RecordedCall[] = [];
 
 /** "challenge" → Plus demands a third factor; "grant" → it issues a token. */
 let capabilityMode: "challenge" | "grant" = "challenge";
+let coreApproveFails = false;
 /** When true, Core's managed-release answers 500. */
 let coreFails = false;
 
@@ -125,8 +126,19 @@ globalThis.fetch = (async (input: unknown, init?: { method?: string; headers?: R
   if (url.endsWith("/api/v1/challenges/trigger")) {
     return jsonResponse(200, { success: true, challengeId: "ch-1", expiresAt: Date.now() + 120_000 });
   }
+  if (url.endsWith("/api/v1/step-up/approve")) {
+    if (coreApproveFails) return jsonResponse(400, { error: "Credential not available for release" });
+    // R3: Core signs the approval. The stub returns a stand-in signature; the
+    // real verification happens in Plus against Core's pinned public key.
+    return jsonResponse(200, { approval: { payload: { typ: "step-up-approval" }, signature: "sig", protectedHeader: "hdr" } });
+  }
+  if (url.endsWith("/api/v1/challenges/approve")) {
+    return jsonResponse(200, { success: true });
+  }
   if (url.endsWith("/api/v1/challenges/verify")) {
-    return jsonResponse(200, { success: true, attemptsRemaining: 2 });
+    // Retired in R3. Kept as a 404 so any surviving caller fails loudly
+    // instead of silently receiving a fake success.
+    return jsonResponse(404, { error: "retired" });
   }
   return jsonResponse(404, { error: `unstubbed endpoint: ${url}` });
 }) as unknown as typeof fetch;
@@ -415,14 +427,9 @@ describe("D1 — every Plus call presents the service secret (R1 regression)", (
     expect(challengeId).toBeDefined();
     calls.length = 0;
 
-    const reply = await dispatch({
-      type: "SUBMIT_STEP_UP_PIN",
-      challengeId: challengeId as string,
-      pin: "123456",
-    });
-    void reply;
+    await dispatch({ type: "APPROVE_STEP_UP", challengeId: challengeId as string });
 
-    const call = callsTo("/api/v1/challenges/verify").at(-1);
+    const call = callsTo("/api/v1/challenges/approve").at(-1);
     expect(call).toBeDefined();
     expect(call!.headers["X-Service-Secret"]).toBe(PLUS_SECRET);
   });
@@ -466,34 +473,70 @@ describe("step-up senders reach Plus", () => {
     expect(callsTo("/api/v1/challenges/trigger")).toHaveLength(0);
   });
 
-  it("SUBMIT_STEP_UP_PIN forwards the PIN to verify and reports the result", async () => {
+  it("APPROVE_STEP_UP signs with Core, then forwards the approval to Plus", async () => {
     calls.length = 0;
 
-    const reply = await dispatch({
-      type: "SUBMIT_STEP_UP_PIN",
-      challengeId: "ch-1",
-      pin: "123456",
-    });
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1" });
 
     expect(reply).toEqual({ ok: true, data: { verified: true } });
 
-    const [call] = callsTo("/api/v1/challenges/verify");
-    expect(call).toBeDefined();
-    expect(call.url).toBe(`${PLUS}/api/v1/challenges/verify`);
-    expect(call.headers.Authorization).toBe(`Bearer ${TOKEN}`);
-    expect(call.body).toEqual({ challengeId: "ch-1", pin: "123456" });
+    // Core is asked first, and the request names only the credential and the
+    // operation. The user comes from the Bearer token and the secretRef from
+    // Core's own records, so neither can be supplied by this side.
+    const [signed] = callsTo("/api/v1/step-up/approve");
+    expect(signed).toBeDefined();
+    expect(signed.url).toBe(`${CORE}/api/v1/step-up/approve`);
+    expect(signed.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(Object.keys(signed.body ?? {}).sort()).toEqual([
+      "challengeId",
+      "credentialId",
+      "operation",
+    ]);
+    expect(signed.body).not.toHaveProperty("secretRef");
+    expect(signed.body).not.toHaveProperty("userId");
+
+    // Then Plus verifies it.
+    const [approved] = callsTo("/api/v1/challenges/approve");
+    expect(approved).toBeDefined();
+    expect(approved.url).toBe(`${PLUS}/api/v1/challenges/approve`);
+    expect(approved.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(Object.keys(approved.body ?? {}).sort()).toEqual(["approval", "challengeId"]);
+  });
+
+  it("never sends a PIN on the approve path", async () => {
+    calls.length = 0;
+
+    await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1" });
+
+    for (const call of callsTo("/api/v1/step-up/approve").concat(callsTo("/api/v1/challenges/approve"))) {
+      expect(call.body).not.toHaveProperty("pin");
+      expect(JSON.stringify(call.body)).not.toMatch(/"pin"/i);
+    }
+  });
+
+  it("does not contact Plus when Core refuses to sign", async () => {
+    // A real challenge has to exist first, otherwise this would pass for the
+    // wrong reason: an unknown challenge is refused before Core is contacted.
+    await dispatch({ type: "START_STEP_UP", binding: PROBE_BINDING });
+    calls.length = 0;
+    coreApproveFails = true;
+
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "ch-1" });
+
+    // A Core refusal must not be forwarded verbatim: its reason could say
+    // "credential not found" or "no signing key configured", which is more than
+    // the caller needs to know.
+    expect(reply).toMatchObject({ ok: false, error: "the release could not be approved" });
+    expect(callsTo("/api/v1/challenges/approve")).toHaveLength(0);
+    coreApproveFails = false;
   });
 
   it("refuses an unknown challenge without contacting Plus", async () => {
     calls.length = 0;
 
-    const reply = await dispatch({
-      type: "SUBMIT_STEP_UP_PIN",
-      challengeId: "never-issued",
-      pin: "123456",
-    });
+    const reply = await dispatch({ type: "APPROVE_STEP_UP", challengeId: "never-issued" });
 
-    expect(reply).toMatchObject({ ok: false, error: "the PIN was not accepted" });
+    expect(reply).toMatchObject({ ok: false, error: "the approval was not accepted" });
     expect(callsTo("/api/v1/challenges/verify")).toHaveLength(0);
   });
 
@@ -539,7 +582,7 @@ describe("a completed step-up releases its own binding and no other", () => {
     expect(started.ok).toBe(true);
     const challengeId = (started.data as { challengeId: string }).challengeId;
 
-    const verified = await dispatch({ type: "SUBMIT_STEP_UP_PIN", challengeId, pin: "123456" });
+    const verified = await dispatch({ type: "APPROVE_STEP_UP", challengeId });
     expect(verified).toEqual({ ok: true, data: { verified: true } });
 
     // The pending list now names only the binding that is still owed.

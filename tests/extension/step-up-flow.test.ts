@@ -9,7 +9,7 @@
 
 import {
   beginStepUp,
-  submitStepUpPin,
+  submitApproval,
   checkSession,
   canRetryRelease,
   type StepUpBinding,
@@ -18,7 +18,6 @@ import {
 } from "../../src/domain/services/autofill/step-up-flow";
 
 const NOW = 1_700_000_000_000;
-const PIN = "123456";
 
 const BINDING: StepUpBinding = {
   credentialId: "cred-low-value",
@@ -29,15 +28,15 @@ const BINDING: StepUpBinding = {
 interface Recorder {
   deps: StepUpDeps;
   started: StepUpBinding[];
-  submitted: Array<{ challengeId: string; pin: string }>;
+  submitted: Array<{ challengeId: string }>;
   setNow(ms: number): void;
-  setPinResult(r: Awaited<ReturnType<StepUpDeps["submitPin"]>>): void;
+  setApprovalResult(r: Awaited<ReturnType<StepUpDeps["submitApproval"]>>): void;
   setStartResult(r: Awaited<ReturnType<StepUpDeps["startChallenge"]>>): void;
 }
 
 function recorder(overrides: Partial<StepUpDeps> = {}): Recorder {
   let now = NOW;
-  let pinResult: Awaited<ReturnType<StepUpDeps["submitPin"]>> = { ok: true };
+  let approvalResult: Awaited<ReturnType<StepUpDeps["submitApproval"]>> = { ok: true };
   let startResult: Awaited<ReturnType<StepUpDeps["startChallenge"]>> = {
     challengeId: "chal-1",
     expiresAt: NOW + 120_000,
@@ -45,16 +44,20 @@ function recorder(overrides: Partial<StepUpDeps> = {}): Recorder {
   };
 
   const started: StepUpBinding[] = [];
-  const submitted: Array<{ challengeId: string; pin: string }> = [];
+  // R3: the transport receives no secret, so there is no `pin` field to
+  // assert on. The absence of one is the guarantee.
+  const submitted: Array<{ challengeId: string }> = [];
 
   const deps: StepUpDeps = {
     startChallenge: async (binding) => {
       started.push(binding);
       return startResult;
     },
-    submitPin: async (challengeId, pin) => {
-      submitted.push({ challengeId, pin });
-      return pinResult;
+    submitApproval: async (challengeId) => {
+      // No secret is captured, because none is offered. Recording the
+      // challenge id alone is the whole observable surface of this port.
+      submitted.push({ challengeId });
+      return approvalResult;
     },
     now: () => now,
     ...overrides,
@@ -67,8 +70,8 @@ function recorder(overrides: Partial<StepUpDeps> = {}): Recorder {
     setNow: (ms) => {
       now = ms;
     },
-    setPinResult: (r) => {
-      pinResult = r;
+    setApprovalResult: (r) => {
+      approvalResult = r;
     },
     setStartResult: (r) => {
       startResult = r;
@@ -121,11 +124,11 @@ describe("beginStepUp", () => {
   });
 });
 
-describe("submitStepUpPin — happy path", () => {
-  it("accepts the correct PIN and marks the session completed", async () => {
+describe("submitApproval — happy path", () => {
+  it("accepts the approval and marks the session completed", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    const result = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    const result = await submitApproval(session, BINDING, rec.deps);
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
@@ -133,53 +136,47 @@ describe("submitStepUpPin — happy path", () => {
     expect(result.session.attemptsRemaining).toBe(0);
   });
 
-  it("passes the PIN through to the transport", async () => {
+  it("passes only the challenge id to the transport", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    await submitStepUpPin(session, BINDING, PIN, rec.deps);
-    expect(rec.submitted).toEqual([{ challengeId: "chal-1", pin: PIN }]);
+    await submitApproval(session, BINDING, rec.deps);
+
+    // No secret accompanies the challenge, and asserting the exact object
+    // shape is what would fail loudly if a `pin` field ever reappeared.
+    expect(rec.submitted).toEqual([{ challengeId: "chal-1" }]);
   });
 
-  it("never stores the PIN on the session", async () => {
+  it("stores no secret on the session", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    const result = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    const result = await submitApproval(session, BINDING, rec.deps);
 
     const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain(PIN);
     expect(serialized).not.toMatch(/"pin"/i);
-  });
-
-  it("rejects an empty PIN without contacting the transport", async () => {
-    const rec = recorder();
-    const session = await sessionFor(BINDING, rec);
-    const result = await submitStepUpPin(session, BINDING, "   ", rec.deps);
-    expect(result).toMatchObject({ ok: false, code: "PIN_INVALID" });
-    expect(rec.submitted).toHaveLength(0);
+    expect(serialized).not.toMatch(/"secret"/i);
   });
 });
 
 describe("CROSS-BINDING — the escalation this module prevents", () => {
-  it("refuses a PIN submitted against a different credential", async () => {
+  it("refuses an approval submitted against a different credential", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
 
     const other: StepUpBinding = { ...BINDING, credentialId: "prod-database-root" };
-    const result = await submitStepUpPin(session, other, PIN, rec.deps);
+    const result = await submitApproval(session, other, rec.deps);
 
     expect(result).toMatchObject({ ok: false, code: "BINDING_MISMATCH" });
-    // The PIN must never reach the transport for a foreign binding.
+    // Nothing reaches the transport for a foreign binding.
     expect(rec.submitted).toHaveLength(0);
   });
 
-  it("refuses a PIN submitted against a different origin", async () => {
+  it("refuses an approval submitted against a different origin", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
 
-    const result = await submitStepUpPin(
+    const result = await submitApproval(
       session,
       { ...BINDING, origin: "https://evil.example:443" },
-      PIN,
       rec.deps,
     );
     expect(result).toMatchObject({ ok: false, code: "BINDING_MISMATCH" });
@@ -191,10 +188,9 @@ describe("CROSS-BINDING — the escalation this module prevents", () => {
     const session = await sessionFor(BINDING, rec);
 
     // An AUTOFILL step-up must not authorize a TOTP release.
-    const result = await submitStepUpPin(
+    const result = await submitApproval(
       session,
       { ...BINDING, operation: "TOTP" },
-      PIN,
       rec.deps,
     );
     expect(result).toMatchObject({ ok: false, code: "BINDING_MISMATCH" });
@@ -204,7 +200,7 @@ describe("CROSS-BINDING — the escalation this module prevents", () => {
   it("refuses a completed step-up to be spent on another credential", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    const done = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    const done = await submitApproval(session, BINDING, rec.deps);
     if (!done.ok) throw new Error("unreachable");
 
     const other: StepUpBinding = { ...BINDING, credentialId: "prod-database-root" };
@@ -215,10 +211,9 @@ describe("CROSS-BINDING — the escalation this module prevents", () => {
   it("does not echo either binding in the mismatch detail", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    const result = await submitStepUpPin(
+    const result = await submitApproval(
       session,
       { ...BINDING, credentialId: "prod-database-root" },
-      PIN,
       rec.deps,
     );
     if (result.ok) throw new Error("unreachable");
@@ -231,8 +226,8 @@ describe("CROSS-BINDING — the escalation this module prevents", () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
 
-    await submitStepUpPin(session, { ...BINDING, credentialId: "other" }, PIN, rec.deps);
-    const good = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    await submitApproval(session, { ...BINDING, credentialId: "other" }, rec.deps);
+    const good = await submitApproval(session, BINDING, rec.deps);
 
     expect(good.ok).toBe(true);
     expect(rec.submitted).toHaveLength(1); // only the legitimate attempt
@@ -245,7 +240,7 @@ describe("expiry and attempts", () => {
     const session = await sessionFor(BINDING, rec);
     rec.setNow(session.expiresAt);
 
-    const result = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    const result = await submitApproval(session, BINDING, rec.deps);
     expect(result).toMatchObject({ ok: false, code: "SESSION_EXPIRED" });
     expect(rec.submitted).toHaveLength(0);
   });
@@ -259,49 +254,56 @@ describe("expiry and attempts", () => {
     expect(checkSession(session, BINDING, rec.deps)).toMatchObject({ code: "SESSION_EXPIRED" });
   });
 
-  it("refuses once attempts are exhausted", async () => {
+  it("takes no secret: the approval is the whole submission", async () => {
     const rec = recorder();
-    rec.setStartResult({ challengeId: "c", expiresAt: NOW + 1000, attemptsRemaining: 0 });
     const session = await sessionFor(BINDING, rec);
 
-    const result = await submitStepUpPin(session, BINDING, PIN, rec.deps);
-    expect(result).toMatchObject({ ok: false, code: "ATTEMPTS_EXHAUSTED" });
-    expect(rec.submitted).toHaveLength(0);
+    // No PIN argument exists any more, so there is nothing that could be sent
+    // wrongly. The transport is called with the challenge id alone.
+    const result = await submitApproval(session, BINDING, rec.deps);
+    expect(result.ok).toBe(true);
+    expect(rec.submitted).toHaveLength(1);
   });
 
-  it("decrements the remaining attempts reported by the transport", async () => {
+  it("refuses when the transport reports the approval was not accepted", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    rec.setPinResult({ ok: false, attemptsRemaining: 2 });
+    rec.setApprovalResult({ ok: false });
 
-    const result = await submitStepUpPin(session, BINDING, "000000", rec.deps);
-    expect(result).toMatchObject({ ok: false, code: "PIN_REJECTED" });
+    const result = await submitApproval(session, BINDING, rec.deps);
+    expect(result).toMatchObject({ ok: false, code: "APPROVAL_REJECTED" });
   });
 
-  it("ends the session when the last attempt fails", async () => {
+  it("does not carry a per-attempt budget across refusals", async () => {
+    // With no PIN there is no budget. A refusal is a deliberate stop, and the
+    // session is not quietly shortened by having tried.
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    rec.setPinResult({ ok: false, attemptsRemaining: 0 });
+    rec.setApprovalResult({ ok: false });
 
-    const result = await submitStepUpPin(session, BINDING, "000000", rec.deps);
-    expect(result).toMatchObject({ ok: false, code: "ATTEMPTS_EXHAUSTED" });
+    await submitApproval(session, BINDING, rec.deps);
+    const again = await submitApproval(session, BINDING, rec.deps);
+
+    expect(again).toMatchObject({ ok: false, code: "APPROVAL_REJECTED" });
   });
 
   it("gives a generic reason so challenge existence cannot be probed", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    rec.setPinResult({ ok: false, attemptsRemaining: 1, reason: "no such challenge" });
+    rec.setApprovalResult({ ok: false, reason: "no such challenge" });
 
-    const result = await submitStepUpPin(session, BINDING, "000000", rec.deps);
+    const result = await submitApproval(session, BINDING, rec.deps);
     if (result.ok) throw new Error("unreachable");
-    expect(result.detail).toBe("the PIN was not accepted");
+    // The transport's own reason is discarded: forwarding it would be an
+    // existence oracle for live challenge ids.
+    expect(result.detail).toBe("the approval was not accepted");
   });
 });
 
 describe("session state guards", () => {
   it("refuses with no session at all", async () => {
     const rec = recorder();
-    expect(await submitStepUpPin(null, BINDING, PIN, rec.deps)).toMatchObject({
+    expect(await submitApproval(null, BINDING, rec.deps)).toMatchObject({
       ok: false,
       code: "SESSION_MISSING",
     });
@@ -310,10 +312,10 @@ describe("session state guards", () => {
   it("refuses a second submission after completion", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    const done = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    const done = await submitApproval(session, BINDING, rec.deps);
     if (!done.ok) throw new Error("unreachable");
 
-    const again = await submitStepUpPin(done.session, BINDING, PIN, rec.deps);
+    const again = await submitApproval(done.session, BINDING, rec.deps);
     expect(again).toMatchObject({ ok: false, code: "ALREADY_COMPLETED" });
     expect(rec.submitted).toHaveLength(1);
   });
@@ -327,7 +329,7 @@ describe("session state guards", () => {
   it("canRetryRelease allows the bound release once completed", async () => {
     const rec = recorder();
     const session = await sessionFor(BINDING, rec);
-    const done = await submitStepUpPin(session, BINDING, PIN, rec.deps);
+    const done = await submitApproval(session, BINDING, rec.deps);
     if (!done.ok) throw new Error("unreachable");
     expect(canRetryRelease(done.session, BINDING)).toHaveProperty("ok", true);
   });
@@ -379,47 +381,45 @@ describe("service-worker step-up handlers", () => {
     expect(src).toMatch(/const stepUpChallenges = new Map/);
   });
 
-  it("refuses an unknown challenge without contacting Plus", () => {
+  it("refuses an unknown challenge without contacting either service", () => {
     // Otherwise response timing distinguishes "never existed" from "consumed".
-    const b = body("handleSubmitStepUpPin");
+    const b = body("handleApproveStepUp");
     expect(b).toMatch(/if \(!entry\)/);
-    expect(b).toMatch(/return \{ ok: false, error: "the PIN was not accepted" \}/);
+    expect(b).toMatch(/return \{ ok: false, error: "the approval was not accepted" \}/);
   });
 
   it("never forwards a server-supplied reason to the client", () => {
     // "no such challenge" would be an existence oracle for live challenges.
-    const b = body("handleSubmitStepUpPin");
+    const b = body("handleApproveStepUp");
     expect(b).not.toMatch(/body\.error/);
     expect(b).not.toMatch(/error:\s*body\./);
   });
 
   it("deletes a challenge once it is completed, so it cannot be replayed", () => {
-    const b = body("handleSubmitStepUpPin");
+    const b = body("handleApproveStepUp");
     expect(b).toMatch(/if \(body\.success\) \{[\s\S]*?stepUpChallenges\.delete/);
   });
 
-  it("deletes a challenge once attempts are exhausted", () => {
-    expect(body("handleSubmitStepUpPin")).toMatch(
-      /remaining <= 0\) stepUpChallenges\.delete/,
-    );
-  });
-
   it("deletes an expired challenge", () => {
-    expect(body("handleSubmitStepUpPin")).toMatch(
+    expect(body("handleApproveStepUp")).toMatch(
       /Date\.now\(\) >= entry\.expiresAt\) \{[\s\S]*?stepUpChallenges\.delete/,
     );
   });
 
-  it("uses the PIN exactly once, only in the outbound request body", () => {
+    it("sends no secret at all: the outbound body carries the challenge and the approval", () => {
     // Comments stripped: the handler documents this rule inline, and counting
     // the prose would make the assertion measure the comment rather than the code.
-    const code = body("handleSubmitStepUpPin")
+    const code = body("handleApproveStepUp")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/.*$/gm, "");
-    const occurrences = code.match(/msg\.pin/g) ?? [];
-    expect(occurrences).toHaveLength(1);
-    // And it must be inside the request body, not a header or a log line.
-    expect(code).toMatch(/JSON\.stringify\(\{[^}]*pin: msg\.pin/);
+    // Nothing resembling a PIN is read, forwarded or stored.
+    expect(code).not.toMatch(/msg\.pin|\bpin\b/i);
+    // The only two fields the body carries are the challenge and Core's
+    // signature over it. The approval arrives from the Core call above, not
+    // from the message, so a caller cannot supply their own.
+    expect(code).toMatch(
+      /JSON\.stringify\(\{\s*challengeId: msg\.challengeId,\s*approval: approvalBody\.approval,?\s*\}\)/,
+    );
   });
 
   it("refuses a start request with no binding", () => {

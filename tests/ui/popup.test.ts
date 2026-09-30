@@ -796,13 +796,17 @@ describe("unlock with a pending step-up", () => {
     await clickUnlock("frase");
   }
 
-  it("opens the panel and requests a challenge for the refused release", async () => {
+  it("opens the panel naming the site and operation being authorised", async () => {
     await unlockWithPendingBinding();
 
     expect($("#step-up-panel").hidden).toBe(false);
     expect($("#step-up-status").textContent).toBe(
-      "Enter the PIN you received to release this credential.",
+      "Approve releasing this credential to the site below?",
     );
+    // The user is the one approving, so they must be told what. A generic
+    // "confirm?" would make a blind click indistinguishable from a deliberate
+    // one, which is the whole point of the panel.
+    expect($("#step-up-detail").textContent).toBe(`${BINDING.origin} · ${BINDING.operation}`);
     expect(runtime.sendMessage).toHaveBeenCalledWith({
       type: "START_STEP_UP",
       binding: BINDING,
@@ -811,82 +815,72 @@ describe("unlock with a pending step-up", () => {
     expect($("#step-up-submit").disabled).toBe(false);
   });
 
-  it("refuses an empty PIN", async () => {
-    $("#step-up-pin").value = "  ";
-    click($("#step-up-submit"));
-    await settle();
+  it("has no input to type a PIN into", async () => {
+    // R3: the third factor is a decision, not something the user knows. A PIN
+    // field surviving here would be a control that cannot do anything.
+    await unlockWithPendingBinding();
 
-    expect($("#step-up-error").textContent).toBe(
-      "Enter the PIN from the challenge message.",
-    );
-    expect(runtime.sendMessage).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: "SUBMIT_STEP_UP_PIN" }),
-      expect.anything(),
-    );
+    expect(document.querySelector("#step-up-pin")).toBeNull();
   });
 
   it("surfaces the worker's rejection and re-enables the button", async () => {
     messageHandler = (message) =>
-      message.type === "SUBMIT_STEP_UP_PIN"
-        ? { ok: false, error: "PIN not accepted" }
+      message.type === "APPROVE_STEP_UP"
+        ? { ok: false, error: "the approval was not accepted" }
         : { ok: true, data: {} };
-    $("#step-up-pin").value = "123456";
     click($("#step-up-submit"));
     await settle();
 
     expect(runtime.sendMessage).toHaveBeenCalledWith({
-      type: "SUBMIT_STEP_UP_PIN",
+      type: "APPROVE_STEP_UP",
       challengeId: "ch-1",
-      pin: "123456",
     });
-    expect($("#step-up-error").textContent).toBe("PIN not accepted");
+    expect($("#step-up-error").textContent).toBe("the approval was not accepted");
+    // A refused approval leaves the challenge open, so the button comes back.
     expect($("#step-up-submit").disabled).toBe(false);
-    expect($("#step-up-pin").value).toBe("123456"); // not cleared on failure
   });
 
-  it("accepts the PIN and clears the challenge", async () => {
+  it("sends no secret when approving", async () => {
     messageHandler = (message) =>
-      message.type === "SUBMIT_STEP_UP_PIN" ? { ok: true, data: {} } : { ok: true, data: {} };
-    $("#step-up-pin").value = "123456";
+      message.type === "APPROVE_STEP_UP" ? { ok: true, data: {} } : { ok: true, data: {} };
+    click($("#step-up-submit"));
+    await settle();
+
+    // Exactly the challenge id. A `pin` field here would be the old flow
+    // wearing the new message name.
+    const approveCall = runtime.sendMessage.mock.calls.find(
+      ([m]) => m.type === "APPROVE_STEP_UP",
+    );
+    expect(approveCall).toBeDefined();
+    expect(Object.keys(approveCall![0])).toEqual(["type", "challengeId"]);
+  });
+
+  it("accepts the approval and clears the challenge", async () => {
+    messageHandler = (message) =>
+      message.type === "APPROVE_STEP_UP" ? { ok: true, data: {} } : { ok: true, data: {} };
     click($("#step-up-submit"));
     await settle();
 
     expect($("#step-up-status").textContent).toBe(
-      "Verified. Retry the fill to release the credential.",
+      "Approved. Retry the fill to release the credential.",
     );
-    expect($("#step-up-pin").value).toBe("");
+    expect($("#step-up-detail").textContent).toBe("");
     expect($("#step-up-submit").disabled).toBe(false);
-    // Only `showStepUp()` clears the error, so the previous rejection stays
-    // on screen next to "Verified". Minor UI nit, pinned as it behaves today.
-    expect($("#step-up-error").hidden).toBe(false);
-    expect($("#step-up-error").textContent).toBe("PIN not accepted");
-  });
-
-  it("asks again once the challenge has been consumed", async () => {
-    $("#step-up-pin").value = "999999";
-    click($("#step-up-submit"));
-    await settle();
-
-    expect($("#step-up-error").textContent).toBe(
-      "Enter the PIN from the challenge message.",
-    );
-    expect(runtime.sendMessage).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: "SUBMIT_STEP_UP_PIN" }),
-      expect.anything(),
-    );
   });
 
   it("dismisses the panel without submitting anything", async () => {
     const before = runtime.sendMessage.mock.calls.filter(
-      ([message]) => message?.type === "SUBMIT_STEP_UP_PIN",
+      ([message]) => message?.type === "APPROVE_STEP_UP",
     ).length;
     click($("#step-up-dismiss"));
     await settle();
 
     expect($("#step-up-panel").hidden).toBe(true);
-    expect($("#step-up-pin").value).toBe("");
+    // The detail line is cleared on dismiss, so a later challenge cannot show
+    // the previous site while a new one is pending.
+    expect($("#step-up-detail").textContent).toBe("");
     const after = runtime.sendMessage.mock.calls.filter(
-      ([message]) => message?.type === "SUBMIT_STEP_UP_PIN",
+      ([message]) => message?.type === "APPROVE_STEP_UP",
     ).length;
     expect(after).toBe(before);
   });

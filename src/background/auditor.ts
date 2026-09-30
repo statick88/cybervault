@@ -46,7 +46,7 @@ import {
   type ListCredentialsForOriginMessage,
   type ReleaseCredentialMessage,
   type StartStepUpMessage,
-  type SubmitStepUpPinMessage,
+  type ApproveStepUpMessage,
   type AuthorCredentialMessage,
   type GetPendingStepUpMessage,
 } from "./message-types";
@@ -1248,32 +1248,77 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
   }
 }
 
-async function handleSubmitStepUpPin(msg: SubmitStepUpPinMessage): Promise<BackgroundResponse> {
+/**
+ * R3 — the user approved a release. No PIN is involved anywhere in this
+ * function, and there is nothing to compare.
+ *
+ * The chain is: ask Core to sign an approval for this binding, then hand that
+ * approval to Plus, which verifies it against its pinned Core key and issues
+ * the capability. Core can prove the user owns the credential; Plus cannot, and
+ * does not need to, because the signature carries the proof.
+ */
+async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<BackgroundResponse> {
   try {
     const entry = stepUpChallenges.get(msg.challengeId);
     if (!entry) {
-      // Unknown challenge: refuse without contacting Plus, so the response time
-      // does not distinguish "never existed" from "already consumed".
-      return { ok: false, error: "the PIN was not accepted" };
+      // Unknown challenge: refuse without contacting either service, so the
+      // response time does not distinguish "never existed" from "already
+      // consumed".
+      return { ok: false, error: "the approval was not accepted" };
     }
     if (Date.now() >= entry.expiresAt) {
       stepUpChallenges.delete(msg.challengeId);
-      return { ok: false, error: "the PIN was not accepted" };
+      return { ok: false, error: "the approval was not accepted" };
     }
 
     const auth = await chrome.storage.local.get([
       "cybervault_token",
       "plus_service_secret",
+      "core_base_url",
     ]);
     const token = auth["cybervault_token"] as string | undefined;
     if (!token) return { ok: false, error: "not authenticated" };
-    // D1: same missing header as `triggerPlusChallenge`.
     const serviceSecret = (auth["plus_service_secret"] as string) || "";
+    const coreBase = (auth["core_base_url"] as string) || "http://localhost:3010";
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
+
     try {
-      const res = await fetch(`${STEP_UP_PLUS_URL}/api/v1/challenges/verify`, {
+      /* ---- 1. Core signs the approval. ----------------------------------
+       * The request names only the credential and the operation. Core reads
+       * the user from the token and the secretRef from the stored record, so
+       * this body cannot be used to redirect the approval at another
+       * credential's Release Share. */
+      const approved = await fetch(`${coreBase}/api/v1/step-up/approve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: msg.challengeId,
+          credentialId: entry.binding.credentialId,
+          operation: entry.binding.operation,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!approved.ok) {
+        // Core refused: unknown credential, wrong owner, personal credential,
+        // or no signing key configured. Deliberately not surfaced verbatim — a
+        // Core reason could tell the user (or a script driving the popup) which
+        // of those it was.
+        return { ok: false, error: "the release could not be approved" };
+      }
+
+      const approvalBody = (await approved.json()) as { approval?: unknown };
+      if (!approvalBody.approval) {
+        return { ok: false, error: "the release could not be approved" };
+      }
+
+      /* ---- 2. Plus verifies the approval and issues the capability. ------ */
+      const res = await fetch(`${STEP_UP_PLUS_URL}/api/v1/challenges/approve`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1281,27 +1326,25 @@ async function handleSubmitStepUpPin(msg: SubmitStepUpPinMessage): Promise<Backg
           "X-Service-Secret": serviceSecret,
           Authorization: `Bearer ${token}`,
         },
-        // msg.pin is forwarded and never stored, logged or attached to the
-        // challenge registry entry above.
-        body: JSON.stringify({ challengeId: msg.challengeId, pin: msg.pin }),
+        body: JSON.stringify({
+          challengeId: msg.challengeId,
+          approval: approvalBody.approval,
+        }),
         signal: controller.signal,
       });
 
       if (!res.ok) {
-        return { ok: false, error: "the PIN was not accepted" };
+        return { ok: false, error: "the approval was not accepted" };
       }
-      const body = (await res.json()) as {
-        success?: boolean;
-        attemptsRemaining?: number;
-      };
+
+      const body = (await res.json()) as { success?: boolean };
 
       if (body.success) {
         // One-shot: a completed challenge cannot be replayed.
         stepUpChallenges.delete(msg.challengeId);
         // Record the completion against the binding the challenge was started
         // for, which is what `canRetryRelease` compares a later retry with.
-        // The session carries no PIN — only the binding, the expiry and the
-        // fact that Plus accepted it.
+        // The session carries no secret — only the binding and the expiry.
         completedStepUps.set(bindingKey(entry.binding), {
           challengeId: msg.challengeId,
           binding: entry.binding,
@@ -1312,9 +1355,7 @@ async function handleSubmitStepUpPin(msg: SubmitStepUpPinMessage): Promise<Backg
         return { ok: true, data: { verified: true } };
       }
 
-      const remaining = body.attemptsRemaining ?? 0;
-      if (remaining <= 0) stepUpChallenges.delete(msg.challengeId);
-      return { ok: false, error: "the PIN was not accepted", data: { attemptsRemaining: remaining } };
+      return { ok: false, error: "the approval was not accepted" };
     } finally {
       clearTimeout(timer);
     }
@@ -1396,8 +1437,8 @@ chrome.runtime.onMessage.addListener(
         handlerPromise = handleStartStepUp(message);
         break;
 
-      case MESSAGE_TYPES.SUBMIT_STEP_UP_PIN:
-        handlerPromise = handleSubmitStepUpPin(message);
+      case MESSAGE_TYPES.APPROVE_STEP_UP:
+        handlerPromise = handleApproveStepUp(message);
         break;
 
       case MESSAGE_TYPES.GET_PENDING_STEP_UP:

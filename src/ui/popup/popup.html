@@ -80,20 +80,20 @@
       <p>No credentials yet.</p>
     </div>
 
+    <!--
+      R3: this panel used to ask for a PIN. There is no PIN — `createChallenge`
+      generated one, discarded it, and never delivered it, so the flow was
+      un-completable. The third factor is now the user's decision itself:
+      Core signs the approval, Plus verifies it. The user needs to know WHICH
+      credential is being released, for WHICH site, and why, because they are
+      the one authorising it.
+    -->
     <div id="step-up-panel" class="add-form" hidden>
       <p id="step-up-status" class="add-form__status"></p>
-      <input
-        type="password"
-        id="step-up-pin"
-        placeholder="PIN"
-        class="add-form__input"
-        inputmode="numeric"
-        autocomplete="one-time-code"
-        aria-label="Step-up PIN"
-      />
+      <p id="step-up-detail" class="add-form__status"></p>
       <div class="add-form__actions">
-        <button id="step-up-submit" class="btn btn--primary" type="button">Verify</button>
-        <button id="step-up-dismiss" class="btn btn--ghost" type="button">Later</button>
+        <button id="step-up-submit" class="btn btn--primary" type="button">Release</button>
+        <button id="step-up-dismiss" class="btn btn--ghost" type="button">Not now</button>
       </div>
       <p id="step-up-error" class="error" hidden></p>
     </div>

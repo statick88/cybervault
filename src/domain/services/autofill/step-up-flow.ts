@@ -55,6 +55,11 @@ export interface StepUpSession {
   /** Immutable binding captured when the challenge was started. */
   readonly binding: StepUpBinding;
   readonly expiresAt: number;
+  /**
+   * Retained for wire compatibility with `startChallenge`, but no longer
+   * meaningful: R3 removed the PIN, so there is no budget to spend and
+   * nothing decrements it. Always 0 on a fresh session.
+   */
   readonly attemptsRemaining: number;
   /** Set once Plus has verified the PIN. */
   readonly completed: boolean;
@@ -69,8 +74,7 @@ export type StepUpFailureCode =
   | "ATTEMPTS_EXHAUSTED"
   | "BINDING_MISMATCH"
   | "ALREADY_COMPLETED"
-  | "PIN_REJECTED"
-  | "PIN_INVALID"
+  | "APPROVAL_REJECTED"
   | "SESSION_MISSING";
 
 export type StepUpFailure = { readonly ok: false; readonly code: StepUpFailureCode; readonly detail: string };
@@ -80,13 +84,18 @@ export interface StepUpDeps {
   startChallenge(
     binding: StepUpBinding,
   ): Promise<{ challengeId: string; expiresAt: number; attemptsRemaining: number } | null>;
-  /** Submit the PIN. Implementations must not retain it. */
-  submitPin(
+  /**
+   * Submit the user's approval for a challenge.
+   *
+   * R3: the transport takes no secret. The implementation obtains Core's
+   * signature and forwards it to Plus, so nothing here is something the user
+   * knows — it is something they decided.
+   */
+  submitApproval(
     challengeId: string,
-    pin: string,
   ): Promise<
     | { ok: true }
-    | { ok: false; attemptsRemaining?: number; reason?: string }
+    | { ok: false; reason?: string }
   >;
   /** Injectable clock, so expiry is testable without sleeping. */
   now(): number;
@@ -161,36 +170,34 @@ export function checkSession(
   if (deps.now() >= session.expiresAt) {
     return fail("SESSION_EXPIRED", "challenge has expired");
   }
-  if (session.attemptsRemaining <= 0) {
-    return fail("ATTEMPTS_EXHAUSTED", "no PIN attempts remain");
-  }
   return { usable: true };
 }
 
 /**
- * Submit a PIN against the session.
+ * Submit the user's approval for a session.
+ *
+ * R3: there is no PIN. The old signature took one and there was nothing to
+ * compare it against — `createChallenge` generated a PIN, hashed it, discarded
+ * the plaintext and never delivered it, so every submission failed and the
+ * attempt counter was decremented for a secret nobody could supply.
+ *
+ * The third factor is now the decision itself: the user approves, Core signs
+ * it, and Plus verifies the signature. Nothing secret travels through this
+ * function or is retained on the session.
  *
  * `binding` is supplied again by the caller rather than read from the session,
  * precisely so the two can be compared. Reading only the session would make the
  * check vacuous.
- *
- * The PIN is passed straight through and never retained.
  */
-export async function submitStepUpPin(
+export async function submitApproval(
   session: MaybeStepUpSession,
   binding: StepUpBinding,
-  pin: string,
   deps: StepUpDeps,
 ): Promise<{ ok: true; session: StepUpSession } | StepUpFailure> {
   const usable = checkSession(session, binding, deps);
   if (!("usable" in usable)) return usable;
 
-  if (typeof pin !== "string" || pin.trim() === "") {
-    return fail("PIN_INVALID", "a PIN is required");
-  }
-
-  const result = await deps.submitPin(session!.challengeId, pin);
-  // `pin` goes out of scope here and is never stored on the session.
+  const result = await deps.submitApproval(session!.challengeId);
 
   if (result.ok) {
     return {
@@ -199,24 +206,19 @@ export async function submitStepUpPin(
     };
   }
 
-  const remaining =
-    typeof result.attemptsRemaining === "number" ? result.attemptsRemaining : 0;
-
-  if (remaining <= 0) {
-    return fail("ATTEMPTS_EXHAUSTED", "no PIN attempts remain");
-  }
-
+  // An approval is one decision, not a guess. There is no budget to decrement
+  // and no counter to exhaust: a refusal means the approval was not accepted,
+  // and the user may start over deliberately rather than by trying again.
   return {
     ok: false,
-    code: "PIN_REJECTED",
+    code: "APPROVAL_REJECTED",
     // Always generic, and the transport's own reason is deliberately DISCARDED.
     //
     // An earlier draft forwarded `result.reason` verbatim, which handed back
     // strings like "no such challenge". That is an existence oracle: it tells an
-    // attacker whether a challenge id is real, turning PIN entry into a way to
-    // enumerate live challenges. Plus logs the specific reason server-side; the
-    // client only learns that the attempt did not succeed.
-    detail: "the PIN was not accepted",
+    // attacker whether a challenge id is real. Plus logs the specific reason
+    // server-side; the client only learns that the approval did not succeed.
+    detail: "the approval was not accepted",
   };
 }
 
@@ -239,7 +241,7 @@ export function canRetryRelease(
     return fail("BINDING_MISMATCH", "step-up was completed for a different release");
   }
   if (!session.completed) {
-    return fail("PIN_REJECTED", "step-up has not been completed");
+    return fail("APPROVAL_REJECTED", "step-up has not been completed");
   }
   return { ok: true };
 }

@@ -1513,6 +1513,14 @@ export class ApiServer {
         await this.routeCredentialsList(req, res);
         break;
 
+      // Step-up approval (R3). Core signs the user's decision; Plus verifies
+      // it. Deliberately not vault-scoped in the path: the binding names the
+      // credential and the vault is checked through the credential itself, so
+      // a URL cannot name a vault the credential does not belong to.
+      case "/api/v1/step-up/approve":
+        await this.routeStepUpApprove(req, res);
+        break;
+
       // API info
       case "/api":
         await this.routeApiInfo(req, res);
@@ -1606,6 +1614,129 @@ export class ApiServer {
 
   private async routeCredentialsList(req: IncomingMessage, res: ServerResponse): Promise<void> {
     await this.handleAuthRoute(req, res, () => this.handleCredentialsList(req, res));
+  }
+
+  private async routeStepUpApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "POST") {
+      this.sendError(res, 405, "Method not allowed");
+      return;
+    }
+    await this.handleAuthRoute(req, res, () => this.handleStepUpApprove(req, res));
+  }
+
+  /**
+   * POST /api/v1/step-up/approve — sign a user's approval to release one
+   * managed credential (R3, T3).
+   *
+   * Core is the signer and Plus is the verifier. That inversion is the point:
+   * the user is already authenticated here, Core is the party that owns vault
+   * and credential records, and Core therefore can answer "does this user own
+   * this credential" without trusting anything in the request. Plus cannot,
+   * and never gets to decide it.
+   *
+   * Every binding field is derived from the authenticated user plus Core's own
+   * records. The request contributes exactly one thing — which credential and
+   * which operation — and a caller cannot name a `secretRef` for a credential
+   * it does not own, because the secretRef is read from the stored record and
+   * never from the body.
+   */
+  private async handleStepUpApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!userId) {
+      this.sendError(res, 401, "Authentication required");
+      return;
+    }
+
+    if (!this.credentialRepository) {
+      // Fail closed: without the repository there is no way to prove
+      // ownership, and an approval signed on an unproven binding authorises
+      // nothing while looking exactly like one that does.
+      this.sendError(res, 503, "Approval unavailable");
+      return;
+    }
+
+    const data = await this.parseJsonBody(req);
+    const credentialId = typeof data.credentialId === "string" ? data.credentialId : "";
+    const operation = data.operation;
+
+    if (!credentialId) {
+      this.sendError(res, 400, "credentialId is required");
+      return;
+    }
+
+    const { isValidApprovalOperation } = await import("../../infrastructure/crypto/ed25519-approval");
+    if (!isValidApprovalOperation(operation)) {
+      this.sendError(res, 400, "Unsupported operation");
+      return;
+    }
+
+    const { CredentialId } = await import("../../domain/value-objects/ids");
+    const credential = await this.credentialRepository.findById(CredentialId.fromString(credentialId));
+    if (!credential) {
+      // Same answer as "not yours". A 404 here would let an authenticated user
+      // probe which credential ids exist in Core.
+      this.sendError(res, 404, "Credential not available for release");
+      return;
+    }
+
+    const releaseShareRef = credential.releaseShareRef;
+    if (credential.mode !== "managed" || !releaseShareRef) {
+      // A personal credential has no Release Share, so there is nothing to
+      // step up for. Refuse before signing rather than mint a capability
+      // Plus would reject later.
+      this.sendError(res, 400, "Credential is not a managed credential");
+      return;
+    }
+
+    const vault = await this.vaultRepository.findByVaultIdAndOwnerId(
+      credential.vaultId.toString(),
+      userId,
+    );
+    if (!vault) {
+      this.sendError(res, 404, "Credential not available for release");
+      return;
+    }
+
+    const {
+      APPROVAL_VERSION,
+      CORE_APPROVAL_PRIVATE_KEY_ENV,
+      DEFAULT_APPROVAL_TTL_SECONDS,
+      MAX_APPROVAL_TTL_SECONDS,
+      loadApprovalPrivateKey,
+      signApproval,
+    } = await import("../../infrastructure/crypto/ed25519-approval");
+
+    const secret = process.env[CORE_APPROVAL_PRIVATE_KEY_ENV];
+    if (!secret) {
+      // No key configured means no approvals. Plus would refuse to verify
+      // anything anyway; failing here makes the misconfiguration loud instead
+      // of producing a token that silently never works.
+      this.sendError(res, 503, "Approval signing is not configured");
+      return;
+    }
+
+    const iat = Math.floor(Date.now() / 1000);
+    const challengeId = typeof data.challengeId === "string" ? data.challengeId : "";
+
+    const signed = await signApproval(
+      {
+        version: APPROVAL_VERSION,
+        typ: "step-up-approval",
+        challengeId,
+        userId,
+        // The secretRef is read from the stored record, not the request. A
+        // caller cannot point an approval at a different credential's share.
+        resourceId: releaseShareRef,
+        operation,
+        secretRef: releaseShareRef,
+        iat,
+        exp: iat + Math.min(DEFAULT_APPROVAL_TTL_SECONDS, MAX_APPROVAL_TTL_SECONDS),
+        jti: crypto.randomUUID(),
+      },
+      loadApprovalPrivateKey(secret),
+    );
+
+    this.sendSuccess(res, 200, { approval: signed });
   }
 
   private async routeApiInfo(req: IncomingMessage, res: ServerResponse): Promise<void> {

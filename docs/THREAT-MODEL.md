@@ -453,8 +453,10 @@ release.
 | A Core user cannot approve someone else's credential (R3) | Live server: 404 with the identical message as "no such credential", so ids cannot be enumerated |
 | An approval for the wrong credential is refused (R3) | Live Plus: 400, with a genuine Core signature on a mismatched `secretRef` |
 | An approval signed by an unpinned key is refused (R3) | Live Plus: 400 |
-| MV3 eviction is fail-OPEN at the extension layer (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps, then shows: guarded while memory is intact, attempted after eviction, and — with Plus answering "granted" — released with no step-up ever completed |
-| The eviction denial comes from Plus, not the extension (R9) | Same suite: after eviction a `/capabilities/request` is issued with no challenge behind it, so the guard contributed nothing |
+| MV3 eviction **was** fail-open, and the suite still measures it (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps. Case 3 asserts the release is now REFUSED; reverting the fix turns it red, which is how the coverage was confirmed rather than assumed |
+| A completed step-up still releases on retry (R9) | New case in the same suite: pay-then-retry succeeds inside the session, so the persistence did not break the legitimate path |
+| Locking clears the step-up gate and verifies it (R9) | `handleLockVault` removes the key and re-reads it; it refuses to report a successful lock if the key survived |
+| A real approval was reported to the user as REFUSED (R9) | Plus's `sendSuccess` does not wrap its payload, so `body.success` read `undefined`. Fixed on both sides, and the stub now models both response shapes |
 | `verifyCapabilityCore` / `consumeCapabilityJti` are dead | No matches outside their definitions in `src/` or `plus/` |
 | All `path:line` citations in both documents | Automated check over every citation: the file exists, the line number is in range, and the cited line was read back and compared against the claim it supports. The first pass found 29 structural defects (non-existent path, ambiguous basename, or out-of-range line) plus several wrong-but-in-range line numbers; all were corrected before this document was finalised. Final result: **248 citations, 0 problems.** |
 

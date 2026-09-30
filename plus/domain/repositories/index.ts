@@ -7,7 +7,7 @@
 
 import type { Resource } from "../entities/resource";
 import type { Entitlement } from "../entities/entitlement";
-import type { PlusUser } from "../entities/user";
+import type { PlusUser, PinLockoutState } from "../entities/user";
 import type { ResourceType, ResourceEnvironment, ResourceCriticality } from "../entities/resource";
 import type { PestilloState } from "../entities/entitlement";
 
@@ -75,6 +75,28 @@ export interface IPlusUserRepository {
   list(): Promise<PlusUser[]>;
   isHealthy(): Promise<boolean>;
   close(): Promise<void>;
+  /**
+   * R4 — the failed-PIN lockout state of one user (`006_pin_lockout.sql`).
+   *
+   * A user that does not exist has no budget and no lock: the default state
+   * is returned rather than an error, because the capability gate already
+   * denies unknown users and there is no row to lock in the first place.
+   */
+  getPinLockout(userId: string): Promise<PinLockoutState>;
+  /**
+   * Atomically increments `failed_pin_attempts` and returns the fresh state.
+   *
+   * Atomic in the database (`SET failed_pin_attempts = failed_pin_attempts +
+   * 1`) rather than read-modify-write in the caller: concurrent guesses must
+   * not be able to overwrite each other's increment and keep the counter below
+   * the threshold.
+   */
+  recordFailedPinAttempt(userId: string): Promise<PinLockoutState>;
+  /**
+   * Writes both lockout columns for one user — the only path that may change
+   * them, so a generic `save()` can never clear a lock.
+   */
+  setPinLockout(userId: string, state: PinLockoutState): Promise<void>;
 }
 
 export interface IChallengeRepository {

@@ -63,6 +63,9 @@ const USER_ROW: PlusUserRow = {
   created_at: new Date("2026-01-02T10:30:00.000Z"),
   updated_at: new Date("2026-01-03T11:45:00.000Z"),
   last_login_at: new Date("2026-01-04T08:00:00.000Z"),
+  // R4 lockout columns (006_pin_lockout.sql).
+  failed_pin_attempts: 4,
+  locked_until: null,
 };
 
 const RESOURCE_ROW: ResourceRow = {
@@ -209,6 +212,8 @@ describe("mapPlusUserRow", () => {
         "createdAt",
         "updatedAt",
         "lastLoginAt",
+        "failedPinAttempts",
+        "lockedUntil",
       ].sort(),
     );
 
@@ -223,6 +228,32 @@ describe("mapPlusUserRow", () => {
     expect(plain.createdAt).toBe("2026-01-02T10:30:00.000Z");
     expect(plain.updatedAt).toBe("2026-01-03T11:45:00.000Z");
     expect(plain.lastLoginAt).toBe("2026-01-04T08:00:00.000Z");
+    expect(plain.failedPinAttempts).toBe(4);
+    // NULL locked_until means "not locked" — undefined, never null.
+    expect(plain.lockedUntil).toBeUndefined();
+  });
+
+  it("maps an armed lock, and defaults a row from before migration 006", () => {
+    const locked = mapPlusUserRow({
+      ...USER_ROW,
+      failed_pin_attempts: 5,
+      locked_until: new Date("2026-01-05T09:30:00.000Z"),
+    });
+    expect(locked.failedPinAttempts).toBe(5);
+    expect(locked.lockedUntil).toBe("2026-01-05T09:30:00.000Z");
+
+    // A table 006 has not touched yet has no key at all, and a NULL counter
+    // reads the same way: a clean budget, an unlocked user.
+    const legacy: PlusUserRow = { ...USER_ROW } as PlusUserRow;
+    delete (legacy as Record<string, unknown>).failed_pin_attempts;
+    delete (legacy as Record<string, unknown>).locked_until;
+    expect(mapPlusUserRow(legacy).failedPinAttempts).toBe(0);
+    expect(mapPlusUserRow(legacy).lockedUntil).toBeUndefined();
+    expect(mapPlusUserRow({ ...USER_ROW, failed_pin_attempts: null }).failedPinAttempts).toBe(0);
+
+    // The entity must accept the mapped shape without throwing.
+    expect(() => PlusUser.fromPlainObject(mapPlusUserRow(legacy))).not.toThrow();
+    expect(PlusUser.fromPlainObject(mapPlusUserRow(legacy)).failedPinAttempts).toBe(0);
   });
 
   it("REGRESSION: habitualCountries .includes() does not throw", () => {

@@ -5,12 +5,25 @@
  * Following: RED -> GREEN -> REFACTOR
  */
 
-import { ChallengeService, getChallengeService, setChallengeService, ChallengeType, ChallengeStatus } from "../../plus/domain/services/challenge";
+import { ChallengeService, getChallengeService, setChallengeService, ChallengeType, ChallengeStatus, type IPinLockoutStore } from "../../plus/domain/services/challenge";
 import { NoOpEmailService } from "../../plus/domain/services/email-service";
 import { PlusUser } from "../../plus/domain/entities/user";
 import { Resource } from "../../plus/domain/entities/resource";
 import { signCapability, createCapabilityPayload, verifyCapability, generateEd25519KeyPair } from "../../src/infrastructure/crypto/ed25519-capability";
 import type { CapabilityOperation, SignedCapability } from "../../src/infrastructure/crypto/ed25519-capability";
+
+/**
+ * R4 — the per-user failed-PIN lockout store, kept unlocked and empty here.
+ * These cases exercise the challenge flow itself, not the lockout; the
+ * lockout has its own suite in `tests/unit/plus-pin-lockout.test.ts`.
+ */
+function emptyLockoutStore(): IPinLockoutStore {
+  return {
+    getPinLockout: async () => ({ failedPinAttempts: 0, lockedUntil: null }),
+    recordFailedPinAttempt: async () => ({ failedPinAttempts: 0, lockedUntil: null }),
+    setPinLockout: async () => undefined,
+  };
+}
 
 describe("ChallengeService", () => {
   let challengeService: ChallengeService;
@@ -61,6 +74,7 @@ describe("ChallengeService", () => {
       emailService,
       "https://plus.example.com",
       plusKeyPair.privateKeyBase64,
+      emptyLockoutStore(),
     );
   });
 
@@ -167,6 +181,7 @@ describe("ChallengeService", () => {
         emailService,
         "https://plus.example.com",
         plusKeyPair.privateKeyBase64,
+        emptyLockoutStore(),
       );
 
       // Create a real challenge with known PIN "123456"
@@ -250,6 +265,7 @@ describe("ChallengeService", () => {
         emailService,
         "https://plus.example.com",
         plusKeyPair.privateKeyBase64,
+        emptyLockoutStore(),
       );
 
       const result = await service.verifyPin({
@@ -275,6 +291,7 @@ describe("ChallengeService", () => {
         emailService,
         "https://plus.example.com",
         plusKeyPair.privateKeyBase64,
+        emptyLockoutStore(),
       );
 
       const result = await service.verifyPin({
@@ -299,6 +316,7 @@ describe("ChallengeService", () => {
         emailService,
         "https://plus.example.com",
         plusKeyPair.privateKeyBase64,
+        emptyLockoutStore(),
       );
 
       const result = await service.verifyPin({
@@ -322,6 +340,7 @@ describe("ChallengeService", () => {
         emailService,
         "https://plus.example.com",
         plusKeyPair.privateKeyBase64,
+        emptyLockoutStore(),
       );
 
       const result = await service.verifyPin({
@@ -355,15 +374,15 @@ describe("ChallengeService", () => {
   describe("Singleton", () => {
     test("getChallengeService returns singleton", () => {
       setChallengeService(null);
-      const s1 = getChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64);
-      const s2 = getChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64);
+      const s1 = getChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64, emptyLockoutStore());
+      const s2 = getChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64, emptyLockoutStore());
       expect(s1).toBe(s2);
     });
 
     test("setChallengeService replaces singleton", () => {
-      const s1 = new ChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64);
+      const s1 = new ChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64, emptyLockoutStore());
       setChallengeService(s1);
-      const s2 = getChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64);
+      const s2 = getChallengeService(mockChallengeRepo, emailService, "https://plus.example.com", plusKeyPair.privateKeyBase64, emptyLockoutStore());
       expect(s2).toBe(s1);
     });
   });

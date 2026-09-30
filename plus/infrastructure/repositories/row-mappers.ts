@@ -128,6 +128,14 @@ export type PlusUserRow = {
   created_at: Date | string;
   updated_at: Date | string;
   last_login_at: Date | string | null;
+  /**
+   * R4 lockout columns (`006_pin_lockout.sql`). Optional on the row type as
+   * well as nullable: a table that has not been migrated yet has no key at
+   * all, and the mapper must default it rather than read `undefined`.
+   */
+  failed_pin_attempts?: number | null;
+  /** `TIMESTAMPTZ` — NULL means the user is not locked. */
+  locked_until?: Date | string | null;
 };
 
 /** One row of `plus_resources`, spelled the way PostgreSQL returns it. */
@@ -196,6 +204,10 @@ export function mapPlusUserRow(row: PlusUserRow): PlusUserPlain {
     createdAt: toPlainTimestamp(row.created_at),
     updatedAt: toPlainTimestamp(row.updated_at),
     lastLoginAt: toOptionalPlainTimestamp(row.last_login_at),
+    // R4: a row with no value (SQL NULL) and a row from a table migration 006
+    // has not touched yet (no key at all) both read as a clean failure budget.
+    failedPinAttempts: row.failed_pin_attempts ?? 0,
+    lockedUntil: toOptionalPlainTimestamp(row.locked_until),
   };
 }
 

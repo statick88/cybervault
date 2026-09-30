@@ -491,6 +491,95 @@ describe("PostgresPlusUserRepository.delete", () => {
 });
 
 /* ========================================================================== */
+/* R4 — the per-user failed-PIN lockout                                        */
+/* ========================================================================== */
+
+describe("PostgresPlusUserRepository — pin lockout", () => {
+  it("reads the lockout off the user row, converting TIMESTAMPTZ to Unix ms", async () => {
+    const repo = newRepo();
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        plusUserRow({
+          failed_pin_attempts: 4,
+          locked_until: new Date("2026-01-05T09:30:00.000Z"),
+        }),
+      ],
+      rowCount: 1,
+    });
+
+    const state = await repo.getPinLockout("u-1");
+
+    const [sql, params] = lastCall();
+    expect(sql).toBe("SELECT * FROM plus_users WHERE id = $1");
+    expect(params).toEqual(["u-1"]);
+    expect(state.failedPinAttempts).toBe(4);
+    expect(state.lockedUntil).toBe(Date.parse("2026-01-05T09:30:00.000Z"));
+  });
+
+  it("reports an unknown user as a clean budget instead of failing", async () => {
+    const repo = newRepo();
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(repo.getPinLockout("ghost")).resolves.toEqual({
+      failedPinAttempts: 0,
+      lockedUntil: null,
+    });
+  });
+
+  it("increments the counter in the database, not in the caller", async () => {
+    const repo = newRepo();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ failed_pin_attempts: 5, locked_until: null }],
+      rowCount: 1,
+    });
+
+    const state = await repo.recordFailedPinAttempt("u-1");
+
+    const [sql, params] = lastCall();
+    // Read-modify-write in the caller would let two concurrent guesses
+    // overwrite each other's increment.
+    expect(sql).toContain("failed_pin_attempts = failed_pin_attempts + 1");
+    expect(sql).toContain("RETURNING failed_pin_attempts, locked_until");
+    expect(params).toEqual(["u-1"]);
+    expect(state).toEqual({ failedPinAttempts: 5, lockedUntil: null });
+  });
+
+  it("writes both columns as bound parameters, converting ms to a Date", async () => {
+    const repo = newRepo();
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    await repo.setPinLockout("u-1", {
+      failedPinAttempts: 5,
+      lockedUntil: 1_767_615_000_000,
+    });
+
+    const [sql, params] = lastCall();
+    expect(sql).toContain("SET failed_pin_attempts = $2");
+    expect(sql).toContain("locked_until = $3");
+    expect(sql).toMatch(/\$\d/);
+    expect(params).toEqual(["u-1", 5, new Date(1_767_615_000_000)]);
+  });
+
+  it("clears a lock by binding NULL, never by omitting the column", async () => {
+    const repo = newRepo();
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    await repo.setPinLockout("u-1", { failedPinAttempts: 0, lockedUntil: null });
+
+    expect(lastCall()[1]).toEqual(["u-1", 0, null]);
+  });
+
+  it("propagates a database error instead of counting a failure that did not land", async () => {
+    const repo = newRepo();
+    mockQuery.mockRejectedValue(new Error("simulated database failure"));
+
+    await expect(repo.recordFailedPinAttempt("u-1")).rejects.toThrow(
+      "simulated database failure",
+    );
+  });
+});
+
+/* ========================================================================== */
 /* Lifecycle                                                                   */
 /* ========================================================================== */
 
@@ -514,6 +603,14 @@ describe("PostgresPlusUserRepository — lifecycle", () => {
     }
     expect(sql).toContain(
       "CREATE INDEX IF NOT EXISTS idx_plus_users_role ON plus_users(role)",
+    );
+    // R4: the lockout columns a bootstrapped table needs, added with the same
+    // idempotent ALTERs migration 006 issues against an existing one.
+    expect(sql).toContain(
+      "ALTER TABLE plus_users ADD COLUMN IF NOT EXISTS failed_pin_attempts INTEGER NOT NULL DEFAULT 0",
+    );
+    expect(sql).toContain(
+      "ALTER TABLE plus_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE",
     );
     await Promise.resolve(); // settle the fire-and-forget promise
   });

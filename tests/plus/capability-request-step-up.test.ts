@@ -35,7 +35,7 @@ import type {
 import type { IEmailService } from "../../plus/domain/services/email-service";
 import { setRiskEngine } from "../../plus/domain/services/risk-engine";
 import { Entitlement, type PestilloState } from "../../plus/domain/entities/entitlement";
-import { PlusUser } from "../../plus/domain/entities/user";
+import { PlusUser, type PinLockoutState } from "../../plus/domain/entities/user";
 import {
   loadEd25519PublicKey,
   verifyCapability,
@@ -293,6 +293,28 @@ class MemoryUserRepo implements IPlusUserRepository {
 
   async close(): Promise<void> {
     /* in-memory */
+  }
+
+  // R4 — the per-user failed-PIN lockout, on the user row rather than on the
+  // challenge, so a fresh challenge cannot hand a fresh guess budget.
+  private readonly lockouts = new Map<string, PinLockoutState>();
+
+  async getPinLockout(userId: string): Promise<PinLockoutState> {
+    return this.lockouts.get(userId) ?? { failedPinAttempts: 0, lockedUntil: null };
+  }
+
+  async recordFailedPinAttempt(userId: string): Promise<PinLockoutState> {
+    const current = await this.getPinLockout(userId);
+    const next: PinLockoutState = {
+      failedPinAttempts: current.failedPinAttempts + 1,
+      lockedUntil: current.lockedUntil,
+    };
+    this.lockouts.set(userId, next);
+    return next;
+  }
+
+  async setPinLockout(userId: string, state: PinLockoutState): Promise<void> {
+    this.lockouts.set(userId, state);
   }
 }
 

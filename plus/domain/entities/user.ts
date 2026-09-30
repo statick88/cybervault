@@ -23,6 +23,33 @@ export interface PlusUserProps {
   createdAt: Date;
   updatedAt: Date;
   lastLoginAt?: Date;
+  /**
+   * R4 — failed step-up PIN verifications recorded against THIS user, across
+   * all of their challenges. The per-challenge `attempts` counter is reset by
+   * creating a new challenge, so it cannot stop an online brute force; this
+   * one lives on the user row (migration `006_pin_lockout.sql`) and is only
+   * cleared by a correct PIN.
+   */
+  failedPinAttempts: number;
+  /**
+   * R4 — Unix ms until which PIN verification is refused, `undefined` when the
+   * user is not locked. Read-only domain state: there is no mutator here on
+   * purpose, the lockout is written exclusively through
+   * `IPlusUserRepository.setPinLockout`.
+   */
+  lockedUntil?: Date;
+}
+
+/**
+ * The two lockout columns, as the persistence port reads and writes them.
+ *
+ * `lockedUntil` is Unix ms (`null` when unlocked) so the domain keeps every
+ * instant in the same unit `ChallengeProps` uses; the repository converts to
+ * `TIMESTAMPTZ` at the boundary.
+ */
+export interface PinLockoutState {
+  failedPinAttempts: number;
+  lockedUntil: number | null;
 }
 
 export class PlusUser {
@@ -75,6 +102,14 @@ export class PlusUser {
 
   get lastLoginAt(): Date | undefined {
     return this.props.lastLoginAt;
+  }
+
+  get failedPinAttempts(): number {
+    return this.props.failedPinAttempts;
+  }
+
+  get lockedUntil(): Date | undefined {
+    return this.props.lockedUntil;
   }
 
   // Business methods
@@ -152,6 +187,8 @@ export class PlusUser {
       metadata: props.metadata,
       createdAt: now,
       updatedAt: now,
+      // A new account starts with a clean failure budget and no lock.
+      failedPinAttempts: 0,
     });
   }
 
@@ -167,6 +204,13 @@ export class PlusUser {
     createdAt: string;
     updatedAt: string;
     lastLoginAt?: string;
+    /**
+     * Optional because a row written before `006_pin_lockout.sql` has no value
+     * to map — or no key at all. Such a row reads as "no failures, unlocked"
+     * instead of `undefined` arithmetic in `verifyPin`.
+     */
+    failedPinAttempts?: number;
+    lockedUntil?: string;
   }): PlusUser {
     return new PlusUser({
       id: obj.id,
@@ -180,6 +224,8 @@ export class PlusUser {
       createdAt: new Date(obj.createdAt),
       updatedAt: new Date(obj.updatedAt),
       lastLoginAt: obj.lastLoginAt ? new Date(obj.lastLoginAt) : undefined,
+      failedPinAttempts: obj.failedPinAttempts ?? 0,
+      lockedUntil: obj.lockedUntil ? new Date(obj.lockedUntil) : undefined,
     });
   }
 
@@ -195,6 +241,8 @@ export class PlusUser {
     createdAt: string;
     updatedAt: string;
     lastLoginAt?: string;
+    failedPinAttempts: number;
+    lockedUntil?: string;
   } {
     return {
       id: this.props.id,
@@ -208,9 +256,17 @@ export class PlusUser {
       createdAt: this.props.createdAt.toISOString(),
       updatedAt: this.props.updatedAt.toISOString(),
       lastLoginAt: this.props.lastLoginAt?.toISOString(),
+      failedPinAttempts: this.props.failedPinAttempts,
+      lockedUntil: this.props.lockedUntil?.toISOString(),
     };
   }
 
+  /**
+   * The client-facing projection. Lockout state (`failedPinAttempts`,
+   * `lockedUntil`) is deliberately absent: enforcement internals are never
+   * serialized to a caller, and `toPlainObject()` is the only shape that
+   * carries them.
+   */
   toSafeObject(): {
     id: string;
     email: string;

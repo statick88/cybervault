@@ -180,6 +180,9 @@ export class PlusApiServer {
       this.emailService,
       PLUS_CONFIG.challengeBaseUrl,
       signingKey,
+      // R4: the per-user failed-PIN lockout runs on the user repository, so a
+      // fresh challenge can no longer hand a fresh guess budget.
+      this.userRepo,
     );
 
     this.riskEngine = require("../domain/services/risk-engine").getRiskEngine();

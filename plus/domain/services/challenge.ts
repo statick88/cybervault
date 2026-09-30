@@ -15,9 +15,42 @@ import { binaryToBase64, base64ToBinary } from "@/shared/utils";
 import type { CapabilityOperation, SignedCapability } from "@/infrastructure/crypto/ed25519-capability";
 import { signCapability, createCapabilityPayload, verifyCapability, loadEd25519PrivateKey } from "@/infrastructure/crypto/ed25519-capability";
 import { verifyAndConsumeJti } from "@/infrastructure/crypto/jti-store";
+import type { PinLockoutState } from "../entities/user";
 
 /** Challenge types */
 export type ChallengeType = "step_up" | "risk_based" | "forced";
+
+// R4 — the per-USER failed-PIN lockout thresholds.
+//
+// `challenges.attempts` (default `maxAttempts` 3) is a brake on ONE challenge.
+// Minting the next challenge resets it, and minting is exactly what
+// `/api/v1/challenges/trigger` and the capability gate do for free — so with
+// the R1 rate limit alone the per-challenge counter still admits ~180 guesses
+// a minute against a 6-digit PIN space. These thresholds move the brake onto
+// the user, where recreating a challenge cannot refresh it.
+
+/** Failed PIN verifications tolerated across ALL of a user's challenges. */
+export const PIN_LOCKOUT_THRESHOLD = 5;
+/** How long the account is locked once the threshold is reached (15 minutes). */
+export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
+/** A step-up PIN is exactly this many characters. */
+export const PIN_LENGTH = 6;
+
+/**
+ * The persistence the lockout runs on.
+ *
+ * Narrow on purpose — the challenge service needs to read, increment and
+ * write one user's lockout, nothing else about the user directory. The
+ * production implementation is `PostgresPlusUserRepository`, so the state
+ * survives a Plus restart, a Core restart and is shared by every replica:
+ * an in-memory map would be defeated by the very restart R2 taught us not to
+ * rely on.
+ */
+export interface IPinLockoutStore {
+  getPinLockout(userId: string): Promise<PinLockoutState>;
+  recordFailedPinAttempt(userId: string): Promise<PinLockoutState>;
+  setPinLockout(userId: string, state: PinLockoutState): Promise<void>;
+}
 
 /** Challenge status */
 export type ChallengeStatus = "pending" | "email_sent" | "url_accessed" | "completed" | "expired" | "failed";
@@ -117,17 +150,22 @@ export class ChallengeService {
   private emailService: IEmailService;
   private baseUrl: string; // Base URL for challenge links (e.g., https://plus.company.com)
   private plusPrivateKey: Uint8Array; // Ed25519 private key for signing capabilities
+  private pinLockout: IPinLockoutStore; // R4: DB-backed per-user failed-PIN lockout
 
   constructor(
     challengeRepo: IChallengeRepository,
     emailService: IEmailService,
     baseUrl: string,
     plusPrivateKeyBase64: string,
+    pinLockout: IPinLockoutStore,
   ) {
     this.challengeRepo = challengeRepo;
     this.emailService = emailService;
     this.baseUrl = baseUrl.replace(/\/$/, ""); // Remove trailing slash
     this.plusPrivateKey = loadEd25519PrivateKey(plusPrivateKeyBase64);
+    // Required, not optional: a service constructed without a lockout store
+    // would silently enforce nothing, which is the R4 bug wearing a hat.
+    this.pinLockout = pinLockout;
   }
 
   /**
@@ -291,6 +329,25 @@ export class ChallengeService {
       return { success: false, error: "Challenge not found" };
     }
 
+    // R4 — the lockout belongs to the challenge's OWN user, is checked before
+    // any PIN HMAC is computed, and answers with exactly what a wrong PIN
+    // answers: no HMAC means no timing/content oracle for the correct PIN, and
+    // an error string identical to "Invalid PIN" means the caller cannot tell
+    // "locked" from "wrong" either. The lock outlives the challenge it was
+    // earned on, so minting a fresh challenge does not dodge it.
+    const lockout = await this.pinLockout.getPinLockout(challenge.userId);
+    if (lockout.lockedUntil !== null && lockout.lockedUntil > Date.now()) {
+      logger.warn(
+        `Refusing PIN verification: user ${challenge.userId} is locked until ${new Date(lockout.lockedUntil).toISOString()}`,
+        "ChallengeService",
+      );
+      return {
+        success: false,
+        error: "Invalid PIN",
+        attemptsRemaining: Math.max(0, challenge.maxAttempts - challenge.attempts),
+      };
+    }
+
     // Check status
     if (challenge.status !== "email_sent" && challenge.status !== "url_accessed") {
       return { success: false, error: `Challenge not in valid state: ${challenge.status}` };
@@ -312,17 +369,48 @@ export class ChallengeService {
       return { success: false, error: "Maximum attempts exceeded" };
     }
 
+    // R4 — format gate before the HMAC. An input that is not exactly
+    // PIN_LENGTH characters can never equal a generated PIN, so hashing it
+    // would hand free CPU to the caller and would record a "wrong PIN" for
+    // something that was never a PIN at all. It is also NOT counted against
+    // the user: otherwise anyone who can reach this route could lock an
+    // account by sending garbage five times.
+    if (typeof input.pin !== "string" || input.pin.length !== PIN_LENGTH) {
+      return {
+        success: false,
+        error: "Invalid PIN format",
+        attemptsRemaining: challenge.maxAttempts - challenge.attempts,
+      };
+    }
+
     // Verify PIN HMAC
     const providedHmac = await this.computePinHmac(input.pin, challenge.pinSalt);
     if (providedHmac !== challenge.pinHmac) {
       challenge.attempts++;
       challenge.updatedAt = Date.now();
       await this.challengeRepo.update(challenge);
+      // Wrong PIN: count it against the USER as well as the challenge, so the
+      // budget cannot be reset by minting the next challenge.
+      await this.registerWrongPin(challenge.userId);
       return {
         success: false,
         error: "Invalid PIN",
         attemptsRemaining: challenge.maxAttempts - challenge.attempts,
       };
+    }
+
+    // PIN correct — the only event that clears the user's failure budget and
+    // any lock left over from earlier mistakes (the read above is that state,
+    // so a clean user costs no write at all).
+    if (lockout.failedPinAttempts !== 0 || lockout.lockedUntil !== null) {
+      await this.pinLockout.setPinLockout(challenge.userId, {
+        failedPinAttempts: 0,
+        lockedUntil: null,
+      });
+      logger.info(
+        `PIN lockout cleared for user ${challenge.userId} after a correct PIN`,
+        "ChallengeService",
+      );
     }
 
     // PIN correct - mark as accessed if first time
@@ -375,6 +463,36 @@ export class ChallengeService {
       success: true,
       capabilityToken: signedCapability,
     };
+  }
+
+  /**
+   * R4 — count a wrong PIN against the USER, not only against the challenge.
+   *
+   * The increment happens in the database (`failed_pin_attempts + 1`) so
+   * concurrent guesses cannot overwrite each other's increment. When the
+   * returned total reaches `PIN_LOCKOUT_THRESHOLD` the lock is armed for
+   * `PIN_LOCKOUT_MS`.
+   *
+   * The counter is deliberately sticky: it is cleared only by a correct PIN,
+   * so letting a lock expire does not hand the caller a fresh budget — the
+   * very next mistake re-arms it. Both policies bound a brute force to
+   * `PIN_LOCKOUT_THRESHOLD` guesses per `PIN_LOCKOUT_MS` regardless of how
+   * many challenges are minted in between.
+   */
+  private async registerWrongPin(userId: string): Promise<void> {
+    const state = await this.pinLockout.recordFailedPinAttempt(userId);
+    if (state.failedPinAttempts < PIN_LOCKOUT_THRESHOLD) {
+      return;
+    }
+
+    await this.pinLockout.setPinLockout(userId, {
+      failedPinAttempts: state.failedPinAttempts,
+      lockedUntil: Date.now() + PIN_LOCKOUT_MS,
+    });
+    logger.warn(
+      `PIN lockout engaged for user ${userId} after ${state.failedPinAttempts} failed attempts`,
+      "ChallengeService",
+    );
   }
 
   /**
@@ -459,9 +577,16 @@ export function getChallengeService(
   emailService: IEmailService,
   baseUrl: string,
   plusPrivateKeyBase64: string,
+  pinLockout: IPinLockoutStore,
 ): ChallengeService {
   if (!_challengeService) {
-    _challengeService = new ChallengeService(challengeRepo, emailService, baseUrl, plusPrivateKeyBase64);
+    _challengeService = new ChallengeService(
+      challengeRepo,
+      emailService,
+      baseUrl,
+      plusPrivateKeyBase64,
+      pinLockout,
+    );
   }
   return _challengeService;
 }

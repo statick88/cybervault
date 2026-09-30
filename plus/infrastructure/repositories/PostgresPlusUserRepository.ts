@@ -4,7 +4,7 @@
 
 import type { QueryResult } from "pg";
 import { Pool } from "pg";
-import { PlusUser } from "../../domain/entities/user";
+import { PlusUser, type PinLockoutState } from "../../domain/entities/user";
 import type { IPlusUserRepository } from "../../domain/repositories";
 import { logger } from "@/shared/logger";
 import { withRetry } from "@/shared/retry";
@@ -63,6 +63,13 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
       CREATE INDEX IF NOT EXISTS idx_plus_users_email ON plus_users(email);
       CREATE INDEX IF NOT EXISTS idx_plus_users_role ON plus_users(role);
       CREATE INDEX IF NOT EXISTS idx_plus_users_active ON plus_users(active);
+
+      -- R4: the same two columns migration 006_pin_lockout.sql adds. A table
+      -- this method provisioned BEFORE that migration existed has no lockout
+      -- state, and recordFailedPinAttempt would fail on a missing column — so
+      -- the additive ALTERs run here too and both provisioning paths converge.
+      ALTER TABLE plus_users ADD COLUMN IF NOT EXISTS failed_pin_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE plus_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE;
     `;
 
     await this.executeWithCircuit(() => this.pool.query(createTableQuery));
@@ -72,6 +79,11 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
   async save(user: PlusUser): Promise<PlusUser> {
     const plain = user.toPlainObject();
 
+    // The two R4 lockout columns (failed_pin_attempts, locked_until) are
+    // deliberately NOT in this column list or in the ON CONFLICT SET clause:
+    // an upsert of a stale entity must never be able to clear a lock. They
+    // are written only by setPinLockout / recordFailedPinAttempt below, and a
+    // conflict leaves them untouched, which is exactly the desired behaviour.
     const query = `
       INSERT INTO plus_users (
         id, email, name, role, habitual_countries, timezone,
@@ -295,6 +307,89 @@ export class PostgresPlusUserRepository implements IPlusUserRepository {
       );
     } catch (error) {
       logger.error("Failed to list plus users", "PostgresPlusUserRepository", undefined, String(error));
+      throw error;
+    }
+  }
+
+  /* ========================================================================== */
+  /* R4 — the per-user failed-PIN lockout (006_pin_lockout.sql)                 */
+  /* ========================================================================== */
+
+  async getPinLockout(userId: string): Promise<PinLockoutState> {
+    const user = await this.findById(userId);
+    if (!user) {
+      // No row means no budget and no lock: there is nothing to enforce
+      // against, and `authorizeCapabilityRequest` already denies unknown users.
+      return { failedPinAttempts: 0, lockedUntil: null };
+    }
+    return {
+      failedPinAttempts: user.failedPinAttempts,
+      lockedUntil: user.lockedUntil?.getTime() ?? null,
+    };
+  }
+
+  async recordFailedPinAttempt(userId: string): Promise<PinLockoutState> {
+    // Incremented BY THE DATABASE, not by the caller: a read-modify-write
+    // would let two concurrent guesses overwrite each other's increment and
+    // hold the counter below the threshold indefinitely.
+    const query = `
+      UPDATE plus_users
+      SET failed_pin_attempts = failed_pin_attempts + 1,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+      RETURNING failed_pin_attempts, locked_until
+    `;
+    try {
+      const result: QueryResult = await this.executeWithCircuit(() =>
+        withRetry(
+          () => this.pool.query(query, [userId]),
+          { maxAttempts: 2, retryableErrors: PG_RETRYABLE_ERRORS },
+        ),
+      );
+      if (result.rows.length === 0) {
+        logger.warn(`Failed PIN attempt against unknown plus user: ${userId}`);
+        return { failedPinAttempts: 0, lockedUntil: null };
+      }
+      const row = result.rows[0];
+      return {
+        failedPinAttempts: row.failed_pin_attempts ?? 0,
+        lockedUntil: row.locked_until ? new Date(row.locked_until).getTime() : null,
+      };
+    } catch (error) {
+      logger.error("Failed to record failed PIN attempt", "PostgresPlusUserRepository", undefined, String(error));
+      throw error;
+    }
+  }
+
+  async setPinLockout(userId: string, state: PinLockoutState): Promise<void> {
+    const query = `
+      UPDATE plus_users
+      SET failed_pin_attempts = $2,
+          locked_until = $3,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+    `;
+    // Unix ms → TIMESTAMPTZ at the boundary, the direction 005 documents.
+    const values = [
+      userId,
+      state.failedPinAttempts,
+      state.lockedUntil === null ? null : new Date(state.lockedUntil),
+    ];
+    try {
+      const result: QueryResult = await this.executeWithCircuit(() =>
+        withRetry(
+          () => this.pool.query(query, values),
+          { maxAttempts: 2, retryableErrors: PG_RETRYABLE_ERRORS },
+        ),
+      );
+      if ((result.rowCount ?? 0) === 0) {
+        // Loud, not silent: a lock that quietly does not persist would be a
+        // fail-open lockout. A missing row is warned about; a missing COLUMN
+        // surfaces as the query error rethrown below, which is fail-closed.
+        logger.warn(`Pin lockout state not written, plus user not found: ${userId}`);
+      }
+    } catch (error) {
+      logger.error("Failed to write pin lockout state", "PostgresPlusUserRepository", undefined, String(error));
       throw error;
     }
   }

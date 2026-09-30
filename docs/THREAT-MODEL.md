@@ -382,40 +382,75 @@ box the extension does not reach the containers. Correctable through
 `core_base_url` / `plus_base_url` in `chrome.storage.local`, but not wired by
 default.
 
-### R11 — The approval proves authorisation, not a human (Medium, accepted)
+### R11 — RESOLVED — the approval proved authorisation, not a human (was Medium, accepted)
 
-Introduced by R3, and stated rather than buried.
+`POST /api/v1/step-up/approve` signed an approval for any authenticated caller
+naming a credential they owned. The signature proved **Core authorised** the
+release; it did not prove a **person decided to**, and nothing in the flow
+required a user to be present.
 
-`POST /api/v1/step-up/approve` (`src/infrastructure/api/server.ts`) signs an
-approval for any authenticated caller who names a credential they own. The
-signature proves **Core** authorised that exact release. It does not prove a
-person decided to.
+The attacker is not a network attacker. It is code running as the extension's
+background worker — a malicious content script, a compromised dependency, a
+supply-chain update — holding the bearer token, the userId and the credential
+ids the user owns. It called the approve endpoint itself and received a
+validly signed approval.
 
-A compromised background worker (`src/background/auditor.ts`) holding a live
-session token can therefore call the endpoint itself, obtain a validly signed
-approval, and complete the step-up with no user present. The popup's approve
-button is the intended control; it is not a cryptographic one.
+*Resolution* (`771d564`). Approval now requires **proof of possession**, in one
+of two forms whose difference is the entire point:
 
-What the signature *does* prevent, and this is not nothing:
+**WebAuthn — the real control.** The private key lives in the platform
+authenticator. It is never readable by Core, by the extension, or by any
+JavaScript context. A fully compromised worker can *request* an assertion and
+cannot produce one: the authenticator requires user presence, and Core
+verifies against a key the attacker does not hold. The decisive check is the
+**user-presence flag** (authenticator data byte 32, bit 0x01) — without it the
+signature is software-produced and the flow is self-approvable.
 
-- Forging or editing an approval.
-- Replaying one against a different credential, operation or secret.
-- Replaying one after it expires, or a second time (the `jti` is consumed
-  atomically before anything is issued).
-- Using an approval without Core's key.
-- Doing any of it without leaving an audit record in Core.
+**Passphrase — defence in depth, honestly scoped.** A two-round PBKDF2
+challenge-response over the existing `users.hash`. It defeats an *automated*
+caller with a stolen token. It does **not** defeat a worker that can read
+memory, because such a worker already holds the master passphrase. A user with
+no authenticator is better protected than before, and no better protected
+against a hostile worker than a session token already failed to be.
 
-*Accepted because:* closing it requires the user to re-prove something at
-approve time — a passphrase re-entry, or a WebAuthn assertion bound to the
-challenge. That is a materially larger change than the release flow, and it
-interacts with R9 (MV3 eviction would drop an in-flight WebAuthn ceremony).
-Shipping a signature that is genuinely unforgeable and honestly scoped is
-better than not shipping it; shipping it *as if* it proved human consent would
-not be.
+*Two rounds, and why.* Core stores `PBKDF2(passphrase, users.salt)` and never
+the passphrase, so a client-side `PBKDF2(passphrase, challenge)` proof could not
+be verified at all — there was nothing to compare against. The first draft fell
+into exactly that trap and "verified" a well-formed 64-byte value, which any
+caller can send. The client reproduces the stored hash from the passphrase and
+the salt it already holds — Core never sends the hash, which would be handing
+over a password-equivalent verifier — and PBKDFs again over the challenge. Core
+recomputes that second round from the hash it holds.
 
-*To close:* add a proof-of-possession step to `POST /api/v1/step-up/approve`,
-and require it to be bound to `challengeId` so it cannot be lifted onto another
-release.
+*Binding and single use.* The proof is bound to **both** the release challenge
+and the one-shot approval challenge, so a proof captured for credential A
+cannot release credential B. Consumption is a single
+`UPDATE ... WHERE consumed_at IS NULL RETURNING` — not an in-process flag,
+because R2 established that Core losing its memory made spent capabilities
+spendable again. A wrong proof burns the challenge, so a right proof cannot
+follow it.
+
+*No new dependency.* Registration uses `attestation: "none"`, so there is no
+attestation object to parse and the public key is stored as the 65-byte
+uncompressed point. A minimal COSE reader covers the single shape WebAuthn
+sends; a general CBOR library would be a supply-chain surface for a
+thirty-line parser.
+
+*Residual:*
+
+- A compromised worker can still **request** an assertion and prompt for it. It
+  cannot complete one without the user touching the authenticator, but it can
+  produce a prompt at an arbitrary moment. The user's attention is part of the
+  control, and a determined social engineer is outside this threat model.
+- The passphrase path remains a raised bar for a memory-reading attacker, and
+  the threat model says so rather than implying otherwise.
+- Authenticator registration is itself proof-gated with a one-time challenge,
+  so a worker cannot enrol its own key.
+
+*Verified:* `tests/integration/step-up-approval-flow.test.ts` — a caller with a
+valid token, naming a credential they genuinely own, and **no proof**, is
+refused. That test fails when the refusal is removed, which was confirmed
+rather than assumed.
 
 ---
 
@@ -453,6 +488,11 @@ release.
 | A Core user cannot approve someone else's credential (R3) | Live server: 404 with the identical message as "no such credential", so ids cannot be enumerated |
 | An approval for the wrong credential is refused (R3) | Live Plus: 400, with a genuine Core signature on a mismatched `secretRef` |
 | An approval signed by an unpinned key is refused (R3) | Live Plus: 400 |
+| A valid token with NO proof is refused (R11) | `tests/integration/step-up-approval-flow.test.ts` — the caller owns the credential, the token is valid, nothing else is wrong. Confirmed to fail when the refusal is removed |
+| A wrong passphrase burns the challenge (R11) | Same suite: after a wrong proof, the right one is also refused — a single-use challenge that survives failure is a reusable oracle |
+| A proof minted for another release is refused (R11) | Same suite: a proof bound to a different release challenge |
+| WebAuthn verification is not a formality (R11) | `tests/unit/step-up-proof.test.ts` — 34 cases covering ceremony type, challenge match, origin, rpIdHash, **user presence**, counter regression, signature, and malformed COSE |
+| A platform authenticator is not treated as a clone (R11) | A counter of 0 against a stored 0 is accepted: Touch ID and Windows Hello report 0 on every assertion. Only a regression between two non-zero counters is evidence of a clone |
 | MV3 eviction **was** fail-open, and the suite still measures it (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps. Case 3 asserts the release is now REFUSED; reverting the fix turns it red, which is how the coverage was confirmed rather than assumed |
 | A completed step-up still releases on retry (R9) | New case in the same suite: pay-then-retry succeeds inside the session, so the persistence did not break the legitimate path |
 | Locking clears the step-up gate and verifies it (R9) | `handleLockVault` removes the key and re-reads it; it refuses to report a successful lock if the key survived |

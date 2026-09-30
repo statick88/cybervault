@@ -4,7 +4,7 @@
  * HTTP API for Plus service providing:
  * - Capability token issuance (POST /api/v1/capabilities/request)
  * - Entitlement checking (POST /api/v1/entitlements/check)
- * - Challenge management (POST /api/v1/challenges/trigger, POST /api/v1/challenges/verify)
+ * - Challenge management (POST /api/v1/challenges/trigger, POST /api/v1/challenges/approve)
  * - Public key distribution (GET /api/v1/crypto/public-key)
  * - Audit logging (POST /api/v1/audit)
  * - Health checks (GET /health, GET /ready)
@@ -26,6 +26,7 @@ import { PostgresEntitlementRepository } from "../infrastructure/repositories/Po
 import { PostgresPlusUserRepository } from "../infrastructure/repositories/PostgresPlusUserRepository";
 import { NoOpEmailService } from "../domain/services/email-service";
 import type { IEmailService } from "../domain/services/email-service";
+import type { SignedApproval } from "@/infrastructure/crypto/ed25519-approval";
 import type { CapabilityOperation } from "../domain/operations";
 import { Resource } from "../domain/entities/resource";
 
@@ -159,11 +160,12 @@ export class PlusApiServer {
     // service used to be handed `PLUS_CAPABILITY_PRIVATE_KEY || <a freshly
     // generated key>` in two separate expressions, so with the variable unset
     // they each generated their OWN key: `/api/v1/crypto/public-key` then
-    // published the issuer's key while `/api/v1/challenges/verify` signed with
-    // the other one, and every capability a correct PIN produced was signed
-    // with a key Core had never pinned. The step-up completion was therefore
-    // unusable even when the PIN was right. The singletons are reset here so
-    // this constructor — and only this constructor — decides the key.
+    // published the issuer's key while `/api/v1/challenges/approve` signed with
+    // the other one, and every capability an accepted approval produced was
+    // signed with a key Core had never pinned. The step-up completion was
+    // therefore unusable even when the approval was valid. The singletons are
+    // reset here so this constructor — and only this constructor — decides the
+    // key.
     const signingKey =
       PLUS_CONFIG.capabilityIssuerKey ||
       require("@/infrastructure/crypto/ed25519-capability").generateEd25519KeyPair().privateKeyBase64;
@@ -175,14 +177,14 @@ export class PlusApiServer {
 
     this.capabilityIssuer = require("../domain/services/capability-issuer").getCapabilityIssuer(signingKey);
 
+    // R3: the fourth argument is the last one. The fifth used to be the R4
+    // per-user PIN lockout store; with no PIN there is nothing to lock out, so
+    // the constructor no longer accepts it.
     this.challengeService = require("../domain/services/challenge").getChallengeService(
       this.challengeRepo,
       this.emailService,
       PLUS_CONFIG.challengeBaseUrl,
       signingKey,
-      // R4: the per-user failed-PIN lockout runs on the user repository, so a
-      // fresh challenge can no longer hand a fresh guess budget.
-      this.userRepo,
     );
 
     this.riskEngine = require("../domain/services/risk-engine").getRiskEngine();
@@ -261,7 +263,7 @@ export class PlusApiServer {
    * declared in the config and the extension sent it as `X-Service-Secret`,
    * but nothing ever compared the two — so any anonymous caller could drive
    * challenge creation, probe entitlements for an arbitrary `userId`, and
-   * attempt PIN verification.
+   * submit a challenge approval.
    *
    * `/health` and `/ready` stay open because a readiness probe has no business
    * carrying a service credential. Everything else requires the secret.
@@ -759,7 +761,19 @@ export class PlusApiServer {
     }
   }
 
-  private async handleChallengeVerify(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  /**
+   * POST /api/v1/challenges/approve — accept Core's signed approval and issue
+   * the capability (R3, T4).
+   *
+   * The body carries the challenge id and the `SignedApproval` Core returned
+   * from `POST /api/v1/step-up/approve`. It deliberately does NOT carry a
+   * public key: verification runs against the Core approval key pinned in
+   * `CORE_APPROVAL_PUBLIC_KEY`, which is read inside `verifyApproval` from the
+   * process environment. A key supplied by the caller would make every check
+   * in this route meaningless, so no body field other than the token itself is
+   * trusted, and every binding field is rebuilt from the stored challenge.
+   */
+  private async handleChallengeApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
       this.sendError(res, 405, "Method not allowed");
       return;
@@ -767,21 +781,25 @@ export class PlusApiServer {
 
     try {
       const data = await this.parseJsonBody(req);
-      const { challengeId, pin, deviceId } = data as {
+      const { challengeId, approval, deviceId } = data as {
         challengeId: string;
-        pin: string;
+        approval?: unknown;
         deviceId?: string;
       };
 
-      if (!challengeId || !pin) {
-        this.sendError(res, 400, "challengeId and pin required");
+      if (!challengeId || !approval || typeof approval !== "object") {
+        this.sendError(res, 400, "challengeId and approval required");
         return;
       }
 
-      const result = await this.challengeService.verifyPin({ challengeId, pin, deviceId });
+      const result = await this.challengeService.verifyApproval({
+        challengeId,
+        approval: approval as SignedApproval,
+        deviceId,
+      });
 
       if (!result.success) {
-        this.sendError(res, 400, result.error || "PIN verification failed");
+        this.sendError(res, 400, result.error || "Approval verification failed");
         return;
       }
 
@@ -789,7 +807,7 @@ export class PlusApiServer {
         capabilityToken: result.capabilityToken,
       });
     } catch (error) {
-      logger.error("Challenge verify failed", "PlusApiServer", undefined, String(error));
+      logger.error("Challenge approve failed", "PlusApiServer", undefined, String(error));
       this.sendError(res, 500, "Internal server error");
     }
   }
@@ -921,8 +939,8 @@ export class PlusApiServer {
       case "/api/v1/challenges/trigger":
         await this.handleChallengeTrigger(req, res);
         break;
-      case "/api/v1/challenges/verify":
-        await this.handleChallengeVerify(req, res);
+      case "/api/v1/challenges/approve":
+        await this.handleChallengeApprove(req, res);
         break;
       case "/api/v1/crypto/public-key":
         await this.handlePublicKey(req, res);
@@ -944,7 +962,7 @@ export class PlusApiServer {
    *  1. `HTTPS_ENABLED` defaulted to `false` through the `SECURITY_CONFIG`
    *     snapshot frozen when this module was first imported, so a production
    *     deployment that simply forgot the variable served the whole
-   *     authorization API (capabilities, challenges, PIN verification) over
+   *     authorization API (capabilities, challenges, approval verification) over
    *     plaintext HTTP with no complaint.
    *  2. With `HTTPS_ENABLED=true` but an unreadable key or certificate, the
    *     `catch` logged a warning and started a PLAINTEXT HTTP server anyway —

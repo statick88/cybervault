@@ -17,8 +17,10 @@
  *   3. The challenge is bound to (userId, resourceId, operation, secretRef) and
  *      is reused rather than re-issued, so one binding gets one challenge.
  *   4. Only a completed challenge unlocks issuance, and only for ITS binding.
- *   5. The capability a correct PIN produces verifies against the public key
- *      the same server publishes on `/api/v1/crypto/public-key`.
+ *   5. `POST /api/v1/challenges/approve` accepts ONLY an approval Core signed
+ *      with the pinned key — there is no PIN anywhere in this suite — and the
+ *      capability it produces verifies against the public key the same server
+ *      publishes on `/api/v1/crypto/public-key`.
  *   6. Deny paths (`closed`, unknown entitlement, disallowed operation) still
  *      deny with 403 and no token.
  */
@@ -41,6 +43,15 @@ import {
   verifyCapability,
   type CapabilityOperation,
 } from "../../src/infrastructure/crypto/ed25519-capability";
+import {
+  APPROVAL_VERSION,
+  CORE_APPROVAL_PUBLIC_KEY_ENV,
+  generateApprovalKeyPair,
+  loadApprovalPrivateKey,
+  signApproval,
+  type ApprovalPayload,
+  type Ed25519ApprovalKeyPair,
+} from "../../src/infrastructure/crypto/ed25519-approval";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -86,8 +97,6 @@ interface StoredChallenge {
   expiresAt: number;
   attempts: number;
   maxAttempts: number;
-  pinHmac: string;
-  pinSalt: string;
   metadata?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -141,18 +150,12 @@ class MemoryChallengeRepo implements IChallengeRepository {
   }
 
   /**
-   * The PIN the service generated for a challenge. It is stored in the
-   * challenge metadata (`generatedPin`) precisely so a caller in this position
-   * can complete the flow the way the real out-of-band channel would.
+   * The PIN helper that used to live here read `metadata.generatedPin` straight
+   * out of this fake repository, which is exactly why the original defect —
+   * a PIN that was generated and then discarded before it ever reached anyone —
+   * could not fail a test. It is gone. Completing a challenge now requires an
+   * approval signed by Core's key, which no fake repository can invent.
    */
-  pinFor(challengeId: string): string {
-    const pin = this.items.get(challengeId)?.metadata?.generatedPin;
-    if (typeof pin !== "string" || pin.length !== 6) {
-      throw new Error(`no generated PIN recorded for challenge ${challengeId}`);
-    }
-    return pin;
-  }
-
   get(challengeId: string): StoredChallenge {
     const challenge = this.items.get(challengeId);
     if (!challenge) throw new Error(`no stored challenge ${challengeId}`);
@@ -341,6 +344,13 @@ let userRepo: MemoryUserRepo;
 let emailService: RecordingEmailService;
 let server: Server | undefined;
 let base: string;
+/**
+ * Core's approval key pair for this run. Only the PUBLIC half is pinned into
+ * the process; every approval the suite submits is signed with the private
+ * half, exactly as Core's `POST /api/v1/step-up/approve` would.
+ */
+let coreKeyPair!: Ed25519ApprovalKeyPair;
+let previousPinnedKey: string | undefined;
 
 /**
  * R1: every route except /health and /ready now requires the service secret,
@@ -386,6 +396,44 @@ function capabilityBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * The approval body for `POST /api/v1/challenges/approve`.
+ *
+ * Every binding field is read off the STORED challenge, which is where the
+ * real flow gets them: Core signs the same four values Plus already holds, so
+ * an approval for one release can never satisfy another. `overrides` exists
+ * so a case can forge one field; `signer` so a case can sign with the wrong
+ * key.
+ */
+function approvalBodyFor(
+  challenge: StoredChallenge,
+  overrides: Partial<ApprovalPayload> = {},
+  signer: Ed25519ApprovalKeyPair = coreKeyPair,
+) {
+  const iat = Math.floor(Date.now() / 1000);
+  return signApproval(
+    {
+      version: APPROVAL_VERSION,
+      typ: "step-up-approval",
+      challengeId: challenge.id,
+      userId: challenge.userId,
+      resourceId: challenge.resourceId,
+      operation: challenge.operation as ApprovalPayload["operation"],
+      secretRef: challenge.secretRef,
+      iat,
+      exp: iat + 300,
+      jti: crypto.randomUUID(),
+      ...overrides,
+    },
+    loadApprovalPrivateKey(signer.privateKeyBase64),
+  );
+}
+
+/** POST an approval for a stored challenge, the way the extension does. */
+async function approve(challengeId: string, approval: unknown) {
+  return post("/api/v1/challenges/approve", { challengeId, approval });
+}
+
 function seedEntitlement(options: {
   userId?: string;
   resourceId: string;
@@ -408,6 +456,13 @@ beforeEach(async () => {
   entitlementRepo = new MemoryEntitlementRepo();
   userRepo = new MemoryUserRepo();
   emailService = new RecordingEmailService();
+
+  // R3: Plus verifies approvals against a key it pinned itself. Supplying it
+  // here is the deployment step; the suite then proves that anything signed
+  // by a DIFFERENT key is refused.
+  coreKeyPair = generateApprovalKeyPair();
+  previousPinnedKey = process.env[CORE_APPROVAL_PUBLIC_KEY_ENV];
+  process.env[CORE_APPROVAL_PUBLIC_KEY_ENV] = coreKeyPair.publicKeyBase64;
 
   await userRepo.save(
     PlusUser.create({
@@ -435,6 +490,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (previousPinnedKey === undefined) {
+    delete process.env[CORE_APPROVAL_PUBLIC_KEY_ENV];
+  } else {
+    process.env[CORE_APPROVAL_PUBLIC_KEY_ENV] = previousPinnedKey;
+  }
   if (!server) return;
   // `fetch` keeps sockets alive; without dropping them `close()` would not
   // return until the keep-alive window expired.
@@ -483,16 +543,21 @@ describe("POST /api/v1/capabilities/request — the step-up gate", () => {
     expect(stored.secretRef).toBe(SECRET_REF);
     expect(stored.expiresAt).toBeGreaterThan(Date.now());
     expect(stored.maxAttempts).toBe(3);
-    expect(stored.pinHmac).toBeTruthy();
-    // What the server compares against is the HMAC — there is no `pin` field
-    // on the challenge and none on the wire. (`metadata.generatedPin` is the
-    // documented development concession inside `ChallengeService`; this test
-    // reads it through the repository for exactly the reason that comment
-    // gives, so the PIN can complete the flow the way the real channel would.)
-    const pin = challengeRepo.pinFor(stored.id);
-    expect(stored.pinHmac).not.toBe(pin);
+
+    // R3 — the PIN concept is gone from the stored record, not merely hidden.
+    // There is no `pinHmac`, no `pinSalt`, no `metadata.generatedPin` and no
+    // `pin` field, on the record or in the response. The two random fields are
+    // split off before the plaintext scan so a base64 nonce can never be
+    // mistaken for a 6-digit PIN; everything else is scanned as-is.
+    expect(stored).not.toHaveProperty("pinHmac");
+    expect(stored).not.toHaveProperty("pinSalt");
+    expect(stored.metadata?.generatedPin).toBeUndefined();
     expect(Object.keys(stored)).not.toContain("pin");
     expect(Object.keys(body)).not.toContain("pin");
+    const { nonce, id, ...deterministic } = stored;
+    expect(nonce).toEqual(expect.any(String));
+    expect(id).toEqual(expect.any(String));
+    expect(JSON.stringify(deterministic)).not.toMatch(/\b\d{6}\b/);
   });
 
   it("reuses one outstanding challenge across repeat requests and the trigger route", async () => {
@@ -620,11 +685,11 @@ describe("POST /api/v1/capabilities/request — the step-up gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/v1/challenges/verify — the third factor itself
+// POST /api/v1/challenges/approve — the third factor itself
 // ---------------------------------------------------------------------------
 
-describe("POST /api/v1/challenges/verify — proving the third factor", () => {
-  async function startChallenge(): Promise<string> {
+describe("POST /api/v1/challenges/approve — proving the third factor", () => {
+  async function startChallenge(): Promise<StoredChallenge> {
     seedEntitlement({
       resourceId: RESOURCE_ID,
       pestilloState: "step_up",
@@ -632,43 +697,14 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
     });
     const { body } = await post("/api/v1/capabilities/request", capabilityBody());
     expect(body.challengeRequired).toBe(true);
-    return body.challengeId as string;
+    return challengeRepo.get(body.challengeId);
   }
 
-  it("rejects a wrong PIN and enforces the attempt limit", async () => {
-    const challengeId = await startChallenge();
-    const wrongPin = "000000"; // the generator only ever emits 100000..999999
+  it("issues a capability on an approval Core signed, and it verifies against this server's public key", async () => {
+    const challenge = await startChallenge();
+    const approval = await approvalBodyFor(challenge);
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const { status, body } = await post("/api/v1/challenges/verify", {
-        challengeId,
-        pin: wrongPin,
-      });
-      expect(status).toBe(400);
-      expect(body.error).toBe("Invalid PIN");
-      expect(body.capabilityToken).toBeUndefined();
-    }
-
-    expect(challengeRepo.get(challengeId).attempts).toBe(3);
-
-    const exhausted = await post("/api/v1/challenges/verify", {
-      challengeId,
-      pin: wrongPin,
-    });
-    expect(exhausted.status).toBe(400);
-    expect(exhausted.body.error).toBe("Maximum attempts exceeded");
-    // Still nothing signed after the limit.
-    expect(exhausted.body.capabilityToken).toBeUndefined();
-  });
-
-  it("issues a capability on the correct PIN, and it verifies against this server's public key", async () => {
-    const challengeId = await startChallenge();
-    const pin = challengeRepo.pinFor(challengeId);
-
-    const { status, body } = await post("/api/v1/challenges/verify", {
-      challengeId,
-      pin,
-    });
+    const { status, body } = await approve(challenge.id, approval);
 
     expect(status).toBe(200);
     expect(body.capabilityToken).toBeDefined();
@@ -679,7 +715,7 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
 
     // This is the assertion the single-signing-key fix exists for: the key the
     // server PUBLISHES has to be the key it SIGNED with, or Core rejects every
-    // capability a correct PIN produced.
+    // capability an accepted approval produced.
     const verification = await verifyCapability(
       body.capabilityToken,
       loadEd25519PublicKey(publicKey.body.publicKey),
@@ -691,15 +727,102 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
     expect(body.capabilityToken.payload.resourceId).toBe(RESOURCE_ID);
     expect(body.capabilityToken.payload.secretRef).toBe(SECRET_REF);
 
-    expect(challengeRepo.get(challengeId).status).toBe("completed");
+    expect(challengeRepo.get(challenge.id).status).toBe("completed");
+  });
+
+  it("refuses a request that carries no approval at all", async () => {
+    const challenge = await startChallenge();
+
+    const { status, body } = await post("/api/v1/challenges/approve", {
+      challengeId: challenge.id,
+    });
+
+    expect(status).toBe(400);
+    expect(body.error).toBe("challengeId and approval required");
+    expect(body.capabilityToken).toBeUndefined();
+    expect(challengeRepo.get(challenge.id).status).toBe("email_sent");
+  });
+
+  it("refuses an approval signed with any key other than the pinned one", async () => {
+    const challenge = await startChallenge();
+    const impostor = generateApprovalKeyPair();
+
+    const { status, body } = await approve(
+      challenge.id,
+      await approvalBodyFor(challenge, {}, impostor),
+    );
+
+    expect(status).toBe(400);
+    expect(body.error).toBe("Invalid signature");
+    expect(body.capabilityToken).toBeUndefined();
+    expect(challengeRepo.get(challenge.id).status).toBe("email_sent");
+  });
+
+  it("refuses an approval signed for a different secret reference", async () => {
+    const challenge = await startChallenge();
+
+    // Correctly signed by Core's pinned key, but bound to another credential:
+    // a valid token must not release the wrong secret.
+    const { status, body } = await approve(
+      challenge.id,
+      await approvalBodyFor(challenge, { secretRef: SECOND_SECRET_REF, resourceId: SECOND_RESOURCE_ID }),
+    );
+
+    expect(status).toBe(400);
+    expect(body.error).toContain("secretRef");
+    expect(body.capabilityToken).toBeUndefined();
+    expect(challengeRepo.get(challenge.id).status).toBe("email_sent");
+  });
+
+  it("refuses an approval signed for a different challenge id", async () => {
+    const challenge = await startChallenge();
+
+    const { status, body } = await approve(
+      challenge.id,
+      await approvalBodyFor(challenge, { challengeId: "some-other-challenge" }),
+    );
+
+    expect(status).toBe(400);
+    expect(body.error).toContain("challengeId");
+    expect(body.capabilityToken).toBeUndefined();
+  });
+
+  it("refuses a replay of an approval that was already accepted", async () => {
+    const challenge = await startChallenge();
+    const approval = await approvalBodyFor(challenge);
+
+    const first = await approve(challenge.id, approval);
+    expect(first.status).toBe(200);
+
+    // The challenge is spent, so this is refused on status first; either way
+    // nothing is signed twice.
+    const second = await approve(challenge.id, approval);
+    expect(second.status).toBe(400);
+    expect(second.body.capabilityToken).toBeUndefined();
+    expect(second.body.error).toContain("not in valid state");
+  });
+
+  it("fails closed when the Core approval public key is not pinned", async () => {
+    const challenge = await startChallenge();
+    const approval = await approvalBodyFor(challenge);
+
+    // The deployment step missing: Plus has nothing to verify against, so it
+    // refuses rather than accepting an approval it cannot check.
+    delete process.env[CORE_APPROVAL_PUBLIC_KEY_ENV];
+
+    const { status, body } = await approve(challenge.id, approval);
+
+    expect(status).toBe(400);
+    expect(body.error).toBe("Core approval public key is not configured");
+    expect(body.capabilityToken).toBeUndefined();
+    expect(challengeRepo.get(challenge.id).status).toBe("email_sent");
   });
 
   it("lets a proven challenge unlock the capability request at assurance 3", async () => {
-    const challengeId = await startChallenge();
-    const pin = challengeRepo.pinFor(challengeId);
-
-    const verified = await post("/api/v1/challenges/verify", { challengeId, pin });
-    expect(verified.status).toBe(200);
+    const challenge = await startChallenge();
+    const approved = await approve(challenge.id, await approvalBodyFor(challenge));
+    expect(approved.status).toBe(200);
+    const challengeId = challenge.id;
 
     // Presenting the challenge id that was proven…
     const withChallengeId = await post(
@@ -723,9 +846,8 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
   });
 
   it("refuses a challenge id that was not proven for this binding", async () => {
-    const challengeId = await startChallenge();
-    const pin = challengeRepo.pinFor(challengeId);
-    await post("/api/v1/challenges/verify", { challengeId, pin });
+    const challenge = await startChallenge();
+    await approve(challenge.id, await approvalBodyFor(challenge));
 
     // A completed challenge for a DIFFERENT release must not unlock this one.
     seedEntitlement({
@@ -739,7 +861,7 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
     );
     expect(other.status).toBe(200);
     expect(other.body.challengeRequired).toBe(true);
-    expect(other.body.challengeId).not.toBe(challengeId);
+    expect(other.body.challengeId).not.toBe(challenge.id);
 
     // Naming SOMEONE ELSE's challenge on this binding is a denial, not a pass:
     // `other`'s challenge belongs to the second release and is not proven for
@@ -751,6 +873,18 @@ describe("POST /api/v1/challenges/verify — proving the third factor", () => {
     expect(spoofed.status).toBe(403);
     expect(spoofed.body.error).toBe("Challenge not satisfied");
     expect(spoofed.body.capabilityToken).toBeUndefined();
+  });
+
+  it("no longer serves the retired PIN route", async () => {
+    const challenge = await startChallenge();
+
+    const { status } = await post("/api/v1/challenges/verify", {
+      challengeId: challenge.id,
+      pin: "123456",
+    });
+
+    expect(status).toBe(404);
+    expect(challengeRepo.get(challenge.id).status).toBe("email_sent");
   });
 });
 
@@ -799,7 +933,7 @@ describe("R1 — authentication and rate limiting", () => {
       "/api/v1/capabilities/request",
       "/api/v1/entitlements/check",
       "/api/v1/challenges/trigger",
-      "/api/v1/challenges/verify",
+      "/api/v1/challenges/approve",
       "/api/v1/audit",
     ];
 

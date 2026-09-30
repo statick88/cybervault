@@ -7,17 +7,19 @@
  *
  * SECURITY CONTRACT — NO PLAINTEXT PIN, EVER
  * -------------------------------------------
- * `ChallengeService.createChallenge()` hands us a challenge whose
- * `metadata.generatedPin` still holds the PIN it just generated, with a
- * comment saying that in production it would not be stored. It is stripped
- * here, in `sanitizeMetadata()`, before any INSERT or UPDATE is issued, on
- * every write path (`save` and `update` both funnel through it). What is
- * persisted is `pin_hmac` + `pin_salt`: verification material, not the secret
- * itself — recomputing the HMAC from those values does not yield the PIN.
+ * R3 removed the PIN from `ChallengeService.createChallenge()`, so a challenge
+ * no longer arrives here with `metadata.generatedPin` in it at all — the
+ * metadata key below is kept as the boundary that would stop it if a caller
+ * ever reintroduced one. It is stripped in `sanitizeMetadata()` before any
+ * INSERT or UPDATE is issued, on every write path (`save` and `update` both
+ * funnel through it).
  *
- * A read path therefore never returns `metadata.generatedPin`, by
- * construction: the key never reaches the database. Callers that want the PIN
- * back do not get it from here.
+ * `pin_hmac` / `pin_salt` are the legacy R4 columns. Migration
+ * `005_plus_schema.sql` has already run and both are `NOT NULL`, so the
+ * repository keeps binding them — with an empty string when the challenge
+ * carries no value, which is what every challenge created after R3 looks like.
+ * An empty string is not verification material for anything, and the type
+ * documents the fields as optional for exactly this reason.
  *
  * Style (pool + circuit breaker + retry + snake_case mapping) mirrors the
  * three sibling repositories in this directory.
@@ -43,8 +45,9 @@ const TABLE = "challenges";
 /**
  * The metadata key that must never reach the database.
  *
- * `ChallengeService` writes it; this repository is the boundary that stops it.
- * `pin_hmac` / `pin_salt` are the durable substitutes and ARE stored.
+ * `ChallengeService` no longer writes it (R3 removed the PIN); this
+ * repository is the boundary that stops it if that ever regresses.
+ * `pin_hmac` / `pin_salt` remain as legacy, now-empty columns.
  */
 const PLAINTEXT_PIN_METADATA_KEY = "generatedPin";
 
@@ -168,8 +171,11 @@ function toColumnValues(challenge: ChallengeProps): unknown[] {
     challenge.type, // $7
     challenge.status, // $8
     challenge.nonce, // $9
-    challenge.pinHmac, // $10
-    challenge.pinSalt, // $11
+    // Legacy NOT NULL columns. Post-R3 challenges carry neither value, and
+    // `undefined` would be bound as NULL and violate the constraint, so an
+    // empty string is written instead — a stored non-secret.
+    challenge.pinHmac ?? "", // $10
+    challenge.pinSalt ?? "", // $11
     toTimestamp(challenge.emailSentAt), // $12
     toTimestamp(challenge.accessedAt), // $13
     toTimestamp(challenge.completedAt), // $14

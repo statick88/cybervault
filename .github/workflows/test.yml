@@ -61,7 +61,11 @@ jobs:
       # `--headed` needs a display, and Linux CI has none, so xvfb provides
       # one. `--auto-servernum` picks a free display so parallel runs on the
       # same host cannot collide.
-      - run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024" npx playwright test --headed
+      # No xvfb and no --headed: the fixture drops Playwright's default
+      # `--disable-extensions`, and with that gone the extension loads in
+      # headless. An earlier attempt ran headed under xvfb and still failed,
+      # because the real blocker was the flag, not the absence of a display.
+      - run: npx playwright test
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4

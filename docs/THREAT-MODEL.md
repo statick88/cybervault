@@ -425,14 +425,31 @@ unchanged.
 content script. That is a platform guarantee this project does not control and
 does not test. A page that could write it would restore the original defect.
 
-### R10 — Extension defaults and Compose ports disagree (Low, operational)
+### R10 — RESOLVED — the extension's defaults disagreed with the deployed ports (Low, operational)
 
-Extension defaults: `localhost:3010` / `localhost:3011`
-(`src/background/auditor.ts:457`, `:375`, `src/ui/popup/popup.ts:140`).
-Compose publishes `3000` / `3001` (`docker-compose.yml:25`, `:99`). Out of the
-box the extension does not reach the containers. Correctable through
-`core_base_url` / `plus_base_url` in `chrome.storage.local`, but not wired by
-default.
+Extension fallbacks: `localhost:3010` (Core) and `localhost:3011` (Plus).
+Compose published 3000 / 3001 by default, and this deployment's `.env` sets
+`API_PORT=3010` and `PLUS_PORT=3003`. So Core's fallback happened to be right
+and **Plus's was a port that exists nowhere** — not in compose, not in `.env`,
+not in the container. A fresh clone could not reach its own services.
+
+The step-up was worse than a wrong default. Both challenge calls read a
+module-level `STEP_UP_PLUS_URL` constant directly, so the **entire step-up
+ignored the `plus_base_url` setting** that every other Plus call honours. A
+configurable endpoint pinned inside one call site cannot be pointed anywhere
+else: a user could set `plus_base_url` correctly and the step-up would still
+miss.
+
+*Resolution* (`c4b24a5`). Every Plus call resolves the URL from storage, with a
+named `DEFAULT_PLUS_BASE_URL` as the fallback, corrected to 3003. The Core
+fallback gets the same treatment, so the file has exactly two literals — the
+two constants — and every other site names one.
+
+*Verified:* `tests/extension/port-consistency.test.ts` compares the
+extension's fallbacks against what Compose and `.env` declare. The failure is
+a disagreement between two files, and either can change without the other — a
+comment is not a contract. Confirmed to bite: restoring the hard-coded
+constant turns two cases red.
 
 ### R11 — RESOLVED — the approval proved authorisation, not a human (was Medium, accepted)
 
@@ -549,6 +566,7 @@ rather than assumed.
 | A limiter degrades instead of throwing (R7) | `tests/unit/rate-limit-shared-store.test.ts` points the store at a dead port and asserts a decision still comes back, in `memory` mode |
 | The keyspace cannot grow without bound (R7) | 1200 distinct IPs on a 20ms window, then a sweep: the map shrinks. Without it, rotating source addresses grows an in-memory map for the process lifetime |
 | `/health` reports the limiter mode (R7) | `rateLimitMode()` is included in the health payload, so an operator sees a degraded limit instead of inferring it |
+| The extension's ports match the stack (R10) | `tests/extension/port-consistency.test.ts` reads `docker-compose.yml` and `.env` and compares them against the extension's fallbacks — the failure is a disagreement between two files, and either can change without the other. Confirmed to bite: restoring the hard-coded constant turns two cases red |
 | MV3 eviction **was** fail-open, and the suite still measures it (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps. Case 3 asserts the release is now REFUSED; reverting the fix turns it red, which is how the coverage was confirmed rather than assumed |
 | A completed step-up still releases on retry (R9) | New case in the same suite: pay-then-retry succeeds inside the session, so the persistence did not break the legitimate path |
 | Locking clears the step-up gate and verifies it (R9) | `handleLockVault` removes the key and re-reads it; it refuses to report a successful lock if the key survived |

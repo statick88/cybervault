@@ -384,7 +384,7 @@ async function handleRequestManagedCapability(
       "plus_base_url",
       "plus_service_secret",
     ]);
-    const baseUrl = (plusConfig["plus_base_url"] as string) || "http://localhost:3011";
+    const baseUrl = (plusConfig["plus_base_url"] as string) || DEFAULT_PLUS_BASE_URL;
     const serviceSecret = (plusConfig["plus_service_secret"] as string) || "";
 
     // Build capability request
@@ -466,7 +466,7 @@ async function fetchManagedRelease(args: {
     }
 > {
   const config = await chrome.storage.local.get(["core_base_url"]);
-  const baseUrl = (config["core_base_url"] as string) || "http://localhost:3010";
+  const baseUrl = (config["core_base_url"] as string) || DEFAULT_CORE_BASE_URL;
 
   const session = await chrome.storage.session.get(["cybervault_unlock_state"]);
   const state = session["cybervault_unlock_state"] as { vaultId?: string } | undefined;
@@ -573,7 +573,7 @@ async function handleGetPlusPublicKey(
       "plus_base_url",
       "plus_service_secret",
     ]);
-    const baseUrl = plusConfig["plus_base_url"] || "http://localhost:3011";
+    const baseUrl = (plusConfig["plus_base_url"] as string) || DEFAULT_PLUS_BASE_URL;
     // D1: R1 put the signing-key route behind the secret too, and this call
     // sent nothing, so fetching Plus's public key has been failing with 401
     // since. Found by checking every call site rather than the two I expected.
@@ -864,7 +864,7 @@ function buildReleaseDeps(): ReleaseDeps {
         "plus_base_url",
         "plus_service_secret",
       ]);
-      const plusBase = (config["plus_base_url"] as string) || "http://localhost:3011";
+      const plusBase = (config["plus_base_url"] as string) || DEFAULT_PLUS_BASE_URL;
       const serviceSecret = (config["plus_service_secret"] as string) || "";
 
       const controller = new AbortController();
@@ -1089,6 +1089,21 @@ async function handleReleaseCredential(
  * what has been paid). Dropping an in-flight ceremony fails closed; dropping
  * the gate fails open, which is the whole of R9.
  */
+/**
+ * Default Plus URL, used only when `plus_base_url` is absent from storage.
+ *
+ * This was a module-level constant the step-up calls read directly, so the
+ * whole step-up ignored the `plus_base_url` setting every other Plus call
+ * honours. A configurable endpoint that is unreachable because one call site
+ * hard-codes it is worse than a wrong default: there is no way to point it
+ * anywhere else. Both call sites now resolve it from storage, with this as
+ * the fallback.
+ */
+/** Default Core URL, used only when `core_base_url` is absent from storage. */
+const DEFAULT_CORE_BASE_URL = "http://localhost:3010";
+
+const DEFAULT_PLUS_BASE_URL = "http://localhost:3003";
+
 const stepUpChallenges = new Map<string, { binding: StepUpBinding; expiresAt: number }>();
 
 /**
@@ -1322,7 +1337,6 @@ async function handleGetPendingStepUp(
   }
 }
 
-const STEP_UP_PLUS_URL = "http://localhost:3011";
 
 /** A successful trigger hands back the id the PIN answers, plus its expiry. */
 type ChallengeTriggerResult =
@@ -1383,7 +1397,8 @@ async function triggerPlusChallenge(input: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const res = await fetch(`${STEP_UP_PLUS_URL}/api/v1/challenges/trigger`, {
+    const plusBase = ((await chrome.storage.local.get(["plus_base_url"]))["plus_base_url"] as string) || DEFAULT_PLUS_BASE_URL;
+    const res = await fetch(`${plusBase}/api/v1/challenges/trigger`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1519,7 +1534,7 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
     const token = auth["cybervault_token"] as string | undefined;
     if (!token) return { ok: false, error: "not authenticated" };
     const serviceSecret = (auth["plus_service_secret"] as string) || "";
-    const coreBase = (auth["core_base_url"] as string) || "http://localhost:3010";
+    const coreBase = (auth["core_base_url"] as string) || DEFAULT_CORE_BASE_URL;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
@@ -1562,7 +1577,9 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
       }
 
       /* ---- 2. Plus verifies the approval and issues the capability. ------ */
-      const res = await fetch(`${STEP_UP_PLUS_URL}/api/v1/challenges/approve`, {
+      const plusBase =
+        ((await chrome.storage.local.get(["plus_base_url"]))["plus_base_url"] as string) || DEFAULT_PLUS_BASE_URL;
+      const res = await fetch(`${plusBase}/api/v1/challenges/approve`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

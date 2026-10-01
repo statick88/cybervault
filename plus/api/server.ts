@@ -25,6 +25,7 @@ import { PostgresChallengeRepository } from "../infrastructure/repositories/Post
 import { PostgresEntitlementRepository } from "../infrastructure/repositories/PostgresEntitlementRepository";
 import { PostgresPlusUserRepository } from "../infrastructure/repositories/PostgresPlusUserRepository";
 import { NoOpEmailService } from "../domain/services/email-service";
+import { getRateLimiter } from "@/infrastructure/rate-limit/shared-store";
 import type { IEmailService } from "../domain/services/email-service";
 import type { SignedApproval } from "@/infrastructure/crypto/ed25519-approval";
 import type { CapabilityOperation } from "../domain/operations";
@@ -121,14 +122,10 @@ const PLUS_CONFIG = {
  */
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 60;
-/** Cap on tracked IPs before an opportunistic sweep runs. */
-const RATE_LIMIT_MAX_IPS = 10_000;
 
 
 export class PlusApiServer {
   private activeConnections = 0;
-  /** Per-IP sliding window of request timestamps. See `checkRateLimitOrError`. */
-  private rateLimitHits = new Map<string, number[]>();
   /** Exact-match browser origin allow-list. Empty means no browser is allowed. */
   private readonly allowedOrigins: string[];
   private capabilityIssuer: ReturnType<typeof import("../domain/services/capability-issuer").getCapabilityIssuer>;
@@ -313,33 +310,27 @@ export class PlusApiServer {
     return this.allowedOrigins.includes(origin);
   }
 
-  private checkRateLimitOrError(res: ServerResponse, ip: string): boolean {
-    const now = Date.now();
-    const windowMs = RATE_LIMIT_WINDOW_MS;
-    const hits = (this.rateLimitHits.get(ip) ?? []).filter((t) => now - t < windowMs);
+  /**
+   * R1 added this as an in-process sliding window. R7 makes it shared, so the
+   * 60/min budget is one budget across every Plus replica rather than 60 each.
+   *
+   * The limit and the `Retry-After` header are unchanged — R1 pinned those
+   * deliberately. The window becomes a fixed one, which permits a burst across
+   * a boundary; that trade is recorded in the threat model rather than hidden.
+   */
+  private async checkRateLimitOrError(res: ServerResponse, ip: string): Promise<boolean> {
+    const decision = await getRateLimiter(
+      "plus-api",
+      RATE_LIMIT_MAX,
+      RATE_LIMIT_WINDOW_MS,
+    ).consume(ip);
 
-    if (hits.length >= RATE_LIMIT_MAX) {
-      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - hits[0])) / 1000));
-      res.setHeader("Retry-After", String(retryAfterSec));
+    if (!decision.allowed) {
+      res.setHeader("Retry-After", String(decision.retryAfterSeconds));
       this.sendError(res, 429, "Rate limit exceeded");
       return false;
     }
-
-    hits.push(now);
-    this.rateLimitHits.set(ip, hits);
-
-    // Opportunistic sweep so an attacker rotating IPs cannot grow the map
-    // without bound for the lifetime of the process.
-    if (this.rateLimitHits.size > RATE_LIMIT_MAX_IPS) this.sweepRateLimit(now);
     return true;
-  }
-
-  private sweepRateLimit(now: number): void {
-    for (const [ip, hits] of this.rateLimitHits) {
-      if (hits.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) {
-        this.rateLimitHits.delete(ip);
-      }
-    }
   }
 
   private async handleHealth(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -913,7 +904,7 @@ export class PlusApiServer {
 
     // Rate limiting
     const ip = req.socket?.remoteAddress || "unknown";
-    if (!this.checkRateLimitOrError(res, ip)) return;
+    if (!(await this.checkRateLimitOrError(res, ip))) return;
 
     try {
       await this.routeRequest(req, res, url);

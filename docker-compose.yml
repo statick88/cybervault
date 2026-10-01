@@ -119,6 +119,17 @@ services:
       # must be reachable from the HOST, hence the published port above.
       - PLUS_BASE_URL=${PLUS_BASE_URL:-http://localhost:3001}
       - PLUS_CHALLENGE_BASE_URL=${PLUS_CHALLENGE_BASE_URL:-http://localhost:3001}
+      # R7: the 60/min limit R1 added is a per-process map, so behind N Plus
+      # replicas the effective limit is N x 60. The service name deliberately
+      # does not match the localhost sentinel the store treats as development.
+      #
+      # Omitting this is R2's bug reproduced: R2 wired REDIS_URL for Core only,
+      # and replay protection stayed in-process for weeks with nothing to say
+      # so. If the credential ever stops working the limit degrades to
+      # per-process rather than failing, so this is a correctness setting, not
+      # a security boundary — but it must be set for the limit to be shared.
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
       # WU-1: the Ed25519 key Plus signs capabilities with. Core pins the
       # matching PLUS_PUBLIC_KEY; if this key is absent, Plus logs a warning
       # and mints a throwaway key whose public half Core has never pinned, so

@@ -60,6 +60,7 @@ import {
   _clearRateLimitForTests,
 } from "./middleware/rate-limiter";
 import { loginRateLimiter } from "./login-rate-limiter";
+import { rateLimitMode } from "../rate-limit/shared-store";
 export { _clearRateLimitForTests };
 
 // Use Cases
@@ -420,8 +421,17 @@ export class ApiServer {
     return { startTime, url };
   }
 
-  private checkRateLimitOrError(res: ServerResponse, ip: string): boolean {
-    if (!checkRateLimit(ip)) {
+  /**
+   * `async` because R7 moved the counter to a shared store.
+   *
+   * It was `if (!checkRateLimit(ip))` while the function returned a Promise,
+   * and a Promise is always truthy — so the limit would have been silently
+   * disabled, and the code would still have compiled. `await` is what makes the
+   * check real; a future caller that forgets it gets a type error rather than
+   * a silently absent limit.
+   */
+  private async checkRateLimitOrError(res: ServerResponse, ip: string): Promise<boolean> {
+    if (!(await checkRateLimit(ip))) {
       this.sendError(res, 429, "Rate limit exceeded");
       return false;
     }
@@ -465,6 +475,12 @@ export class ApiServer {
         timestamp: new Date().toISOString(),
         service: "cyber-vault-api",
         checks,
+        // R7: which store each rate limit is actually using. An operator whose
+        // limit silently degraded to per-process has no other way to tell, and
+        // that degradation is invisible in every other signal — the service is
+        // healthy, the requests are served, the only difference is that three
+        // replicas are each handing out a full budget.
+        rateLimitMode: rateLimitMode(),
         metrics: {
           uptimeSeconds: Math.round(process.uptime()),
           totalRequests,
@@ -657,7 +673,9 @@ export class ApiServer {
     // written for it (checkValidateRateLimit, 20 requests / 5 minutes) but was
     // never wired, leaving only the global 100/15min limit. Enforce it here.
     const ip = req.socket?.remoteAddress || "unknown";
-    if (!checkValidateRateLimit(ip)) {
+    // `await` is load-bearing: the function is async since R7 and a Promise is
+    // truthy, so without it this check is `if (!truthy)` and never fires.
+    if (!(await checkValidateRateLimit(ip))) {
       res.writeHead(429, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({ error: "Too many validation requests" }),
@@ -1459,7 +1477,7 @@ export class ApiServer {
 
     // Aplicar rate limiting a todos los endpoints
     const ip = req.socket?.remoteAddress || "unknown";
-    if (!this.checkRateLimitOrError(res, ip)) return;
+    if (!(await this.checkRateLimitOrError(res, ip))) return;
 
     try {
       await this.routeRequest(req, res, url);

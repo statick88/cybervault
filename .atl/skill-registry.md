@@ -19,6 +19,7 @@ Last updated: 2026-09-17
 | Skill | Trigger / description | Scope | Path |
 | --- | --- | --- | --- |
 | `branch-pr` | Create Gentle AI pull requests with issue-first checks. Trigger: creating, opening, or preparing PRs for review. | user | `/home/search14/.config/opencode/skills/branch-pr/SKILL.md` |
+| `bugfix-worktree-branch` | Trigger: bug found, defect, fix needed, hotfix, new branch for a fix, git worktree, never fix on main, one worktree per bug. Create an isolated branch and worktree, fix there, verify, merge to main, delete. | user | `/home/search14/.config/opencode/skills/bugfix-worktree-branch/SKILL.md` |
 | `chained-pr` | Trigger: PRs over 400 lines, stacked PRs, review slices. Split oversized changes into chained PRs that protect review focus. | user | `/home/search14/.config/opencode/skills/chained-pr/SKILL.md` |
 | `cognitive-doc-design` | Design docs that reduce cognitive load. Trigger: writing guides, READMEs, RFCs, onboarding, architecture, or review-facing docs. | user | `/home/search14/.config/opencode/skills/cognitive-doc-design/SKILL.md` |
 | `comment-writer` | Write warm, direct collaboration comments. Trigger: PR feedback, issue replies, reviews, Slack messages, or GitHub comments. | user | `/home/search14/.config/opencode/skills/comment-writer/SKILL.md` |
@@ -27,8 +28,10 @@ Last updated: 2026-09-17
 | `issue-creation` | Trigger: issue creation, bug reports, feature requests, or issue approval. Create and triage GitHub issues from repository evidence. | user | `/home/search14/.config/opencode/skills/issue-creation/SKILL.md` |
 | `judgment-day` | Trigger: judgment day, dual review, adversarial review, juzgar. Run explicit blind dual review with at most two scoped fix/re-judgment rounds. | user | `/home/search14/.config/opencode/skills/judgment-day/SKILL.md` |
 | `rdd-defect-workflow` | Trigger: RDD, receipt-driven development, review authority, receipt/lineage, correction/recovery, delivery gate/kill switch, bounded review defects. Guide work. | user | `/home/search14/.config/opencode/skills/rdd-defect-workflow/SKILL.md` |
+| `regression-test-bites` | Trigger: writing a regression test, bugfix test, test for a fix, verifying a test catches the bug, test passes but the bug is real, mutation testing, test gap, coverage below threshold. Write a test that fails without the fix and prove it. | user | `/home/search14/.config/opencode/skills/regression-test-bites/SKILL.md` |
 | `skill-creator` | Trigger: new skills, agent instructions, documenting AI usage patterns. Create LLM-first skills with valid frontmatter. | user | `/home/search14/.config/opencode/skills/skill-creator/SKILL.md` |
 | `skill-improver` | Trigger: improve skills, audit skills, refactor skills, skill quality. Audit and upgrade existing LLM-first skills. | user | `/home/search14/.config/opencode/skills/skill-improver/SKILL.md` |
+| `sonar-quality-gate` | Trigger: before any git push, quality gate, SonarQube, coverage, push blocked, static analysis, code smells, vulnerabilities, new code below threshold. Run the project's quality gate and refuse the push until it passes. | user | `/home/search14/.config/opencode/skills/sonar-quality-gate/SKILL.md` |
 | `systemic-issue-triage` | Trigger: new issue, bug report, triage, backlog, issue flood, community report, root cause, dead-end, blocked user. Attack issues by root class, never one-by-one; fixes must shrink the system, not grow it. | user | `/home/search14/.config/opencode/skills/systemic-issue-triage/SKILL.md` |
 | `work-unit-commits` | Plan commits as reviewable work units. Trigger: implementation, commit splitting, chained PRs, or keeping tests and docs with code. | user | `/home/search14/.config/opencode/skills/work-unit-commits/SKILL.md` |
 

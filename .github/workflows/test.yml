@@ -53,7 +53,15 @@ jobs:
       # `build:ext`, not `build:all`: the e2e specs load the extension bundle
       # and no spec imports dist/src, so tsc output is not needed here.
       - run: npm run build:ext
-      - run: npx playwright test
+      # Extensions do not load in Playwright's headless mode: the service
+      # worker never registers and every case times out waiting for it. This
+      # was masked for a while because the binary lookup failed first, so the
+      # job failed for two different reasons in a row.
+      #
+      # `--headed` needs a display, and Linux CI has none, so xvfb provides
+      # one. `--auto-servernum` picks a free display so parallel runs on the
+      # same host cannot collide.
+      - run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024" npx playwright test --headed
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4

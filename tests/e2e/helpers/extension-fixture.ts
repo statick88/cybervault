@@ -4,8 +4,9 @@
  * Uses `chromium.launchPersistentContext()` with `--load-extension`
  * so the extension is loaded in a real browser profile.
  *
- * REQUIRES: Google Chrome installed (not just Chromium).
- * Run `npx playwright install chrome` or have system Chrome.
+ * REQUIRES: a Chromium binary. `npx playwright install` provides the bundled
+ * one this fixture prefers, so it works on a fresh CI runner and on a
+ * developer machine without a system Chrome.
  */
 
 import { test as base, chromium, type BrowserContext, type Page } from "@playwright/test";
@@ -13,6 +14,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { execSync } from "child_process";
+import { existsSync } from "fs";
 
 const EXTENSION_DIST = path.join(__dirname, "../../../dist");
 
@@ -20,7 +22,36 @@ const EXTENSION_DIST = path.join(__dirname, "../../../dist");
 /*  Environment detection                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Resolve a Chromium binary that actually exists on this machine.
+ *
+ * Three sources, in order of reliability:
+ *
+ *  1. `CHROME_PATH`, set by CI and by most Chrome install wrappers.
+ *  2. Playwright's own bundled Chromium, via `chromium.executablePath()`. The
+ *     workflow already runs `npx playwright install --with-deps`, so this is
+ *     present on CI by construction — it is the one source guaranteed to agree
+ *     with the Playwright version driving the test.
+ *  3. A system binary, for developers who have Chrome but no `playwright install`.
+ *
+ * Guessing names on PATH is not enough: `browser-actions/setup-chrome` installs
+ * to `/opt/hostedtoolcache/setup-chrome/chromium/stable/x64/chrome`, which is
+ * neither `google-chrome-stable` nor on PATH. An earlier version probed only
+ * PATH names, found nothing, and every case failed with "executable doesn't
+ * exist at google-chrome-stable".
+ */
 function findChromeBinary(): string | null {
+  if (process.env.CHROME_PATH && existsSync(process.env.CHROME_PATH)) {
+    return process.env.CHROME_PATH;
+  }
+
+  try {
+    const bundled = chromium.executablePath();
+    if (bundled && existsSync(bundled)) return bundled;
+  } catch {
+    // Playwright reports this when its browser was never downloaded.
+  }
+
   const candidates = [
     "google-chrome-stable",
     "google-chrome",
@@ -138,7 +169,11 @@ export const test = base.extend<ExtensionFixtures>({
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cybervault-e2e-"));
 
     const context = await chromium.launchPersistentContext(userDataDir, {
-      headless: true,
+      // Extensions do not load in Playwright's headless mode — the service
+      // worker never registers, so every case times out waiting for it. This
+      // launch needs a real display; on Linux CI the workflow supplies one with
+      // `xvfb-run`. Set E2E_HEADLESS=1 only to reproduce that failure.
+      headless: process.env.E2E_HEADLESS === "1",
       // `channel: "chrome"` resolves to a hardcoded `google-chrome-stable`
       // path and takes precedence over `executablePath`, so passing both made
       // Playwright look for a binary that `setup-chrome` never creates under

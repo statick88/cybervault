@@ -23,7 +23,6 @@ import type {
 } from "../../domain/repositories";
 import type { StoredUser } from "./auth";
 import {
-  base64UrlToBytes,
   hexToBytesOrNull,
   isStepUpProofType,
   verifyPassphraseProof,

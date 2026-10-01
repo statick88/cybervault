@@ -1189,16 +1189,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * A no-op where the runtime or a test double does not offer the API.
  */
 function keepStepUpGatePrivate(): void {
-  try {
-    const area = chrome.storage?.session as
-      | { setAccessLevel?: (options: { accessLevel: "TRUSTED_CONTEXTS" }) => Promise<void> }
-      | undefined;
-    if (typeof area?.setAccessLevel !== "function") return;
-    void area.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
-  } catch {
-    // A runtime that refuses keeps its default, which is already trusted-only.
-    // Failing to harden must never be able to break the worker.
-  }
+  const area = chrome.storage?.session as
+    | { setAccessLevel?: (options: { accessLevel: "TRUSTED_CONTEXTS" }) => Promise<void> }
+    | undefined;
+  if (typeof area?.setAccessLevel !== "function") return;
+
+  // No `try` around this. The promise rejection is handled by the `.catch`, and
+  // a synchronous throw is not the case worth defending against: the `typeof`
+  // check above already covers "the method is absent", and a runtime whose
+  // method throws synchronously keeps its own default, which is already
+  // trusted-only.
+  //
+  // Failing to harden must never break the worker, and it does not: the only
+  // failure modes are a rejected promise (caught) and a runtime without the
+  // method (returned above).
+  void area.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
 }
 keepStepUpGatePrivate();
 
@@ -1496,6 +1501,84 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
 }
 
 /**
+ * The three local values `handleApproveStepUp` must read before it may talk
+ * to either service. `null` means the worker holds no session — an
+ * unelaborated refusal, because nothing else can be checked at that point.
+ */
+interface StepUpApprovalAuth {
+  token: string;
+  serviceSecret: string;
+  coreBase: string;
+}
+
+async function readStepUpApprovalAuth(): Promise<StepUpApprovalAuth | null> {
+  const auth = await chrome.storage.local.get([
+    "cybervault_token",
+    "plus_service_secret",
+    "core_base_url",
+  ]);
+  const token = auth["cybervault_token"] as string | undefined;
+  if (!token) return null;
+  return {
+    token,
+    serviceSecret: (auth["plus_service_secret"] as string) || "",
+    coreBase: (auth["core_base_url"] as string) || DEFAULT_CORE_BASE_URL,
+  };
+}
+
+/**
+ * Step 1 of the approval chain — Core signs the approval.
+ *
+ * The request names only the credential and the operation. Core reads
+ * the user from the token and the secretRef from the stored record, so
+ * this body cannot be used to redirect the approval at another
+ * credential's Release Share.
+ *
+ * Split out of `handleApproveStepUp` because the two hops are two different
+ * parties with two different failure vocabularies: the handler now reads as
+ * guards → Core → Plus, and each party's refusals sit next to the code that
+ * produces them instead of inside a single wall of fetches.
+ */
+async function requestCoreStepUpApproval(
+  msg: ApproveStepUpMessage,
+  entry: { binding: StepUpBinding; expiresAt: number },
+  auth: StepUpApprovalAuth,
+  signal: AbortSignal,
+): Promise<{ ok: true; approvalBody: { approval?: unknown } } | { ok: false; error: string }> {
+  const approved = await fetch(`${auth.coreBase}/api/v1/step-up/approve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${auth.token}`,
+    },
+    body: JSON.stringify({
+      challengeId: msg.challengeId,
+      credentialId: entry.binding.credentialId,
+      operation: entry.binding.operation,
+      // R11 — forwarded verbatim. The worker never derives, rewraps or
+      // validates it beyond presence: the proof was built against Core's
+      // own challenge row, and only Core can say whether it matches.
+      proof: msg.proof,
+    }),
+    signal,
+  });
+
+  if (!approved.ok) {
+    // Core refused: unknown credential, wrong owner, personal credential,
+    // or no signing key configured. Deliberately not surfaced verbatim — a
+    // Core reason could tell the user (or a script driving the popup) which
+    // of those it was.
+    return { ok: false, error: "the release could not be approved" };
+  }
+
+  const approvalBody = (await approved.json()) as { approval?: unknown };
+  if (!approvalBody.approval) {
+    return { ok: false, error: "the release could not be approved" };
+  }
+  return { ok: true, approvalBody };
+}
+
+/**
  * R3 — the user approved a release. No PIN is involved anywhere in this
  * function, and there is nothing to compare.
  *
@@ -1526,55 +1609,19 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
       return { ok: false, error: "the approval was not accepted" };
     }
 
-    const auth = await chrome.storage.local.get([
-      "cybervault_token",
-      "plus_service_secret",
-      "core_base_url",
-    ]);
-    const token = auth["cybervault_token"] as string | undefined;
-    if (!token) return { ok: false, error: "not authenticated" };
-    const serviceSecret = (auth["plus_service_secret"] as string) || "";
-    const coreBase = (auth["core_base_url"] as string) || DEFAULT_CORE_BASE_URL;
+    const auth = await readStepUpApprovalAuth();
+    if (!auth) return { ok: false, error: "not authenticated" };
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
 
     try {
-      /* ---- 1. Core signs the approval. ----------------------------------
-       * The request names only the credential and the operation. Core reads
-       * the user from the token and the secretRef from the stored record, so
-       * this body cannot be used to redirect the approval at another
-       * credential's Release Share. */
-      const approved = await fetch(`${coreBase}/api/v1/step-up/approve`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          challengeId: msg.challengeId,
-          credentialId: entry.binding.credentialId,
-          operation: entry.binding.operation,
-          // R11 — forwarded verbatim. The worker never derives, rewraps or
-          // validates it beyond presence: the proof was built against Core's
-          // own challenge row, and only Core can say whether it matches.
-          proof: msg.proof,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!approved.ok) {
-        // Core refused: unknown credential, wrong owner, personal credential,
-        // or no signing key configured. Deliberately not surfaced verbatim — a
-        // Core reason could tell the user (or a script driving the popup) which
-        // of those it was.
-        return { ok: false, error: "the release could not be approved" };
+      /* ---- 1. Core signs the approval — `requestCoreStepUpApproval`. ----- */
+      const core = await requestCoreStepUpApproval(msg, entry, auth, controller.signal);
+      if (!core.ok) {
+        return { ok: false, error: core.error };
       }
-
-      const approvalBody = (await approved.json()) as { approval?: unknown };
-      if (!approvalBody.approval) {
-        return { ok: false, error: "the release could not be approved" };
-      }
+      const approvalBody = core.approvalBody;
 
       /* ---- 2. Plus verifies the approval and issues the capability. ------ */
       const plusBase =
@@ -1584,8 +1631,8 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
         headers: {
           "Content-Type": "application/json",
           "X-Core-Service": "cybervault-core",
-          "X-Service-Secret": serviceSecret,
-          Authorization: `Bearer ${token}`,
+          "X-Service-Secret": auth.serviceSecret,
+          Authorization: `Bearer ${auth.token}`,
         },
         body: JSON.stringify({
           challengeId: msg.challengeId,

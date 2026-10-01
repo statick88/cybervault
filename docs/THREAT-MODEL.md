@@ -447,7 +447,7 @@ does not test. A page that could write it would restore the original defect.
 
 ### R10 — RESOLVED — the extension's defaults disagreed with the deployed ports (Low, operational)
 
-Extension fallbacks: `localhost:3010` (Core) and `localhost:3011` (Plus).
+Extension fallbacks were `localhost:3010` (Core) and `localhost:3011` (Plus).
 Compose published 3000 / 3001 by default, and this deployment's `.env` sets
 `API_PORT=3010` and `PLUS_PORT=3003`. So Core's fallback happened to be right
 and **Plus's was a port that exists nowhere** — not in compose, not in `.env`,
@@ -460,16 +460,25 @@ configurable endpoint pinned inside one call site cannot be pointed anywhere
 else: a user could set `plus_base_url` correctly and the step-up would still
 miss.
 
-*Resolution* (`c4b24a5`). Every Plus call resolves the URL from storage, with a
+*Resolution* (`c4b24a5`, Compose host ports in `17c7899`, host-facing URL
+defaults after that). Every Plus call resolves the URL from storage, with a
 named `DEFAULT_PLUS_BASE_URL` as the fallback, corrected to 3003. The Core
 fallback gets the same treatment, so the file has exactly two literals — the
-two constants — and every other site names one.
+two constants — and every other site names one. Compose then moved its host
+defaults to 3010 / 3003 to match, but left the *host-facing* URL defaults on
+3001 — the published port moved out from under them. Those now name the
+published ports too: the compose `PLUS_BASE_URL` / `PLUS_CHALLENGE_BASE_URL`
+defaults, the `plus/api/server.ts` fallbacks, the `plus/admin` client and its
+Vite proxy, and the `openapi.yaml` server URL. The container ports never
+moved: Core listens on 3000, Plus on 3001.
 
 *Verified:* `tests/extension/port-consistency.test.ts` compares the
-extension's fallbacks against what Compose and `.env` declare. The failure is
-a disagreement between two files, and either can change without the other — a
-comment is not a contract. Confirmed to bite: restoring the hard-coded
-constant turns two cases red.
+extension's fallbacks against what Compose and `.env` declare, and the
+host-facing URL defaults against the ports the same files publish. The failure
+is a disagreement between two files, and either can change without the other —
+a comment is not a contract. Confirmed to bite: restoring the hard-coded
+constant turns two cases red; reverting any host-facing URL default turns the
+case that reads it red.
 
 ### R11 — RESOLVED — the approval proved authorisation, not a human (was Medium, accepted)
 

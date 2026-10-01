@@ -497,7 +497,7 @@ docker compose exec redis redis-cli FLUSHALL
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `PORT` | `3000` | Puerto del servidor API |
-| `API_PORT` | `3000` | Puerto mapeado en host |
+| `API_PORT` | `3010` | Puerto mapeado en host |
 | `NODE_ENV` | `development` | Entorno de ejecución |
 | `JWT_SECRET` | _(ninguno)_ | Secreto para JWT (sin él, auth deshabilitada) |
 | `USE_POSTGRES` | `false` | Usar PostgreSQL en vez de memoria |

@@ -18,7 +18,9 @@ services:
     image: cybervault-api:latest
     container_name: cybervault-api
     ports:
-      - "3001:3000"
+      # Host side matches `API_PORT`'s compose default (3010) so both stacks
+      # publish the API on one port. The container side stays 3000.
+      - "3010:3000"
     environment:
       - NODE_ENV=production
       - PORT=3000

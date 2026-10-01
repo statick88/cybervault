@@ -426,11 +426,15 @@ the credential + origin + operation triple (`src/background/auditor.ts:1058`).
 MV3 service workers are evicted, so completed step-ups do not survive worker
 restarts.
 
-The step-up endpoint URL is hard-coded to `http://localhost:3011`
-(`src/background/auditor.ts:1085`), which matches the configurable
-`plus_base_url` default (`src/background/auditor.ts:375`, `:561`, `:838`) but
-**not** the Compose-published port (`docker-compose.yml:99` publishes
-`${PLUS_PORT:-3001}`). See [§10](#10-known-divergences).
+The step-up endpoint is not hard-coded. Both challenge calls read
+`plus_base_url` from storage and fall back to `DEFAULT_PLUS_BASE_URL`
+(`src/background/auditor.ts:1105`, `http://localhost:3003`) — the same port
+Compose publishes (`docker-compose.yml:117` publishes `${PLUS_PORT:-3003}`).
+It used to be a literal `http://localhost:3011`, a port nothing published, and
+the step-up read it through a module-level constant that bypassed the setting
+entirely. `tests/extension/port-consistency.test.ts` now compares the
+extension's fallbacks and every host-facing URL default against the published
+ports, so the two sides cannot drift apart again.
 
 ### 8.4 Step-up challenge issuance
 
@@ -502,7 +506,6 @@ comments. Each is verified; none is fixed here.
 
 | # | Divergence | Evidence |
 |---|---|---|
-| D1 | Extension defaults to `localhost:3010` (Core) and `localhost:3011` (Plus); Compose publishes `3000` and `3001` | `src/background/auditor.ts:457`, `:375`, `src/ui/popup/popup.ts:140` vs. `docker-compose.yml:25`, `:99` |
 | D2 | `PlusConfig.serviceSecret` is defined but never read; the extension's service-secret headers are ignored | `plus/api/server.ts:110`; no reader in `plus/` |
 | D3 | `verifyCapabilityCore` / `consumeCapabilityJti` exported with no callers | `plus/domain/services/capability-issuer.ts:304`, `:322`; no matches in `src/` or `plus/` |
 | D4 | `GetCredentialWithCapabilityUseCase` is test-only | constructed only in `tests/application/managed-release.test.ts` |
@@ -510,9 +513,21 @@ comments. Each is verified; none is fixed here.
 | D6 | `src/ui/content-scripts/managed-decrypt.ts` is neither in the manifest nor in any build entry | `src/infrastructure/manifest/manifest.json:28`; `scripts/build-extension.mjs:44`, `:63`, `:78`, `:92`, `:108` |
 | D7 | `plus/admin` pages call endpoints that do not exist: every list route 404s, `GET /api/v1/audit` 405s (server side is POST-only) | `plus/admin/src/services/api.ts:170`–`252` vs. `routeRequest` (`plus/api/server.ts:791`–`820`); `plus/admin/src/pages/Audit.tsx:30` |
 | D8 | Compose publishes no host port for Postgres or Redis, and sets no `REDIS_URL` | `docker-compose.yml:147`, `:168`; no `REDIS_URL` key |
-| D9 | `swagger` and `plus` both default to host port 3001 | `docker-compose.yml:99` and `:209` |
 | D10 | The IPFS warning message blames connectivity when the real failure is module resolution | `src/infrastructure/ipfs/ipfs-adapter.ts:76`–`82` |
 | D11 | `docs/index.md` claims "16 endpoints", "ECDSA P-256", "Redis ... session management", "IPFS storage" without qualification | `docs/index.md` Key Features |
+
+**Retired — no longer divergent.** Two entries above have been removed rather
+than renumbered, so the numbering has gaps on purpose:
+
+- **D1** (extension defaults vs. the ports Compose publishes) — the extension
+  defaulted to `3010` / `3003` while Compose published `3000` / `3001`. Both
+  sides now agree on `3010` / `3003`.
+- **D9** (`swagger` and `plus` both on host `3001`) — Plus moved to host
+  `3003`, so `swagger`'s `3001` (profile `docs`) collides with nothing.
+
+`tests/extension/port-consistency.test.ts` enforces the agreement on both the
+extension's fallbacks and the host-facing URL defaults, which is what keeps
+these two retired rather than reintroduced.
 
 ---
 

@@ -1,30 +1,64 @@
 /**
- * Master Key Manager - Zero Knowledge Architecture
+ * Master Key Manager - Zero Knowledge Architecture with Session Storage
  *
- * SECURITY: This module handles the master key for Zero Knowledge encryption.
- * The master key is NEVER stored - only a verification hash is stored.
- * All encryption/decryption happens in memory during the session.
+ * SECURITY INVARIANTS:
+ * - Master Key (VEK) NEVER stored in chrome.storage.local
+ * - Master Key (VEK) ONLY stored in chrome.storage.session (cleared on browser close/lock/timeout)
+ * - chrome.storage.local contains ONLY ciphertext, IV/nonce, salt, non-secret metadata
+ * - No plaintext secrets persist across sessions
  *
  * Flow:
- * 1. First time: User creates master key → store only verification hash
- * 2. Each session: User unlocks with master key → verify hash → derive session key
- * 3. All operations use session key derived from master key
+ * 1. First time: User creates master key → store only verification hash in local
+ * 2. Each session: User unlocks with master key → verify hash → derive session key → store in SESSION storage
+ * 3. All operations use session key from SESSION storage
+ * 4. On lock/timeout/close: session storage cleared, VEK eliminated
+ *
+ * Scheme versioning (CRITICAL-2):
+ * The persisted verifier carries a scheme id (`master_key_scheme`) and a
+ * self-describing prefix (`hkdf-sha256-v2$`). A verifier written by the old
+ * scheme — where PBKDF2 silently ignored `info`, so the verifier WAS the first
+ * 256 bits of the session key — is rejected with an explicit
+ * SCHEME_UNSUPPORTED result instead of a misleading "wrong password", and the
+ * vault must be re-initialized (resetVault → initializeVault). Persisted-data
+ * invalidation is explicitly authorized by the user.
  */
 
 import { encryptWithKey, decryptWithKey } from "./EncryptionService";
-import { KeyDerivationService } from "./key-derivation-service";
+import {
+  KeyDerivationService,
+  KEY_DERIVATION_CONFIG,
+  VERIFIER_SCHEME_PREFIX,
+} from "./key-derivation-service";
 import { binaryToBase64, base64ToBinary } from "../../shared/utils";
 
 const keyDerivationService = new KeyDerivationService();
 
 const STORAGE_KEYS = {
-  MASTER_KEY_VERIFY: "master_key_verify", // Hash for verification only
+  // chrome.storage.local (PERSISTENT - survives browser restart)
+  MASTER_KEY_VERIFY: "master_key_verify", // Verifier only (scheme-prefixed, never key material)
   SALT: "master_salt", // Salt for key derivation
+  SCHEME: "master_key_scheme", // Derivation scheme id of the stored verifier
   VAULT_INITIALIZED: "vault_initialized", // Whether vault is set up
-  SESSION_KEY: "session_key", // In-memory session key (not persisted)
+
+  // chrome.storage.session (EPHEMERAL - cleared on browser close/tab close)
+  SESSION_KEY: "cybervault_session_key", // Session key (derived from master key + salt)
+  SESSION_UNLOCK_TIME: "cybervault_unlock_time", // Session start timestamp
 } as const;
 
 const SESSION_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+
+/** Error returned when the persisted verifier comes from an older scheme. */
+export const SCHEME_UNSUPPORTED_ERROR =
+  "Esquema de bóveda no compatible: los datos persistidos fueron escritos por un esquema anterior y deben descartarse. Reinicialice la bóveda (resetVault → initializeVault) para continuar.";
+
+/**
+ * Machine-readable failure reasons, so callers never have to parse the
+ * localized message to tell "wrong password" from "old scheme".
+ */
+export type MasterKeyFailureCode =
+  | "VAULT_NOT_INITIALIZED"
+  | "SCHEME_UNSUPPORTED"
+  | "WRONG_PASSPHRASE";
 
 /**
  * Result of master key verification
@@ -32,22 +66,8 @@ const SESSION_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 export interface MasterKeyVerifyResult {
   success: boolean;
   error?: string;
+  code?: MasterKeyFailureCode;
 }
-
-/**
- * Session state
- */
-interface SessionState {
-  isUnlocked: boolean;
-  sessionKey: string | null;
-  unlockTime: number | null;
-}
-
-const sessionState: SessionState = {
-  isUnlocked: false,
-  sessionKey: null,
-  unlockTime: null,
-};
 
 /**
  * Generate a secure random salt
@@ -59,8 +79,10 @@ function generateSalt(): Uint8Array {
 }
 
 /**
- * Hash the master key for verification (NOT the key itself)
- * Uses PBKDF2 with high iterations
+ * Derive the persisted verifier for the master key (NOT the key itself).
+ * PBKDF2-SHA512 stretches the passphrase, then HKDF-SHA256 binds the result to
+ * the `master_key_verify` context label. The returned value is not, does not
+ * contain, and cannot reveal the session key.
  */
 async function hashMasterKey(
   masterKey: string,
@@ -81,6 +103,22 @@ async function deriveSessionKey(
 }
 
 /**
+ * True when a persisted verifier was written by the current derivation scheme.
+ * Anything else (missing scheme id, missing prefix, foreign scheme id) is an
+ * old/foreign verifier and must be rejected explicitly.
+ */
+function hasCurrentScheme(
+  storedScheme: unknown,
+  storedVerifier: unknown,
+): boolean {
+  return (
+    storedScheme === KEY_DERIVATION_CONFIG.SCHEME &&
+    typeof storedVerifier === "string" &&
+    storedVerifier.startsWith(VERIFIER_SCHEME_PREFIX)
+  );
+}
+
+/**
  * Check if vault is initialized (master key set up)
  */
 export async function isVaultInitialized(): Promise<boolean> {
@@ -96,7 +134,7 @@ export async function isVaultInitialized(): Promise<boolean> {
 
 /**
  * Initialize vault with new master key
- * SECURITY: Only stores verification hash, never the actual key
+ * SECURITY: Only stores verification hash in local, never the actual key
  */
 export async function initializeVault(
   masterKey: string,
@@ -113,6 +151,24 @@ export async function initializeVault(
     // Check if vault already initialized
     const alreadyInitialized = await isVaultInitialized();
     if (alreadyInitialized) {
+      // A vault whose verifier comes from an older scheme must be reset
+      // explicitly first: initializeVault never silently destroys data.
+      const existing = await chrome.storage.local.get([
+        STORAGE_KEYS.MASTER_KEY_VERIFY,
+        STORAGE_KEYS.SCHEME,
+      ]);
+      if (
+        !hasCurrentScheme(
+          existing[STORAGE_KEYS.SCHEME],
+          existing[STORAGE_KEYS.MASTER_KEY_VERIFY],
+        )
+      ) {
+        return {
+          success: false,
+          code: "SCHEME_UNSUPPORTED",
+          error: SCHEME_UNSUPPORTED_ERROR,
+        };
+      }
       return {
         success: false,
         error: "La bóveda ya ha sido inicializada",
@@ -123,20 +179,23 @@ export async function initializeVault(
     const salt = generateSalt();
     const saltBase64 = binaryToBase64(salt);
 
-    // Create verification hash (for authentication)
+    // Create the persisted verifier (for authentication) — context-bound, not key material
     const verifyHash = await hashMasterKey(masterKey, salt);
 
-    // Store verification data (NOT the key!)
+    // Store verification data in LOCAL storage (NOT the key!)
     await chrome.storage.local.set({
-      [STORAGE_KEYS.MASTER_KEY_VERIFY]: verifyHash,
+      [STORAGE_KEYS.MASTER_KEY_VERIFY]: `${VERIFIER_SCHEME_PREFIX}${verifyHash}`,
       [STORAGE_KEYS.SALT]: saltBase64,
+      [STORAGE_KEYS.SCHEME]: KEY_DERIVATION_CONFIG.SCHEME,
       [STORAGE_KEYS.VAULT_INITIALIZED]: true,
     });
 
-    // Derive and store session key in memory
-    sessionState.sessionKey = await deriveSessionKey(masterKey, salt);
-    sessionState.isUnlocked = true;
-    sessionState.unlockTime = Date.now();
+    // Derive session key and store in SESSION storage
+    const sessionKey = await deriveSessionKey(masterKey, salt);
+    await chrome.storage.session.set({
+      [STORAGE_KEYS.SESSION_KEY]: sessionKey,
+      [STORAGE_KEYS.SESSION_UNLOCK_TIME]: Date.now(),
+    });
 
     // Clear any existing credentials (fresh start)
     await chrome.storage.local.set({ credentials: [] });
@@ -150,51 +209,81 @@ export async function initializeVault(
 
 /**
  * Unlock vault with master key
- * SECURITY: Verifies hash, then derives session key into memory
+ * SECURITY: Verifies hash, then derives session key into SESSION storage
  */
 export async function unlockVault(
   masterKey: string,
 ): Promise<MasterKeyVerifyResult> {
   try {
-    // Check if already unlocked with valid session
-    if (sessionState.isUnlocked && isSessionValid()) {
-      refreshSession();
+    // Check if already unlocked with valid session (from session storage)
+    if (await isSessionValid()) {
+      await refreshSession();
       return { success: true };
     }
 
-    // If unlocked but expired, lock first
-    if (sessionState.isUnlocked && !isSessionValid()) {
-      lockVault();
-    }
-
-    // Get stored verification data
+    // Get stored verification data from LOCAL storage
     const stored = await chrome.storage.local.get([
       STORAGE_KEYS.MASTER_KEY_VERIFY,
       STORAGE_KEYS.SALT,
+      STORAGE_KEYS.SCHEME,
+      STORAGE_KEYS.VAULT_INITIALIZED,
     ]);
 
-    const storedHash = stored[STORAGE_KEYS.MASTER_KEY_VERIFY] as string;
+    const storedHash = stored[STORAGE_KEYS.MASTER_KEY_VERIFY];
     const storedSalt = stored[STORAGE_KEYS.SALT] as string;
 
-    if (!storedHash || !storedSalt) {
-      return { success: false, error: "Bóveda no inicializada" };
+    if (stored[STORAGE_KEYS.VAULT_INITIALIZED] !== true) {
+      return {
+        success: false,
+        code: "VAULT_NOT_INITIALIZED",
+        error: "Bóveda no inicializada",
+      };
+    }
+
+    // Fail closed on any verifier that this scheme did not write. This is a
+    // scheme error, NOT a passphrase error: the user must re-initialize.
+    if (!hasCurrentScheme(stored[STORAGE_KEYS.SCHEME], storedHash)) {
+      return {
+        success: false,
+        code: "SCHEME_UNSUPPORTED",
+        error: SCHEME_UNSUPPORTED_ERROR,
+      };
+    }
+
+    if (!storedSalt) {
+      return {
+        success: false,
+        code: "VAULT_NOT_INITIALIZED",
+        error: "Bóveda no inicializada",
+      };
     }
 
     const salt = base64ToBinary(storedSalt);
+
+    // Strip the public scheme prefix; what remains is the 256-bit verifier.
+    const expectedVerifier = (storedHash as string).slice(
+      VERIFIER_SCHEME_PREFIX.length,
+    );
 
     // Verify master key
     const verifyHash = await hashMasterKey(masterKey, salt);
 
     // Timing-safe comparison
-    if (!timingSafeEqual(verifyHash, storedHash)) {
+    if (!timingSafeEqual(verifyHash, expectedVerifier)) {
       // SECURITY: Generic error message
-      return { success: false, error: "Clave maestra incorrecta" };
+      return {
+        success: false,
+        code: "WRONG_PASSPHRASE",
+        error: "Clave maestra incorrecta",
+      };
     }
 
-    // Derive session key into memory
-    sessionState.sessionKey = await deriveSessionKey(masterKey, salt);
-    sessionState.isUnlocked = true;
-    sessionState.unlockTime = Date.now();
+    // Derive session key and store in SESSION storage
+    const sessionKey = await deriveSessionKey(masterKey, salt);
+    await chrome.storage.session.set({
+      [STORAGE_KEYS.SESSION_KEY]: sessionKey,
+      [STORAGE_KEYS.SESSION_UNLOCK_TIME]: Date.now(),
+    });
 
     return { success: true };
   } catch (error) {
@@ -204,66 +293,96 @@ export async function unlockVault(
 }
 
 /**
- * Lock vault (clear session key from memory)
+ * Lock vault (clear session key from SESSION storage)
+ * This is the primary security boundary - VEK eliminated from session
  */
-export function lockVault(): void {
-  sessionState.isUnlocked = false;
-  sessionState.sessionKey = null;
-  sessionState.unlockTime = null;
+export async function lockVault(): Promise<void> {
+  await chrome.storage.session.remove([
+    STORAGE_KEYS.SESSION_KEY,
+    STORAGE_KEYS.SESSION_UNLOCK_TIME,
+  ]);
 }
 
 /**
- * Check if vault is currently unlocked
+ * Check if vault is currently unlocked (session exists and is valid)
  */
-export function isVaultUnlocked(): boolean {
-  return sessionState.isUnlocked;
+export async function isVaultUnlocked(): Promise<boolean> {
+  return await isSessionValid();
 }
 
 /**
  * Check if current session is still valid (not expired)
  */
-export function isSessionValid(): boolean {
-  if (!sessionState.unlockTime) return false;
-  return Date.now() - sessionState.unlockTime < SESSION_DURATION_MS;
+export async function isSessionValid(): Promise<boolean> {
+  try {
+    const session = await chrome.storage.session.get([
+      STORAGE_KEYS.SESSION_KEY,
+      STORAGE_KEYS.SESSION_UNLOCK_TIME,
+    ]);
+
+    const sessionKey = session[STORAGE_KEYS.SESSION_KEY] as string | undefined;
+    const unlockTime = session[STORAGE_KEYS.SESSION_UNLOCK_TIME] as number | undefined;
+
+    if (!sessionKey || !unlockTime) {
+      return false;
+    }
+
+    return Date.now() - unlockTime < SESSION_DURATION_MS;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Refresh session timer (call on each operation)
  */
-export function refreshSession(): void {
-  if (sessionState.isUnlocked) {
-    sessionState.unlockTime = Date.now();
+export async function refreshSession(): Promise<void> {
+  const isValid = await isSessionValid();
+  if (isValid) {
+    await chrome.storage.session.set({
+      [STORAGE_KEYS.SESSION_UNLOCK_TIME]: Date.now(),
+    });
   }
 }
 
 /**
- * Get session key (only if unlocked and session valid)
- * Throws error if session expired
+ * Get session key (only if session valid)
+ * Returns null if session expired or not unlocked
  */
-export function getSessionKey(): string | null {
-  if (!sessionState.isUnlocked) {
-    return null;
-  }
-
-  if (!isSessionValid()) {
+export async function getSessionKey(): Promise<string | null> {
+  const isValid = await isSessionValid();
+  if (!isValid) {
     // Session expired, lock immediately
-    lockVault();
+    await lockVault();
     return null;
   }
 
-  // Refresh session timer on access
-  refreshSession();
+  try {
+    const session = await chrome.storage.session.get([
+      STORAGE_KEYS.SESSION_KEY,
+    ]);
+    const sessionKey = session[STORAGE_KEYS.SESSION_KEY] as string | undefined;
 
-  return sessionState.sessionKey;
+    if (!sessionKey) {
+      return null;
+    }
+
+    // Refresh session timer on access
+    await refreshSession();
+
+    return sessionKey;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Encrypt data using session key
+ * Encrypt data using session key from SESSION storage
  */
 export async function encryptWithSessionKey(
   data: string,
 ): Promise<string | null> {
-  const sessionKey = getSessionKey();
+  const sessionKey = await getSessionKey();
   if (!sessionKey) {
     return null;
   }
@@ -272,12 +391,12 @@ export async function encryptWithSessionKey(
 }
 
 /**
- * Decrypt data using session key
+ * Decrypt data using session key from SESSION storage
  */
 export async function decryptWithSessionKey(
   encryptedData: string,
 ): Promise<string | null> {
-  const sessionKey = getSessionKey();
+  const sessionKey = await getSessionKey();
   if (!sessionKey) {
     return null;
   }
@@ -290,13 +409,14 @@ export async function decryptWithSessionKey(
 }
 
 /**
- * Reset vault (dangerous - deletes everything)
+ * Reset vault (dangerous - deletes everything from both storages)
  */
 export async function resetVault(): Promise<void> {
-  lockVault();
+  await lockVault();
   await chrome.storage.local.remove([
     STORAGE_KEYS.MASTER_KEY_VERIFY,
     STORAGE_KEYS.SALT,
+    STORAGE_KEYS.SCHEME,
     STORAGE_KEYS.VAULT_INITIALIZED,
     "credentials",
   ]);

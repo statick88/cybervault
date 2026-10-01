@@ -273,7 +273,7 @@ export class EntropyValidator {
     if (/[a-z]/.test(password)) charsetSize += 26;
     
     // Números (10)
-    if (/[0-9]/.test(password)) charsetSize += 10;
+    if (/\d/.test(password)) charsetSize += 10;
     
     // Símbolos (32 caracteres comunes)
     if (/[^a-zA-Z0-9]/.test(password)) charsetSize += 32;
@@ -308,7 +308,7 @@ export class RandomnessAnalyzer {
     // Verificar distribución uniforme
     const bytes = new Uint8Array(cleanHex.length / 2);
     for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = parseInt(cleanHex.substr(i * 2, 2), 16);
+      bytes[i] = parseInt(cleanHex.substring(i * 2, i * 2 + 2), 16);
     }
     const uniformDistribution = RandomnessValidator.isUniformDistribution(bytes);
 

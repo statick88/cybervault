@@ -67,4 +67,16 @@ export class ChromeStorageVaultRepository implements IVaultRepository {
     if (!vault.id.equals(VaultId.fromString(vaultId))) return null;
     return vault.ownerId === ownerId ? vault : null;
   }
+
+  async updateMetadata(vaultId: string, metadata: Record<string, unknown>): Promise<void> {
+    const result = await chrome.storage.local.get([this.STORAGE_KEY]);
+    const data = (result as any)[this.STORAGE_KEY] as
+      | ReturnType<Vault["toPlainObject"]>
+      | undefined;
+    if (!data) throw new Error("Vault not found");
+    const vault = Vault.fromPlainObject(data);
+    if (!vault.id.equals(VaultId.fromString(vaultId))) throw new Error("Vault not found");
+    vault.updateMetadata(metadata);
+    await chrome.storage.local.set({ [this.STORAGE_KEY]: vault.toPlainObject() });
+  }
 }

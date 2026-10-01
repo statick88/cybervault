@@ -47,8 +47,10 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
     // Validate context
     this.validateContext(context);
 
-    // Get session key from MasterKeyManager
-    const sessionKey = getSessionKey();
+    // Get session key from MasterKeyManager. `getSessionKey` is async: without
+    // the await this is a Promise, which is always truthy, so the guard below
+    // never fires and `fromBase64("[object Promise]")` throws downstream.
+    const sessionKey = await getSessionKey();
     if (!sessionKey) {
       throw new Error('No active session key available. Vault must be unlocked.');
     }
@@ -99,8 +101,10 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
         return false;
       }
 
-      // Get session key
-      const sessionKey = getSessionKey();
+      // Get session key (async — a missing await here hands `deriveBindingKey`
+      // a Promise, `fromBase64("[object Promise]")` throws and this method
+      // silently reports `false` for every binding).
+      const sessionKey = await getSessionKey();
       if (!sessionKey) {
         return false;
       }
@@ -165,7 +169,7 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
         BINDING_CONFIG.KEY_LENGTH * 8 // bits
       );
 
-      const derivedKey = new Uint8Array(derivedBits as ArrayBuffer);
+      const derivedKey = new Uint8Array(derivedBits);
 
       return {
         key: derivedKey,
@@ -241,20 +245,16 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
       message as unknown as BufferSource
     );
 
-    return new Uint8Array(signature as ArrayBuffer);
+    return new Uint8Array(signature);
   }
 
   /**
    * Constant-time comparison of two Uint8Arrays
    */
   private constantTimeEquals(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.length !== b.length) {
-      return false;
-    }
+    if (a.length !== b.length) return false;
     let result = 0;
-    for (let i = 0; i < a.length; i++) {
-      result |= a[i] ^ b[i];
-    }
+    for (let i = 0; i < a.length; i++) result |= a[i] ^ b[i];
     return result === 0;
   }
 
@@ -262,11 +262,8 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
    * Convert Uint8Array to base64 string
    */
   private toBase64(bytes: Uint8Array): string {
-    // Use btoa with String.fromCharCode for binary-safe conversion
     let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
+    for (const byte of bytes) binary += String.fromCharCode(byte);
     return btoa(binary);
   }
 
@@ -276,9 +273,7 @@ export class SubtleCryptoChannelBindingAdapter implements IChannelBindingProtoco
   private fromBase64(base64: string): Uint8Array {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
 }

@@ -70,11 +70,24 @@ export class TyposquattingStep implements IDomainValidationStep {
   }
 
   async execute(
-    hostname: string,
-    expectedDomain: string,
+    currentOrigin: string,
+    expectedOrigin: string,
   ): Promise<DomainValidationResult> {
-    const currentRegistrable = extractRegistrableDomain(hostname);
-    const expectedRegistrable = extractRegistrableDomain(expectedDomain);
+    // Extract hostname from origin WITHOUT Punycode conversion
+    const currentHostname = extractHostnameFromOrigin(currentOrigin);
+    const expectedHostname = extractHostnameFromOrigin(expectedOrigin);
+    if (!currentHostname || !expectedHostname) {
+      return {
+        isValid: false,
+        strategy: this.name,
+        riskLevel: "high",
+        confidence: 1.0,
+        reason: "Invalid origin format for typosquatting detection",
+      };
+    }
+
+    const currentRegistrable = extractRegistrableDomain(currentHostname);
+    const expectedRegistrable = extractRegistrableDomain(expectedHostname);
 
     // Exact match on registrable domain
     if (currentRegistrable === expectedRegistrable) {
@@ -117,4 +130,10 @@ export class TyposquattingStep implements IDomainValidationStep {
       distance,
     };
   }
+}
+
+function extractHostnameFromOrigin(origin: string): string | null {
+  // Extract hostname from "scheme://hostname:port" preserving Unicode
+  const match = origin.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^:/?#]+)(?::\d+)?/);
+  return match ? match[1] : null;
 }

@@ -1,0 +1,71 @@
+-- CyberVault Migration 006 — per-user failed-PIN lockout (R4)
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- `ChallengeService.verifyPin` counted failures per CHALLENGE
+-- (`challenges.attempts`, `max_attempts` default 3). A challenge is cheap to
+-- mint: `/api/v1/challenges/trigger` and the capability gate both issue a
+-- fresh one with a fresh three-attempt budget as often as the R1 rate limit
+-- allows — 60 per minute per IP. Three attempts per challenge times 60
+-- challenges is ~180 guesses a minute against a 1,000,000-value PIN space: an
+-- online brute force the per-challenge counter structurally cannot stop,
+-- because the counter is reset by the act of creating a new challenge.
+--
+-- WHAT LIVES HERE
+-- ---------------
+-- Two columns on `plus_users` — the row the guess is ABOUT, rather than the
+-- challenge the guess is MADE against:
+--
+--   * `failed_pin_attempts` — failures across ALL of a user's challenges.
+--     Recreating a challenge no longer recreates the budget; only a correct
+--     PIN clears it.
+--   * `locked_until`        — set to NOW() + 15 minutes when the counter
+--                             reaches 5. While it lies in the future,
+--                             `verifyPin` refuses verification before any PIN
+--                             HMAC is computed, so the lock cannot be probed
+--                             for oracle value either.
+--
+-- WHY THE DATABASE AND NOT THE PROCESS
+-- ------------------------------------
+-- An in-memory counter dies with the process, and restarts are routine: the
+-- R2 fix exists precisely because state that dies with the process was shown
+-- not to hold. Lockout state on `plus_users` survives a Plus restart, a Core
+-- restart, and is read identically by every replica, because every replica
+-- reads the same row.
+--
+-- WHY NOT AN INDEX
+-- ---------------
+-- The lockout is read through the table's PRIMARY KEY
+-- (`PostgresPlusUserRepository.getPinLockout` → `findById`), never by a
+-- predicate on `locked_until`, so there is nothing to index. A "show me every
+-- locked account" sweep would be an operator query, not a request path.
+--
+-- TIMESTAMP POLICY
+-- ----------------
+-- `locked_until` is `TIMESTAMPTZ` like every other instant in this schema.
+-- The domain models it as Unix milliseconds; the repository converts with
+-- `new Date(ms)` on the way in and `.getTime()` on the way out, exactly as
+-- `005_plus_schema.sql` documents for `challenges`.
+--
+-- Idempotent: `ADD COLUMN IF NOT EXISTS` makes a second `cli.ts up` a no-op,
+-- and makes this safe against a database where the repository's own
+-- `initializeTable()` provisioned `plus_users` first — that method issues the
+-- same two ALTERs after its CREATE TABLE, so a bootstrapped database and a
+-- migrated database converge on the same columns. Additive: nothing is
+-- dropped, renamed, retyped or deleted. `DEFAULT 0` rewrites existing rows in
+-- place; on PostgreSQL 11+ a nullable column with no default adds without a
+-- table rewrite at all. The migration runner additionally skips
+-- already-applied ids by file name and runs each file in one transaction.
+
+-- ---------------------------------------------------------------------------
+-- plus_users — the failed-PIN lockout (R4)
+-- ---------------------------------------------------------------------------
+-- `failed_pin_attempts` is `NOT NULL DEFAULT 0`: every pre-existing row starts
+-- with a clean budget, and no read path may ever see NULL where it expects a
+-- counter (the row mapper still tolerates a row that predates this migration
+-- and has no value at all). `locked_until` is deliberately NULLABLE: NULL
+-- means "not locked", which is the state of every row until the threshold is
+-- first reached.
+-- ---------------------------------------------------------------------------
+ALTER TABLE plus_users ADD COLUMN IF NOT EXISTS failed_pin_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plus_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE;

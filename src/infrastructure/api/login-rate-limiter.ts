@@ -30,6 +30,11 @@ class LoginRateLimiter {
   constructor() {
     // Periodic cleanup to prevent memory leak from abandoned entries
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
+    // Without unref() this timer alone keeps the Node event loop alive, so any
+    // process that imports the server (a Jest worker, a short-lived script)
+    // hangs instead of exiting. It is a housekeeping optimization, never a
+    // correctness requirement, so it must not hold the loop open.
+    this.cleanupTimer.unref?.();
   }
 
   /**

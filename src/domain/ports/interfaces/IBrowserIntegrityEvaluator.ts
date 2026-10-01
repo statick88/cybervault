@@ -4,8 +4,7 @@
  * Implementations belong in infrastructure layer
  */
 
-import type { PageFingerprint } from '../../services/aitm/types.js';
-import type { AiTMDetectionResult } from '../../services/aitm/types.js';
+import type { PageFingerprint, AiTMDetectionResult } from '../../services/aitm/types.js';
 import type { IntegrityScore } from '../../value-objects/integrity-score.js';
 import type { FingerprintAnomaly } from '../../value-objects/fingerprint-anomaly.js';
 

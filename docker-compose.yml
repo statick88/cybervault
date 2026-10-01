@@ -5,6 +5,7 @@
 #
 # Servicios:
 #   - api: Servidor API de CyberVault
+#   - plus: Servidor Plus de autorización (capabilities / step-up)
 #   - postgres: Base de datos para vault
 #   - redis: Cache y sesiones
 #   - ipfs: Almacenamiento descentralizado (opcional)
@@ -23,7 +24,16 @@ services:
     ports:
       - "${API_PORT:-3000}:3000"
     environment:
-      - NODE_ENV=production
+      # This compose file is a LOCAL development stack: it publishes the API on
+      # localhost, ships no TLS material, and is not a production deployment.
+      # The Core server refuses to start under NODE_ENV=production unless
+      # HTTPS_ENABLED=true and the key/cert paths are readable, so a hardcoded
+      # "production" here would leave the stack unable to boot.
+      #
+      # A real deployment must set NODE_ENV=production together with
+      # HTTPS_ENABLED=true, TLS_CERT_PATH and TLS_KEY_PATH. Do not "fix" a
+      # refusal to boot by weakening that check.
+      - NODE_ENV=${NODE_ENV:-development}
       - PORT=3000
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -33,7 +43,25 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
+      # R2: `createJtiStore` only selects Redis when REDIS_URL is set, and
+      # compose never set it — so consumed JTIs lived in the Core process and a
+      # restart made every already-spent capability spendable again. The
+      # hostname deliberately is not `localhost`: the in-memory fallback also
+      # matches a localhost URL, which is exactly the development case.
+      - REDIS_URL=redis://redis:6379
+      # H6: production refuses to start unless TLS is actually configured.
+      # Pass-through only — compose never decides the value. A deployment that
+      # sets NODE_ENV=production must also set these, or the container will
+      # (correctly) refuse to boot.
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-false}
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-}
       - JWT_SECRET=${JWT_SECRET}
+      # WU-1: Core pins the Ed25519 key Plus signs capabilities with. When this
+      # is absent or malformed, managed release refuses every request by design.
+      - PLUS_PUBLIC_KEY=${PLUS_PUBLIC_KEY}
+      # WU-2: KEK wrapping the release share at rest. Exactly 32 bytes, base64.
+      - RELEASE_SHARE_KEK_SECRET=${RELEASE_SHARE_KEK_SECRET}
       - IPFS_ENABLED=${IPFS_ENABLED:-false}
       - USE_POSTGRES=true
       - DATABASE_URL=postgresql://cybervault:${POSTGRES_PASSWORD}@postgres:5432/cybervault
@@ -55,6 +83,80 @@ services:
       - cybervault-network
     volumes:
       - api-logs:/app/logs
+
+  # -----------------------------------------------------------------------------
+  # Plus API Server (authorization / capabilities / step-up challenges)
+  # -----------------------------------------------------------------------------
+  plus:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.plus
+    container_name: cybervault-plus
+    ports:
+      # Same convention as `api`: host port overridable, container port fixed
+      # at the 3001 that `startPlusServer()`, PLUS_BASE_URL and
+      # PLUS_CHALLENGE_BASE_URL already assume.
+      #
+      # KNOWN COLLISION: the `swagger` service (profile `docs`) also publishes
+      # host 3001, and `adminer` (profile `dev`) takes 3002. The default stack
+      # has no clash — only `--profile docs` does. If you need both, start with
+      # PLUS_PORT=3003 (and set PLUS_BASE_URL / PLUS_CHALLENGE_BASE_URL to
+      # match, or the challenge links in the email will point at nothing).
+      - "${PLUS_PORT:-3001}:3001"
+    environment:
+      # Same H6 policy as the `api` service: this compose file is a LOCAL
+      # development stack. `plus/api/server.ts` refuses to boot when
+      # NODE_ENV=production and HTTPS is not actually configured, so the
+      # default here is development and a real deployment must pass
+      # NODE_ENV=production together with HTTPS_ENABLED=true, TLS_CERT_PATH
+      # and TLS_KEY_PATH. Do not weaken that refusal to make the stack boot.
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3001
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-false}
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-}
+      # What the browser opens, and what the challenge email links to. Both
+      # must be reachable from the HOST, hence the published port above.
+      - PLUS_BASE_URL=${PLUS_BASE_URL:-http://localhost:3001}
+      - PLUS_CHALLENGE_BASE_URL=${PLUS_CHALLENGE_BASE_URL:-http://localhost:3001}
+      # R7: the 60/min limit R1 added is a per-process map, so behind N Plus
+      # replicas the effective limit is N x 60. The service name deliberately
+      # does not match the localhost sentinel the store treats as development.
+      #
+      # Omitting this is R2's bug reproduced: R2 wired REDIS_URL for Core only,
+      # and replay protection stayed in-process for weeks with nothing to say
+      # so. If the credential ever stops working the limit degrades to
+      # per-process rather than failing, so this is a correctness setting, not
+      # a security boundary — but it must be set for the limit to be shared.
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-cybervault_redis_secret}
+      # WU-1: the Ed25519 key Plus signs capabilities with. Core pins the
+      # matching PLUS_PUBLIC_KEY; if this key is absent, Plus logs a warning
+      # and mints a throwaway key whose public half Core has never pinned, so
+      # every capability it issues is rejected by design. Already present in
+      # .env — never commit or echo its value.
+      - PLUS_CAPABILITY_PRIVATE_KEY=${PLUS_CAPABILITY_PRIVATE_KEY}
+      # Plus-internal auth and service-to-service secret. `plus/api/server.ts`
+      # throws at module load unless PLUS_JWT_SECRET is set or
+      # NODE_ENV=development, which is exactly why the development default
+      # above is what lets a local stack boot while a production one fails
+      # fast. These two are T6 (.env) — set them there, not here.
+      - PLUS_JWT_SECRET=${PLUS_JWT_SECRET:-}
+      - PLUS_SERVICE_SECRET=${PLUS_SERVICE_SECRET:-}
+      # Plus repositories take a single connection string (no DB_* split).
+      - DATABASE_URL=postgresql://cybervault:${POSTGRES_PASSWORD}@postgres:5432/cybervault
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - cybervault-network
 
   # -----------------------------------------------------------------------------
   # PostgreSQL Database
@@ -185,10 +287,6 @@ networks:
 # =============================================================================
 volumes:
   postgres-data:
-    name: cybervault-postgres
   redis-data:
-    name: cybervault-redis
   ipfs-data:
-    name: cybervault-ipfs
   api-logs:
-    name: cybervault-logs

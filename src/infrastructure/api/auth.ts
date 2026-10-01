@@ -96,6 +96,31 @@ export async function getUserByEmail(email: string): Promise<StoredUser | undefi
   return entry?.user;
 }
 
+/**
+ * Look up the caller behind a verified access token (R11).
+ *
+ * The proof verification for `POST /api/v1/step-up/approve` needs the
+ * stored `hash`/`salt` of the AUTHENTICATED user — the token proves who is
+ * asking; this supplies the material the passphrase proof is checked
+ * against. Fails closed at the caller: an unknown userId is refused, never
+ * treated as "no proof required".
+ *
+ * The in-memory backend is keyed by email (the login shape), so a userId
+ * lookup scans — acceptable for the dev/test fallback it serves, where the
+ * map is small and approvals are rare.
+ */
+export async function getUserById(userId: string): Promise<StoredUser | undefined> {
+  const repo = getRepo();
+  if (repo) {
+    const user = await repo.findById(userId);
+    return user ?? undefined;
+  }
+  for (const entry of inMemoryStore.values()) {
+    if (entry.user.userId === userId) return entry.user;
+  }
+  return undefined;
+}
+
 export async function createUser(
   email: string,
   password: string,
@@ -153,7 +178,13 @@ export function generateRefreshToken(userId: string, secret: string): string {
 }
 
 /**
- * Verifica un token JWT y devuelve el userId si es válido
+ * Verifica un token JWT y devuelve el userId si es válido.
+ *
+ * This is a SIGNATURE/EXPIRY check only — it deliberately does not decide
+ * whether the token may be used for a given purpose, because the refresh
+ * endpoint must be able to inspect a `type === "refresh"` token. Authorization
+ * over the token kind lives in `authenticate` (access tokens only) and in
+ * `handleRefreshToken` (refresh tokens only).
  */
 export function verifyToken(
   token: string,
@@ -169,6 +200,20 @@ export function verifyToken(
     return null;
   }
 }
+
+/**
+ * The only token kind that may authenticate a request.
+ *
+ * Access tokens live 15 minutes; refresh tokens live 7 days and exist solely
+ * to be exchanged at `/api/v1/auth/refresh`. Before this check existed a
+ * 7-day refresh token was accepted by `authenticate` exactly like a 15-minute
+ * access token, so a stolen refresh token gave a full week of API access
+ * instead of the exchange-for-a-new-access-token flow it was minted for.
+ *
+ * Fail closed: anything that is not explicitly an access token — a refresh
+ * token, or a token minted without a `type` claim — is refused.
+ */
+const ACCESS_TOKEN_TYPE = "access";
 
 /**
  * Middleware de autenticación para proteger endpoints
@@ -197,7 +242,9 @@ export function authenticate(
 
   const decoded = verifyToken(token, secret);
 
-  if (!decoded) {
+  // A refresh token must never authenticate: it is only valid at the refresh
+  // endpoint, and it outlives an access token by a factor of ~672.
+  if (!decoded || decoded.type !== ACCESS_TOKEN_TYPE) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Invalid token" }));
     return;

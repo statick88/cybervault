@@ -20,6 +20,10 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm test
+      # Generate the lcov SonarQube reads. `npm test` alone is `jest` with no
+      # --coverage, so the coverage/ artifact uploaded below was always empty
+      # and the new_coverage gate could never be evaluated from CI.
+      - run: npm run test:coverage
       - name: Upload coverage
         if: matrix.node-version == 24
         uses: actions/upload-artifact@v4

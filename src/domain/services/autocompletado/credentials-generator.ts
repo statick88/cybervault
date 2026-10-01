@@ -40,7 +40,6 @@ export interface StoredCredentials {
 }
 
 export class CredentialsGenerator {
-  constructor() {}
 
   /**
    * Genera credenciales seguras con sal y pimienta

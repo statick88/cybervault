@@ -3,14 +3,15 @@ import type { IVaultRepository } from "../../../src/domain/repositories";
 import { Vault } from "../../../src/domain/entities/vault";
 
 describe("CreateVaultUseCase", () => {
-  const mockRepository: IVaultRepository = {
-    save: jest.fn(),
-    findById: jest.fn(),
-    list: jest.fn(),
-    listByOwnerId: jest.fn(),
-    findByVaultIdAndOwnerId: jest.fn(),
-    delete: jest.fn(),
-  };
+const mockRepository: IVaultRepository = {
+  save: jest.fn(),
+  findById: jest.fn(),
+  list: jest.fn(),
+  listByOwnerId: jest.fn(),
+  findByVaultIdAndOwnerId: jest.fn(),
+  delete: jest.fn(),
+  updateMetadata: jest.fn(),
+};
 
   const useCase = new CreateVaultUseCase(mockRepository);
 

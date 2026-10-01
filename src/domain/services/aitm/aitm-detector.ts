@@ -17,8 +17,8 @@
 import type { PageFingerprint } from './content-fingerprinter';
 import { ContentFingerprinter } from './content-fingerprinter';
 import { DOMIntegrityChecker } from './dom-integrity-checker';
-import type { DetectionSignal, AiTMDetectionResult, DetectionSignalType, DetectionSignalStatus } from './types';
-import { computeRiskScore, getRecommendation, THRESHOLDS } from './types';
+import type { DetectionSignal, AiTMDetectionResult } from './types';
+import { computeRiskScore, getRecommendation } from './types';
 
 export class AiTMDetector {
   private fingerprinter: ContentFingerprinter;
@@ -46,7 +46,6 @@ export class AiTMDetector {
     expectedDomain: string,
     options?: { skipContentCheck?: boolean; skipDOMCheck?: boolean }
   ): Promise<AiTMDetectionResult> {
-    const url = window.location.href;
     const startTime = performance.now();
     const signals: DetectionSignal[] = [];
 

@@ -105,12 +105,20 @@ class MockVaultRepository implements IVaultRepository {
       (v) => v.ownerId === ownerId,
     );
   }
+
+  async updateMetadata(vaultId: string, metadata: Record<string, unknown>): Promise<void> {
+    const vault = this.vaults.get(vaultId);
+    if (vault) {
+      vault.metadata = { ...vault.metadata, ...metadata };
+    }
+  }
 }
 
 class MockCredentialRepository implements ICredentialRepository {
   async save(cred: any): Promise<any> { return cred; }
   async findById(): Promise<any> { return null; }
   async findByVaultId(): Promise<any[]> { return []; }
+  async findBySecretRef(): Promise<any> { return null; }
   async delete(): Promise<boolean> { return true; }
   async list(): Promise<any[]> { return []; }
 }

@@ -80,15 +80,50 @@
       <p>No credentials yet.</p>
     </div>
 
+    <!--
+      R3: this panel used to ask for a PIN. There is no PIN — `createChallenge`
+      generated one, discarded it, and never delivered it, so the flow was
+      un-completable. The third factor is now the user's decision itself:
+      Core signs the approval, Plus verifies it. The user needs to know WHICH
+      credential is being released, for WHICH site, and why, because they are
+      the one authorising it.
+
+      R11: that decision alone was forgeable by anything holding the bearer
+      token, so approve now also requires a human-presence proof — a WebAuthn
+      assertion from a registered device, or the account passphrase
+      (derived locally; the passphrase itself never leaves this popup).
+    -->
+    <div id="step-up-panel" class="add-form" hidden>
+      <p id="step-up-status" class="add-form__status"></p>
+      <p id="step-up-detail" class="add-form__status"></p>
+      <!--
+        Left empty when a registered authenticator will be used instead.
+        The Release flow prefers this field when filled: an explicit passphrase
+        is the user saying "use this", an empty field with a registered device
+        means "ask the authenticator".
+      -->
+      <input type="password" id="step-up-passphrase" class="add-form__input"
+             placeholder="Account passphrase (leave empty to use your device)"
+             autocomplete="off" />
+      <div class="add-form__actions">
+        <button id="step-up-submit" class="btn btn--primary" type="button">Release</button>
+        <!-- R11: bind a device so the next release can use a real assertion. -->
+        <button id="step-up-register" class="btn btn--ghost" type="button">Register device</button>
+        <button id="step-up-dismiss" class="btn btn--ghost" type="button">Not now</button>
+      </div>
+      <p id="step-up-error" class="error" hidden></p>
+    </div>
+
     <div id="add-form" class="add-form" hidden>
       <input type="text" id="add-title" placeholder="Title" class="add-form__input" />
       <input type="text" id="add-username" placeholder="Username" class="add-form__input" />
       <input type="password" id="add-password" placeholder="Password" class="add-form__input" />
-      <input type="url" id="add-url" placeholder="URL (optional)" class="add-form__input" />
+      <input type="url" id="add-url" placeholder="Origin (https://example.com)" class="add-form__input" />
       <div class="add-form__actions">
         <button id="add-save" class="btn btn--primary" type="button">Save</button>
         <button id="add-cancel" class="btn btn--ghost" type="button">Cancel</button>
       </div>
+      <p id="add-error" class="error" hidden></p>
     </div>
   </section>
 

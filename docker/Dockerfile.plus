@@ -1,0 +1,81 @@
+# Dockerfile para Plus API (servicio de autorización / capabilities)
+# Multi-stage: builder compila src/ + plus/, runtime mínimo y no-root.
+# Espejo de docker/Dockerfile.api — ver ese archivo para el razonamiento de
+# cada patrón; aquí se documenta lo que es específico de Plus.
+
+FROM node:22-alpine AS builder
+
+# Instalar dependencias de compilación
+RUN apk add --no-cache python3 make g++ gcc
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Copiar package.json e instalar dependencias
+COPY package*.json pnpm-lock.yaml* ./
+RUN corepack enable pnpm && pnpm install --ignore-scripts
+
+# Instalar binario de esbuild (necesario para build:ext, postinstall fue ignorado arriba)
+RUN node node_modules/esbuild/install.js || true
+
+# tsconfig.json declara "rootDir": ".", así que AMBOS árboles tienen que estar
+# presentes para que `tsc` emita dist/src/... y dist/plus/... — exactamente la
+# ruta que el CMD de abajo carga. Si solo se copiara src/, el include de plus/**
+# no encontraría nada y no habría servidor Plus que arrancar.
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY plus/ ./plus/
+
+# plus/admin es una aplicación Vite aparte, con su propio tsconfig. Bajo el
+# tsconfig raíz (que no fija --jsx) aporta 803 errores de tipos y no está en
+# alcance de este servicio: no lo importa nada de lo que aquí se compila y esta
+# imagen no lo sirve. Se elimina ANTES de compilar para que `npm run build`
+# salga con 0 errores en lugar de triunfar a medias o romper el build.
+RUN rm -rf ./plus/admin
+
+# Compilar TypeScript (Plus API server + dominio + infraestructura)
+RUN npm run build
+
+# Etapa de runtime minimalista
+FROM node:22-alpine AS runtime
+
+# Crear usuario no-root para seguridad
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Copiar artefactos compilados. `dist/` incluye dist/src (que Plus resuelve
+# vía el alias `@/` en plus/api/module-aliases.ts) y dist/plus.
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
+
+# Instalar solo dependencias de runtime
+RUN corepack enable pnpm && pnpm install --prod --ignore-scripts && \
+    pnpm store prune
+
+# Variables de entorno
+#
+# NODE_ENV=production es la imagen por defecto, igual que en Dockerfile.api, y
+# plus/api/server.ts se niega a arrancar en production sin TLS. docker-compose
+# lo sobrescribe con ${NODE_ENV:-development} para el stack local: este archivo
+# no decide el valor, sólo documenta la política. No "arregles" esa negativa a
+# arrancar debilitando la comprobación.
+ENV NODE_ENV=production
+ENV PORT=3001
+
+# Exponer puerto
+EXPOSE 3001
+
+# Ejecutar como usuario no-root
+USER nodejs
+
+# Health check — el mismo /health que sirve PlusApiServer.handleHealth()
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))"
+
+# tsconfig.json pone "rootDir": ".", así que main.ts se emite en
+# dist/plus/api/main.js, NO en dist/main.js. Mantén esta ruta en sincronía con
+# rootDir/include en tsconfig.json (mismo bug de CMD que tuvo Dockerfile.api).
+CMD ["node", "dist/plus/api/main.js"]

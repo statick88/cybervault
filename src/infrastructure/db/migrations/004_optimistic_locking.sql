@@ -1,0 +1,45 @@
+-- CyberVault Migration 004 — optimistic locking for vaults and credentials (H5)
+--
+-- THE DEFECT
+-- ----------
+-- `PostgresVaultRepository.save()` and `PostgresCredentialRepository.save()`
+-- were blind UPSERTs: `ON CONFLICT (id) DO UPDATE` with no comparison against
+-- what the caller had read. `PostgresVaultRepository.updateMetadata()` was an
+-- unconditional `UPDATE ... WHERE id = $1`. In every case the last writer won
+-- and the other writer's changes were silently discarded — a lost update. Two
+-- concurrent metadata merges, or a credential edited while it was being
+-- re-encrypted, could not be detected by anyone.
+--
+-- THE FIX
+-- -------
+-- A `lock_version` counter per row. A caller that reads a row also reads its
+-- `lock_version`, and passes it back as `expectedVersion` on the next write.
+-- The repository then issues a GUARDED write:
+--
+--     UPDATE ... SET ..., lock_version = <table>.lock_version + 1
+--      WHERE id = $1 AND lock_version = $2
+--
+-- Zero affected rows means somebody else committed first, and
+-- `OptimisticLockConflictError` is raised instead of overwriting. Every write
+-- — guarded or blind — increments the counter, so a blind writer still
+-- invalidates the copies held by guarded callers.
+--
+-- SCOPE AND COMPATIBILITY
+-- -----------------------
+-- * `DEFAULT 1` backfills every existing row in place; PostgreSQL 11+ adds a
+--   column with a non-null default without rewriting the table.
+-- * `NOT NULL` keeps the invariant simple: there is no "unknown version".
+-- * `BIGINT` so the counter can never realistically wrap.
+-- * The column is NOT part of any INSERT column list — the database owns it.
+-- * Migration 004 is separate from 003 on purpose: 003 shipped and was applied
+--   as H3/H4's unit of work, and existing migrations are never rewritten.
+--
+-- IDempotent: every statement is `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+-- so re-running is a no-op. Additive: nothing is dropped, renamed or retyped.
+-- The repositories mirror both statements in their own `initializeTable()`
+-- (`PostgresVaultRepository` / `PostgresCredentialRepository`) so a dev
+-- instance that never ran the migration runner behaves identically — the
+-- arrangement migration 003 already documents.
+
+ALTER TABLE vaults ADD COLUMN IF NOT EXISTS lock_version BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE credentials ADD COLUMN IF NOT EXISTS lock_version BIGINT NOT NULL DEFAULT 1;

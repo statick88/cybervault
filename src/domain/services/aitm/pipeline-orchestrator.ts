@@ -22,8 +22,11 @@ import type {
   PipelineResult,
 } from "./domain-validation-pipeline";
 import type { DetectionSignal, AiTMDetectionResult } from "./types";
-import { computeRiskScore, getRecommendation, THRESHOLDS, WEIGHTS } from "./types";
+import { computeRiskScore, THRESHOLDS, WEIGHTS } from "./types";
 import type { IBrowserIntegrityEvaluator, IntegrityEvaluationContext } from "../../ports/interfaces/IBrowserIntegrityEvaluator";
+
+/** Risk level type alias */
+type RiskLevel = 'high' | 'medium' | 'low';
 
 /** Default timeouts in ms */
 const DEFAULT_PHASE_TIMEOUT_MS = 50;
@@ -61,8 +64,8 @@ export interface PipelineOrchestratorConfig {
  */
 async function executeWithTimeout(
   step: IDomainValidationStep,
-  hostname: string,
-  expectedDomain: string,
+  currentOrigin: string,
+  expectedOrigin: string,
   timeoutMs: number,
 ): Promise<{ result: DomainValidationResult; timedOut: boolean }> {
   let timeoutHandle: NodeJS.Timeout | undefined;
@@ -81,7 +84,7 @@ async function executeWithTimeout(
     }, timeoutMs);
   });
 
-  const executePromise = step.execute(hostname, expectedDomain).then((result) => ({
+  const executePromise = step.execute(currentOrigin, expectedOrigin).then((result) => ({
     result,
     timedOut: false as const,
   }));
@@ -115,130 +118,22 @@ export class PipelineOrchestrator implements IDomainValidationPipeline {
   }
 
   async validate(
-    hostname: string,
-    expectedDomain: string,
+    currentOrigin: string,
+    expectedOrigin: string,
   ): Promise<PipelineResult & { integrityResult?: AiTMDetectionResult }> {
     const startTime = performance.now();
-    const stepResults: DomainValidationResult[] = [];
-    const phaseErrors: Array<{ phase: number; error: string }> = [];
-
-    // Global timeout
-    const globalTimeout = new Promise<{ timedOut: true }>((resolve) => {
-      setTimeout(() => resolve({ timedOut: true }), this.totalTimeoutMs);
-    });
-
-    const execution = (async () => {
-      for (let i = 0; i < this.steps.length; i++) {
-        const step = this.steps[i];
-
-        try {
-          const { result, timedOut } = await executeWithTimeout(
-            step,
-            hostname,
-            expectedDomain,
-            this.phaseTimeoutMs,
-          );
-
-          stepResults.push(result);
-
-          if (timedOut) {
-            phaseErrors.push({ phase: i + 1, error: `Timeout after ${this.phaseTimeoutMs}ms` });
-            continue;
-          }
-
-          // Short-circuit on exact match (Phase 1 success)
-          if (result.strategy === "ExactMatch" && result.isValid) {
-            break;
-          }
-
-          // Security short-circuit on high-risk confusable (Phase 2)
-          if (result.strategy === "ConfusableDetection" && result.riskLevel === "high") {
-            break;
-          }
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          phaseErrors.push({ phase: i + 1, error: errorMsg });
-
-          stepResults.push({
-            isValid: false,
-            strategy: step.name,
-            riskLevel: "medium",
-            confidence: 0,
-            reason: `Phase "${step.name}" failed: ${errorMsg}`,
-          });
-        }
-      }
-    })();
-
-    await Promise.race([execution, globalTimeout]);
-
-    // Phase 3.1: Integrity Signal Aggregation
-    // If integrity evaluator is available, run it and aggregate signals
-    let integrityResult: AiTMDetectionResult | undefined;
-    let combinedRiskScore = 0;
-    let combinedRecommendation: 'allow' | 'warn' | 'block' = 'allow';
-
-    if (this.integrityEvaluator && this.currentFingerprint) {
-      const context: IntegrityEvaluationContext = {
-        currentFingerprint: this.currentFingerprint,
-        baselineFingerprint: this.baselineFingerprint,
-        url: this.currentFingerprint.url,
-        timestamp: Date.now(),
-      };
-
-      try {
-        integrityResult = await this.integrityEvaluator.evaluate(context);
-        
-        // Convert domain validation results to DetectionSignal format for aggregation
-        const domainSignals: DetectionSignal[] = stepResults.map(step => {
-          const signalType = this.mapStrategyToSignalType(step.strategy);
-          return {
-            type: signalType,
-            status: step.isValid ? 'pass' : step.riskLevel === 'high' ? 'fail' : 'warn',
-            score: step.isValid ? 0 : step.riskLevel === 'high' ? 100 : 50,
-            confidence: step.confidence,
-            weight: WEIGHTS[signalType],
-            details: step.reason,
-          };
-        });
-
-        // Combine all signals: domain validation + integrity evaluation
-        const allSignals: DetectionSignal[] = [
-          ...domainSignals,
-          ...integrityResult.signals,
-        ];
-
-        // Aggregate using centralized computeRiskScore
-        combinedRiskScore = computeRiskScore(allSignals);
-        combinedRecommendation = getRecommendation(combinedRiskScore);
-      } catch (err) {
-        // Integrity evaluation failed, log but continue with domain-only result
-        console.warn('[PipelineOrchestrator] Integrity evaluation failed:', err);
-      }
-    }
-
+    const stepResults = await this.executePipelineSteps(currentOrigin, expectedOrigin);
+    const integrityResult = await this.runIntegrityEvaluation(stepResults);
     const totalTimeMs = performance.now() - startTime;
-    
-    // Determine overall risk from both domain and integrity
-    const domainRisk = stepResults.some((r) => r.riskLevel === "high")
-      ? "high"
-      : stepResults.some((r) => r.riskLevel === "medium")
-        ? "medium"
-        : "low";
-    
-    const integrityRisk = integrityResult?.riskScore ?? 0;
-    const integrityRiskLevel = integrityRisk >= THRESHOLDS.block ? "high" : integrityRisk >= THRESHOLDS.warn ? "medium" : "low";
-    
-    // Combined overall risk takes the higher of the two
-    const overallRisk = (domainRisk === "high" || integrityRiskLevel === "high") ? "high"
-      : (domainRisk === "medium" || integrityRiskLevel === "medium") ? "medium"
-      : "low";
 
-    const isValid = stepResults.length > 0
-      ? stepResults[stepResults.length - 1].isValid
-      : true;
-
-    // Final validity considers both domain and integrity
+    const overallRisk = this.computeOverallRisk(stepResults, integrityResult);
+    const combinedRiskScore = integrityResult ? computeRiskScore(
+      this.buildDomainSignals(stepResults).concat(integrityResult.signals)
+    ) : 0;
+    
+    // SECURITY: If ANY step fails (isValid=false), overall is invalid.
+    // ExactMatch failure is absolute - no fallback to other steps.
+    const isValid = stepResults.length > 0 && stepResults.every(r => r.isValid);
     const finalIsValid = isValid && (combinedRiskScore < THRESHOLDS.block);
 
     return {
@@ -250,19 +145,139 @@ export class PipelineOrchestrator implements IDomainValidationPipeline {
     };
   }
 
-  /**
-   * Map domain validation strategy to DetectionSignal type
-   */
+  private async executePipelineSteps(
+    currentOrigin: string,
+    expectedOrigin: string,
+  ): Promise<DomainValidationResult[]> {
+    const stepResults: DomainValidationResult[] = [];
+
+    const execution = this.runStepsWithTimeout(currentOrigin, expectedOrigin, stepResults);
+
+    const globalTimeout = new Promise<{ timedOut: true }>((resolve) => {
+      setTimeout(() => resolve({ timedOut: true }), this.totalTimeoutMs);
+    });
+
+    await Promise.race([execution, globalTimeout]);
+    return stepResults;
+  }
+
+  private async runStepsWithTimeout(
+    currentOrigin: string,
+    expectedOrigin: string,
+    stepResults: DomainValidationResult[],
+  ): Promise<void> {
+    for (const step of this.steps) {
+
+      try {
+        const { result, timedOut } = await executeWithTimeout(
+          step,
+          currentOrigin,
+          expectedOrigin,
+          this.phaseTimeoutMs,
+        );
+
+        stepResults.push(result);
+
+        if (timedOut) continue;
+        if (this.shouldShortCircuit(result)) break;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        stepResults.push(this.createErrorResult(step.name, errorMsg));
+      }
+    }
+  }
+
+  private shouldShortCircuit(result: DomainValidationResult): boolean {
+    return (result.strategy === "ExactMatch" && result.isValid) ||
+           (result.strategy === "ExactMatch" && !result.isValid) || // Absolute failure
+           (result.strategy === "ConfusableDetection" && result.riskLevel === "high");
+  }
+
+  private createErrorResult(stepName: string, errorMsg: string): DomainValidationResult {
+    return {
+      isValid: false,
+      strategy: stepName,
+      riskLevel: "medium",
+      confidence: 0,
+      reason: `Phase "${stepName}" failed: ${errorMsg}`,
+    };
+  }
+
+  private async runIntegrityEvaluation(
+    stepResults: DomainValidationResult[],
+  ): Promise<AiTMDetectionResult | undefined> {
+    if (!this.integrityEvaluator || !this.currentFingerprint) return undefined;
+
+    const context: IntegrityEvaluationContext = {
+      currentFingerprint: this.currentFingerprint,
+      baselineFingerprint: this.baselineFingerprint,
+      url: this.currentFingerprint.url,
+      timestamp: Date.now(),
+    };
+
+    try {
+      return await this.integrityEvaluator.evaluate(context);
+    } catch (err) {
+      console.warn('[PipelineOrchestrator] Integrity evaluation failed:', err);
+      return undefined;
+    }
+  }
+
+  private buildDomainSignals(stepResults: DomainValidationResult[]): DetectionSignal[] {
+    return stepResults.map(step => {
+      const signalType = this.mapStrategyToSignalType(step.strategy);
+      return {
+        type: signalType,
+        status: this.computeSignalStatus(step),
+        score: this.computeSignalScore(step),
+        confidence: step.confidence,
+        weight: WEIGHTS[signalType],
+        details: step.reason,
+      };
+    });
+  }
+
+  private computeSignalStatus(step: DomainValidationResult): 'pass' | 'fail' | 'warn' {
+    if (step.isValid) return 'pass';
+    return step.riskLevel === 'high' ? 'fail' : 'warn';
+  }
+
+  private computeSignalScore(step: DomainValidationResult): number {
+    if (step.isValid) return 0;
+    return step.riskLevel === 'high' ? 100 : 50;
+  }
+
+  private computeOverallRisk(
+    stepResults: DomainValidationResult[],
+    integrityResult: AiTMDetectionResult | undefined,
+  ): RiskLevel {
+    const domainRisk = this.computeDomainRisk(stepResults);
+    const integrityRiskLevel = this.computeIntegrityRiskLevel(integrityResult);
+
+    if (domainRisk === 'high' || integrityRiskLevel === 'high') return 'high';
+    if (domainRisk === 'medium' || integrityRiskLevel === 'medium') return 'medium';
+    return 'low';
+  }
+
+  private computeDomainRisk(stepResults: DomainValidationResult[]): RiskLevel {
+    if (stepResults.some(r => r.riskLevel === 'high')) return 'high';
+    if (stepResults.some(r => r.riskLevel === 'medium')) return 'medium';
+    return 'low';
+  }
+
+  private computeIntegrityRiskLevel(integrityResult: AiTMDetectionResult | undefined): RiskLevel {
+    const integrityRisk = integrityResult?.riskScore ?? 0;
+    if (integrityRisk >= THRESHOLDS.block) return 'high';
+    if (integrityRisk >= THRESHOLDS.warn) return 'medium';
+    return 'low';
+  }
+
   private mapStrategyToSignalType(strategy: string): DetectionSignal['type'] {
     switch (strategy) {
-      case 'ExactMatch':
-        return 'hostname';
-      case 'ConfusableDetection':
-        return 'content-hash';
-      case 'LevenshteinTypoSquatting':
-        return 'timing';
-      default:
-        return 'cookie-security';
+      case 'ExactMatch': return 'hostname';
+      case 'ConfusableDetection': return 'content-hash';
+      case 'LevenshteinTypoSquatting': return 'timing';
+      default: return 'cookie-security';
     }
   }
 }

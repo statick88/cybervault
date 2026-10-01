@@ -22,9 +22,22 @@ export class ConfusableDetectionStep implements IDomainValidationStep {
   readonly name = "ConfusableDetection";
 
   async execute(
-    hostname: string,
-    _expectedDomain: string,
+    currentOrigin: string,
+    _expectedOrigin: string,
   ): Promise<DomainValidationResult> {
+    // Extract hostname from origin WITHOUT Punycode conversion
+    // Use regex to preserve Unicode characters
+    const hostname = extractHostnameFromOrigin(currentOrigin);
+    if (!hostname) {
+      return {
+        isValid: false,
+        strategy: this.name,
+        riskLevel: "high",
+        confidence: 1.0,
+        reason: "Invalid origin format for confusable detection",
+      };
+    }
+
     const cleanHost = stripZeroWidth(hostname);
     const evidence = detectConfusables(cleanHost);
 
@@ -57,4 +70,10 @@ export class ConfusableDetectionStep implements IDomainValidationStep {
       evidence: evidence as unknown[],
     };
   }
+}
+
+function extractHostnameFromOrigin(origin: string): string | null {
+  // Extract hostname from "scheme://hostname:port" preserving Unicode
+  const match = origin.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^:/?#]+)(?::\d+)?/);
+  return match ? match[1] : null;
 }

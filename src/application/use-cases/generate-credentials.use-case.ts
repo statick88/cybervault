@@ -1,5 +1,4 @@
-import type { CredentialsGenerator } from "../../domain/services/autocompletado/credentials-generator";
-import type { GeneratedCredentials } from "../../domain/services/autocompletado/credentials-generator";
+import type { CredentialsGenerator, GeneratedCredentials } from "../../domain/services/autocompletado/credentials-generator";
 
 /**
  * Use Case: Generar credenciales seguras con sal y pimienta

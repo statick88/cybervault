@@ -9,6 +9,8 @@ import type { IVaultRepository } from "../../domain/repositories";
 import { logger } from "../../shared/logger";
 import { withRetry } from "../../shared/retry";
 import { CircuitBreaker } from "../../shared/circuit-breaker";
+import { OptimisticLockConflictError } from "../../domain/errors/optimistic-lock-conflict.error";
+import { mapVaultRow } from "./row-mappers";
 
 // Errores PostgreSQL que justifican reintentar la operación
 const PG_RETRYABLE_ERRORS = ["ECONNREFUSED", "timeout", "connection terminated"];
@@ -61,6 +63,12 @@ export class PostgresVaultRepository implements IVaultRepository {
 
   /**
    * Inicializa la tabla de bóvedas si no existe
+   *
+   * The `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` mirrors migration
+   * `004_optimistic_locking.sql`, which is the authority for deployed
+   * databases: `CREATE TABLE IF NOT EXISTS` is a NO-OP on a database where
+   * `001_initial_schema.sql` already created `vaults`, so without it the
+   * column the guarded writes depend on would not exist.
    */
   private async initializeTable(): Promise<void> {
     const createTableQuery = `
@@ -73,9 +81,12 @@ export class PostgresVaultRepository implements IVaultRepository {
         owner_id VARCHAR(255),
         metadata JSONB,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        lock_version BIGINT NOT NULL DEFAULT 1
       );
-      
+
+      ALTER TABLE vaults ADD COLUMN IF NOT EXISTS lock_version BIGINT NOT NULL DEFAULT 1;
+
       CREATE INDEX IF NOT EXISTS idx_vaults_name ON vaults(name);
       CREATE INDEX IF NOT EXISTS idx_vaults_created_at ON vaults(created_at);
       CREATE INDEX IF NOT EXISTS idx_vaults_owner_id ON vaults(owner_id);
@@ -87,10 +98,20 @@ export class PostgresVaultRepository implements IVaultRepository {
 
   /**
    * Guarda una bóveda en la base de datos
+   *
+   * H5: passing `expectedVersion` switches to a GUARDED write — see
+   * `saveGuarded`. Omitting it preserves the original blind upsert, which is
+   * what every existing caller does.
    */
-  async save(vault: Vault): Promise<Vault> {
+  async save(vault: Vault, expectedVersion?: number): Promise<Vault> {
+    if (expectedVersion !== undefined) {
+      return this.saveGuarded(vault, expectedVersion);
+    }
     const plain = vault.toPlainObject();
 
+    // `lock_version = vaults.lock_version + 1` (NOT `EXCLUDED.lock_version` —
+    // the column is database-owned and never bound in the INSERT) so a blind
+    // writer still invalidates the copies held by guarded callers.
     const query = `
       INSERT INTO vaults (
         id, name, description, encrypted_data, encryption_key_id, owner_id, metadata, created_at, updated_at
@@ -104,7 +125,8 @@ export class PostgresVaultRepository implements IVaultRepository {
         encryption_key_id = EXCLUDED.encryption_key_id,
         owner_id = EXCLUDED.owner_id,
         metadata = EXCLUDED.metadata,
-        updated_at = EXCLUDED.updated_at
+        updated_at = EXCLUDED.updated_at,
+        lock_version = vaults.lock_version + 1
       RETURNING *;
     `;
 
@@ -130,13 +152,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       const row = result.rows[0];
 
       logger.info(`Vault saved with id: ${plain.id}`);
-      return Vault.fromPlainObject({
-        ...row,
-        ownerId: row.owner_id ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Vault.fromPlainObject(mapVaultRow(row));
     } catch (error) {
       logger.error("Failed to save vault", "PostgresVaultRepository", undefined, String(error));
       throw error;
@@ -144,11 +160,99 @@ export class PostgresVaultRepository implements IVaultRepository {
   }
 
   /**
+   * H5 — guarded save. A single `UPDATE ... WHERE id = $1 AND lock_version = $N`
+   * and NOTHING ELSE: no `INSERT`, so a guarded write can never resurrect a row
+   * that has been deleted. Zero affected rows means either the row is gone or
+   * somebody else committed first; both are reported as
+   * `OptimisticLockConflictError`, after reading the version actually stored so
+   * the caller can tell the two apart.
+   */
+  private async saveGuarded(vault: Vault, expectedVersion: number): Promise<Vault> {
+    const plain = vault.toPlainObject();
+
+    const query = `
+      UPDATE vaults
+      SET name = $2,
+          description = $3,
+          encrypted_data = $4,
+          encryption_key_id = $5,
+          owner_id = $6,
+          metadata = $7,
+          updated_at = $8,
+          lock_version = vaults.lock_version + 1
+      WHERE id = $1 AND lock_version = $9
+      RETURNING *;
+    `;
+
+    const values = [
+      plain.id,
+      plain.name,
+      plain.description || null,
+      plain.encryptedData,
+      plain.encryptionKeyId,
+      plain.ownerId || null,
+      plain.metadata ? JSON.stringify(plain.metadata) : null,
+      plain.updatedAt,
+      expectedVersion,
+    ];
+
+    let result: QueryResult;
+    try {
+      result = await this.executeWithCircuit(() =>
+        withRetry(
+          () => this.pool.query(query, values),
+          { maxAttempts: 3, retryableErrors: PG_RETRYABLE_ERRORS },
+        ),
+      );
+    } catch (error) {
+      logger.error("Failed to save vault (guarded)", "PostgresVaultRepository", undefined, String(error));
+      throw error;
+    }
+
+    if ((result.rowCount ?? 0) === 0) {
+      throw await this.lockConflict("vault", plain.id, expectedVersion);
+    }
+
+    const row = result.rows[0];
+    logger.info(`Vault saved with id: ${plain.id} (lock_version ${row.lock_version})`);
+    return Vault.fromPlainObject(mapVaultRow(row));
+  }
+
+  /**
+   * Reads the version actually stored so `OptimisticLockConflictError` can say
+   * WHICH happened — a stale version or a missing row — instead of guessing.
+   * A failure here must not mask the original conflict, so it degrades to
+   * "version unknown".
+   */
+  private async lockConflict(
+    entity: "vault" | "credential",
+    id: string,
+    expectedVersion: number,
+  ): Promise<OptimisticLockConflictError> {
+    let actualVersion: number | undefined;
+    try {
+      const result: QueryResult = await this.executeWithCircuit(() =>
+        this.pool.query(`SELECT lock_version FROM vaults WHERE id = $1`, [id]),
+      );
+      if (result.rows.length > 0) {
+        actualVersion = Number(result.rows[0].lock_version);
+      }
+    } catch (error) {
+      logger.warn("Could not read lock_version for conflict report", String(error));
+    }
+
+    const conflict = new OptimisticLockConflictError(entity, id, expectedVersion, actualVersion);
+    logger.warn(conflict.message);
+    return conflict;
+  }
+
+  /**
    * Obtiene una bóveda por su ID
    */
   async findById(id: VaultId): Promise<Vault | null> {
     const query = `
-      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata, created_at, updated_at
+      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata,
+             created_at, updated_at, lock_version
       FROM vaults
       WHERE id = $1
     `;
@@ -168,13 +272,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       const row = result.rows[0];
 
       logger.info(`Vault found with id: ${id.toString()}`);
-      return Vault.fromPlainObject({
-        ...row,
-        ownerId: row.owner_id ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Vault.fromPlainObject(mapVaultRow(row));
     } catch (error) {
       logger.error("Failed to find vault by id", "PostgresVaultRepository", undefined, String(error));
       throw error;
@@ -189,7 +287,8 @@ export class PostgresVaultRepository implements IVaultRepository {
     ownerId: string,
   ): Promise<Vault | null> {
     const query = `
-      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata, created_at, updated_at
+      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata,
+             created_at, updated_at, lock_version
       FROM vaults
       WHERE id = $1 AND owner_id = $2
     `;
@@ -208,13 +307,7 @@ export class PostgresVaultRepository implements IVaultRepository {
       logger.info(
         `Vault found with id: ${vaultId} for owner: ${ownerId}`,
       );
-      return Vault.fromPlainObject({
-        ...row,
-        ownerId: row.owner_id ?? undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      });
+      return Vault.fromPlainObject(mapVaultRow(row));
     } catch (error) {
       logger.error("Failed to find vault by id and owner id", "PostgresVaultRepository", undefined, String(error));
       throw error;
@@ -257,7 +350,8 @@ export class PostgresVaultRepository implements IVaultRepository {
    */
   async list(): Promise<Vault[]> {
     const query = `
-      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata, created_at, updated_at
+      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata,
+             created_at, updated_at, lock_version
       FROM vaults
       ORDER BY created_at DESC
     `;
@@ -270,15 +364,7 @@ export class PostgresVaultRepository implements IVaultRepository {
         ),
       );
 
-      const vaults = result.rows.map((row) =>
-        Vault.fromPlainObject({
-          ...row,
-          ownerId: row.owner_id ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
-      );
+      const vaults = result.rows.map((row) => Vault.fromPlainObject(mapVaultRow(row)));
 
       logger.info(`Listed ${vaults.length} vaults`);
       return vaults;
@@ -293,7 +379,8 @@ export class PostgresVaultRepository implements IVaultRepository {
    */
   async listByOwnerId(ownerId: string): Promise<Vault[]> {
     const query = `
-      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata, created_at, updated_at
+      SELECT id, name, description, encrypted_data, encryption_key_id, owner_id, metadata,
+             created_at, updated_at, lock_version
       FROM vaults
       WHERE owner_id = $1
       ORDER BY created_at DESC
@@ -307,15 +394,7 @@ export class PostgresVaultRepository implements IVaultRepository {
         ),
       );
 
-      const vaults = result.rows.map((row) =>
-        Vault.fromPlainObject({
-          ...row,
-          ownerId: row.owner_id ?? undefined,
-          metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        }),
-      );
+      const vaults = result.rows.map((row) => Vault.fromPlainObject(mapVaultRow(row)));
 
       logger.info(`Listed ${vaults.length} vaults for owner: ${ownerId}`);
       return vaults;
@@ -344,5 +423,47 @@ export class PostgresVaultRepository implements IVaultRepository {
   async close(): Promise<void> {
     await this.pool.end();
     logger.info("PostgreSQL connection pool closed");
+  }
+
+  async updateMetadata(
+    vaultId: string,
+    metadata: Record<string, unknown>,
+    expectedVersion?: number,
+  ): Promise<void> {
+    const guarded = expectedVersion !== undefined;
+
+    // The blind branch keeps `WHERE id = $2` exactly as it was — H5 must not
+    // change behaviour for a caller that never opted in.
+    const query = guarded
+      ? `
+      UPDATE vaults
+      SET metadata = $1, updated_at = NOW(), lock_version = vaults.lock_version + 1
+      WHERE id = $2 AND lock_version = $3
+    `
+      : `
+      UPDATE vaults
+      SET metadata = $1, updated_at = NOW(), lock_version = vaults.lock_version + 1
+      WHERE id = $2
+    `;
+
+    const params = guarded
+      ? [JSON.stringify(metadata), vaultId, expectedVersion]
+      : [JSON.stringify(metadata), vaultId];
+
+    let result: QueryResult;
+    try {
+      result = await this.executeWithCircuit(() => this.pool.query(query, params));
+    } catch (error) {
+      logger.error("Failed to update vault metadata", "PostgresVaultRepository", undefined, String(error));
+      throw error;
+    }
+
+    if (guarded && (result.rowCount ?? 0) === 0) {
+      // `guarded` is `expectedVersion !== undefined`, so TypeScript has already
+      // narrowed the parameter to `number` here.
+      throw await this.lockConflict("vault", vaultId, expectedVersion);
+    }
+
+    logger.info(`Vault metadata updated: ${vaultId}`);
   }
 }

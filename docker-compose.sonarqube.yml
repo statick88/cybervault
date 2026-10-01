@@ -1,0 +1,64 @@
+# =============================================================================
+# SonarQube for CyberVault Analysis
+# =============================================================================
+# Run: docker compose -f docker-compose.sonarqube.yml up -d
+# Access: http://localhost:9000 (admin/admin -> change on first login)
+# =============================================================================
+
+version: "3.8"
+
+services:
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: cybervault-sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://sonarqube-db:5432/sonarqube
+      - SONAR_JDBC_USERNAME=sonarqube
+      - SONAR_JDBC_PASSWORD=sonarqube_password
+      - SONAR_WEB_JAVAOPTS=-Xmx2g -Xms1g
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+      - sonarqube-logs:/opt/sonarqube/logs
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    networks:
+      - sonarqube-net
+
+  sonarqube-db:
+    image: postgres:16-alpine
+    container_name: cybervault-sonarqube-db
+    environment:
+      - POSTGRES_DB=sonarqube
+      - POSTGRES_USER=sonarqube
+      - POSTGRES_PASSWORD=sonarqube_password
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sonarqube-net
+
+networks:
+  sonarqube-net:
+    driver: bridge
+
+volumes:
+  sonarqube-data:
+  sonarqube-extensions:
+  sonarqube-logs:
+  sonarqube-db-data:

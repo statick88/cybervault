@@ -19,3 +19,17 @@ cybervault-plugin.tar.gz
 # Temporary files
 *.tmp
 *.log
+pentest-reports/
+
+# Test coverage output (generated; consumed by SonarQube, never committed)
+coverage/
+
+# SonarQube scanner working directory (generated)
+.scannerwork/
+
+# CodeGraph local index (39M SQLite, regenerable with `codegraph init`)
+.codegraph/
+
+# Editor/agent scratch that is not part of the product
+paper-v2-corrected.docx.backup
+

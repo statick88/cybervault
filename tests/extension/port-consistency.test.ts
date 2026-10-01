@@ -129,6 +129,38 @@ function openapiServerUrl(): string | undefined {
   return openapi.match(/^\s*- url: (\S+)$/m)?.[1];
 }
 
+/**
+ * Every host port `docker-compose.yml` publishes, every profile included.
+ *
+ * A profile-gated service's port collides on the host whether or not its
+ * profile is currently up — and the admin console and profile `dev` are used
+ * together by definition. Env overrides resolve through `envPort`, so a local
+ * `.env` re-pointing a service moves this set with it, exactly as it moves
+ * what Compose actually publishes.
+ */
+function composeHostPorts(): number[] {
+  const ports = new Set<number>();
+  // `- "${KEY:-3010}:3000"` — the env-overridable form.
+  for (const m of compose.matchAll(/-\s*"\$\{([A-Z_]+):-(\d+)\}:\d+"/g)) {
+    ports.add(Number(envPort(m[1]) ?? m[2]));
+  }
+  // `- "5001:5001"` — the fixed form (ipfs).
+  for (const m of compose.matchAll(/-\s*"(\d+):\d+"/g)) {
+    ports.add(Number(m[1]));
+  }
+  return [...ports];
+}
+
+/**
+ * The port the `plus/admin` Vite dev server *binds* on the host. Not a URL:
+ * nothing dials it, which is precisely why the URL comparisons above never
+ * saw it.
+ */
+function viteDevPort(): number | undefined {
+  const raw = viteConfig.match(/server:\s*\{[\s\S]*?\bport:\s*(\d+)/)?.[1];
+  return raw === undefined ? undefined : Number(raw);
+}
+
 describe("R10 — extension defaults agree with the deployed ports", () => {
   it("resolves the API and Plus ports the way the stack publishes them", () => {
     // If these are missing the whole file is vacuous, and a vacuous security
@@ -277,6 +309,51 @@ describe("R10 — host-facing URLs name the ports the stack publishes", () => {
       url,
       port: published,
       published,
+    });
+  });
+});
+
+/**
+ * The bind port: the drift class the two describes above structurally cannot
+ * see.
+ *
+ * They compare URLs a host *dials*; the admin dev server's `server.port` is
+ * never dialed, so when it shipped on 3002 — the very host port Compose
+ * publishes for `adminer` under profile `dev` — every comparison above stayed
+ * green while the admin console and the adminer UI fought over one port.
+ *
+ * Both sides move independently: a bump in `plus/admin/vite.config.ts`, or a
+ * new `ADMINER_PORT` / `API_PORT` / `PLUS_PORT` / `SWAGGER_PORT` default in
+ * Compose. This case reads the bind port out of the Vite config and every
+ * published host port out of Compose and asserts the two sets are disjoint,
+ * so either bump turns it red.
+ */
+describe("R10 — the admin dev server binds no port the stack publishes", () => {
+  it("the Vite dev port collides with nothing Compose publishes to the host", () => {
+    const devPort = viteDevPort();
+    const published = composeHostPorts();
+
+    // Extraction guards: an `undefined` dev port or an empty published set
+    // would satisfy disjointness vacuously, and a vacuous check is worse
+    // than none. The four env-port lookups also prove the profile-gated
+    // services (swagger, adminer) made it into the set — the collision this
+    // case exists to catch lived exactly there.
+    expect(devPort).toBeDefined();
+    expect(published).toEqual(
+      expect.arrayContaining([
+        Number(envPort("API_PORT")),
+        Number(envPort("PLUS_PORT")),
+        Number(envPort("SWAGGER_PORT")),
+        Number(envPort("ADMINER_PORT")),
+      ]),
+    );
+
+    // The property: whatever Compose publishes, the admin dev server binds
+    // something else. The collisions array is reported rather than just
+    // asserted empty so a red names the port that took the other one.
+    expect({ devPort, collisions: published.filter((p) => p === devPort) }).toEqual({
+      devPort,
+      collisions: [],
     });
   });
 });

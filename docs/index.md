@@ -44,8 +44,8 @@ cd cybervault
 # Install dependencies
 npm install
 
-# Build the extension
-npm run build
+# Build the extension (tsc for the API server + esbuild for the extension)
+npm run build:all
 
 # Load in Chrome
 # 1. Open chrome://extensions

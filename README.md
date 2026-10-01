@@ -32,7 +32,7 @@ npm install
 npm run build
 
 # 4. Start the API server
-node dist/infrastructure/api/server.js
+node dist/src/infrastructure/api/server.js
 ```
 
 Or with Docker Compose (full stack):

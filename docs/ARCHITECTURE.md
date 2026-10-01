@@ -502,32 +502,62 @@ CommonJS build**; the real client would work only under a native-ESM runtime.
 ## 10. Known divergences
 
 Things the code does that differ from documentation, configuration defaults, or
-comments. Each is verified; none is fixed here.
+comments. Nothing is fixed in this section: a row is a finding, and a
+divergence that a commit already repaired is moved to *Retired* below rather
+than deleted or renumbered.
+
+**What "verified" means in this table.** Every row was re-derived from the
+working tree at `39a5712`, not carried over from `8115b29` where the table was
+first written. Concretely: each cited line was read and shown to contain what
+the row claims; every "no callers" / "no matches" claim was reproduced by
+running the search; and every HTTP status below was measured against a running
+Plus server (`npx tsx plus/api/main.ts`) rather than read off the `switch`.
+Citations that had drifted with the code are corrected in place. This is the
+author's own verification — §11 still applies: no independent reviewer has
+signed the document.
 
 | # | Divergence | Evidence |
 |---|---|---|
-| D2 | `PlusConfig.serviceSecret` is defined but never read; the extension's service-secret headers are ignored | `plus/api/server.ts:110`; no reader in `plus/` |
-| D3 | `verifyCapabilityCore` / `consumeCapabilityJti` exported with no callers | `plus/domain/services/capability-issuer.ts:304`, `:322`; no matches in `src/` or `plus/` |
-| D4 | `GetCredentialWithCapabilityUseCase` is test-only | constructed only in `tests/application/managed-release.test.ts` |
-| D5 | `PlusBridge` has no production caller | `src/infrastructure/plus/plus-bridge.ts:102`; only `tests/crypto/plus-bridge.test.ts` imports it |
-| D6 | `src/ui/content-scripts/managed-decrypt.ts` is neither in the manifest nor in any build entry | `src/infrastructure/manifest/manifest.json:28`; `scripts/build-extension.mjs:44`, `:63`, `:78`, `:92`, `:108` |
-| D7 | `plus/admin` pages call endpoints that do not exist: every list route 404s, `GET /api/v1/audit` 405s (server side is POST-only) | `plus/admin/src/services/api.ts:170`–`252` vs. `routeRequest` (`plus/api/server.ts:791`–`820`); `plus/admin/src/pages/Audit.tsx:30` |
-| D8 | Compose publishes no host port for Postgres or Redis, and sets no `REDIS_URL` | `docker-compose.yml:147`, `:168`; no `REDIS_URL` key |
-| D10 | The IPFS warning message blames connectivity when the real failure is module resolution | `src/infrastructure/ipfs/ipfs-adapter.ts:76`–`82` |
-| D11 | `docs/index.md` claims "16 endpoints", "ECDSA P-256", "Redis ... session management", "IPFS storage" without qualification | `docs/index.md` Key Features |
+| D3 | `verifyCapabilityCore` / `consumeCapabilityJti` are exported but never called from `src/` or `plus/` — every call site is a test | `plus/domain/services/capability-issuer.ts:304`, `:322`; `grep -rn "verifyCapabilityCore\|consumeCapabilityJti" src plus` returns only those two `export` lines; the calls are in `tests/plus/capability-issuer.test.ts` |
+| D4 | `GetCredentialWithCapabilityUseCase` is test-only | defined at `src/application/use-cases/managed-release.use-case.ts:359`; the only `new GetCredentialWithCapabilityUseCase(` in the tree is `tests/application/managed-release.test.ts:189` |
+| D5 | `PlusBridge` has no production caller | `src/infrastructure/plus/plus-bridge.ts:103`; `grep -rln "infrastructure/plus/plus-bridge" . --include="*.ts"` returns only `tests/crypto/plus-bridge.test.ts` |
+| D6 | `src/ui/content-scripts/managed-decrypt.ts` is neither in the manifest nor in any build entry | `src/infrastructure/manifest/manifest.json:31`, `:36` list only `inject.js` and `autocomplete.js`; the five entry points are `scripts/build-extension.mjs:44`, `:63`, `:78`, `:92`, `:108`, and `copyDir` drops `.ts` (`scripts/build-extension.mjs:134`–`141`); `grep -rn "managed-decrypt" src scripts` returns nothing |
+| D7 | `plus/admin` pages call endpoints the server does not have: every list route 404s and `GET /api/v1/audit` 405s (server side is POST-only) | `plus/admin/src/services/api.ts:171`–`232` vs. `routeRequest` (`plus/api/server.ts:922`–`958`); `handleAudit`'s method guard at `plus/api/server.ts:836`–`838`; `plus/admin/src/pages/Audit.tsx:30`. Measured with a valid `X-Service-Secret`: `resources`, `users`, `entitlements`, `challenges` → **404**, `GET /api/v1/audit` → **405**, `POST /api/v1/audit` → 200. Without the header every non-probe route stops at **401** first (`plus/api/server.ts:926`), and the admin client sends none (`plus/admin/src/services/api.ts:29`–`35`), so in a browser the visible failure is 401 rather than 404/405 |
+| D8 | Compose publishes no host port for `postgres` or `redis`, so the host defaults committed in `.env.example:8`, `:11` and `README.md:109` (`localhost:5432`, `localhost:6379`) name ports the stack never publishes | `docker-compose.yml:178`–`194` (`postgres:`) and `:199`–`212` (`redis:`) carry no `ports:`; `:30`, `:115`, `:221`–`222`, `:240`, `:261` are the services that do. The stack itself reaches both in-network instead — `REDIS_URL=redis://redis:6379` (`:56`, `:145`) and `DATABASE_URL=…@postgres:5432/…` (`:72`, `:161`). **This row no longer claims compose sets no `REDIS_URL`** — it does; see *Retired* |
+| D10 | The IPFS warning message blames connectivity when the real failure is module resolution | `src/infrastructure/ipfs/ipfs-adapter.ts:76`–`82` is a single `catch` wrapping both `await import("ipfs-http-client")` (`:67`) and `client.id()` (`:74`), and it reports only "Unable to connect"; `tsconfig.json:4` is `"module": "commonjs"`, so that import is emitted as `require`, and `node -e "require('ipfs-http-client')"` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+| D11 | `docs/index.md` claims "16 endpoints", "ECDSA P-256", "Redis ... session management", "IPFS storage" without qualification | `docs/index.md:26`, `:28`–`30`, under `### Key Features` (`:22`); the file's 139 lines carry no caveat for any of them |
 
-**Retired — no longer divergent.** Two entries above have been removed rather
-than renumbered, so the numbering has gaps on purpose:
+**Retired — no longer divergent.** Entries from the table above have been
+removed rather than renumbered, so the numbering has gaps on purpose:
 
 - **D1** (extension defaults vs. the ports Compose publishes) — the extension
-  defaulted to `3010` / `3003` while Compose published `3000` / `3001`. Both
-  sides now agree on `3010` / `3003`.
+  defaulted to `3010` / `3011`, and to `3010` / `3003` once `c4b24a5` (R10)
+  landed, while Compose published `3000` / `3001`. Both sides now agree on
+  `3010` / `3003`: `src/background/auditor.ts:1103`, `:1105`,
+  `src/ui/popup/popup.ts:162`, `docker-compose.yml:30`, `:115`.
+- **D2** (`PlusConfig.serviceSecret` defined but never read; the extension's
+  service-secret headers ignored) — repaired by `a8c217b` (R1), which added
+  `authenticateServiceRequest`: it reads `PLUS_CONFIG.serviceSecret` at
+  `plus/api/server.ts:279` and compares it in constant time
+  (`plus/api/server.ts:286`–`292`) before anything is dispatched. Measured
+  against a running server: no `X-Service-Secret` → 401; the configured secret
+  → the request proceeds.
+- **D8's `REDIS_URL` clause** ("compose sets no `REDIS_URL`") — false as of
+  `c143c24` (R2) and reinforced by `2406b1b` (R7): `docker-compose.yml:56`
+  (`api`) and `:145` (`plus`) both set `REDIS_URL=redis://redis:6379`. Row D8
+  survives on its other clause only.
 - **D9** (`swagger` and `plus` both on host `3001`) — Plus moved to host
-  `3003`, so `swagger`'s `3001` (profile `docs`) collides with nothing.
+  `3003` (`docker-compose.yml:115`), so `swagger`'s `3001` (profile `docs`,
+  `docker-compose.yml:240`, `:251`–`252`) collides with nothing.
 
-`tests/extension/port-consistency.test.ts` enforces the agreement on both the
-extension's fallbacks and the host-facing URL defaults, which is what keeps
-these two retired rather than reintroduced.
+`tests/extension/port-consistency.test.ts` enforces the agreement behind
+**D1**: its first `describe` (`tests/extension/port-consistency.test.ts:132`)
+holds the extension's fallbacks to the ports Compose publishes, and its second
+(`tests/extension/port-consistency.test.ts:200`) holds every host-facing URL
+default to those same ports. The suite passes at `39a5712` (10 tests). It never
+reads `SWAGGER_PORT`, so **D9**'s retirement rests on the compose values
+themselves (`docker-compose.yml:115` is `3003` against `:240`'s `3001`), not on
+a test.
 
 ---
 

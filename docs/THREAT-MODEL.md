@@ -136,6 +136,26 @@ step-up.
 *Residual, now tracked as R7:* the rate limit is in-process and therefore
 per-replica. Behind more than one Plus instance the effective limit multiplies.
 
+*Correction from RQ5 (`research/rq5-mutation-analysis`):* two of the four
+resolutions above were **believed, not pinned**. Mutation analysis of the
+allow-list replaced with "accept any origin" survived the full 1731-test
+suite: **no test in the codebase had ever asserted a CORS header**. The
+allow-list is correct, and RQ5 confirmed the correct-password case, but the
+wrong-origin case was untested until now. Same for the constant-time compare —
+see below. The fixes were right; nothing proved they stayed right. Pinned by
+`tests/plus/cors-origin-allowlist.test.ts`.
+
+**Coverage cannot pin a timing property.** `hash === storedHash` and
+`crypto.timingSafeEqual` return the same value on every possible input; the
+difference is only the early-exit latency that leaks the matching prefix. No
+amount of functional coverage can distinguish them, because no input produces a
+different result — only a different clock. The assertion that pins it is
+structural (`tests/unit/security/constant-time-password-compare.test.ts`):
+`verifyPassword` must reach its comparison *through* `crypto.timingSafeEqual`.
+This is a limit of the metric, not of the fix: any RQ5-style kill rate
+overstates confidence in timing defences, because the mutants that matter there
+are invisible by construction.
+
 ### R2 — RESOLVED — replay protection was process-local (was Medium)
 
 `createJtiStore` picks Redis only when `REDIS_URL` is set and is not the
@@ -568,6 +588,28 @@ rather than assumed.
 | `/health` reports the limiter mode (R7) | `rateLimitMode()` is included in the health payload, so an operator sees a degraded limit instead of inferring it |
 | The extension's ports match the stack (R10) | `tests/extension/port-consistency.test.ts` reads `docker-compose.yml` and `.env` and compares them against the extension's fallbacks — the failure is a disagreement between two files, and either can change without the other. Confirmed to bite: restoring the hard-coded constant turns two cases red |
 | MV3 eviction **was** fail-open, and the suite still measures it (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps. Case 3 asserts the release is now REFUSED; reverting the fix turns it red, which is how the coverage was confirmed rather than assumed |
+| Which security properties the suite **pins** vs merely **believes** (RQ5) | 8 production predicates mutated one at a time, suite unmodified. **5 killed / 3 survived.** Killed: R11 user-presence, R3 approval binding, R2 JTI second-use, R9 eviction gate, R11 `secretRef`. Survived: R1 constant-time compare, R1 origin check, R4 lockout — see the R1 correction above and §7.1 |
+| The RQ5 survivors are now pinned | Each new assertion was verified **red with the mutant applied, green with it reverted**, by re-applying all three mutations: `tests/plus/cors-origin-allowlist.test.ts` 3/3 red, `tests/unit/security/constant-time-password-compare.test.ts` 2/2 red, `tests/integration/login-lockout.test.ts` 1/2 red (the other asserts the *opposite* half of the same property — that a valid login clears the counter — so a never-lock mutant satisfies it by construction) |
+| RQ5 could not have found a dead predicate on its own | Two of the plan's eight locations were **prose, not code**: the JTI consumer is `jti-store.ts:219` (`ed25519-approval.ts:257` only describes it) and the R9 gate is `auditor.ts:1300 sessionOwesStepUp` (`auditor.ts:306` is clear-on-lock). A third targeted `IPinLockoutStore`, which has **zero production consumers** — dead since R3 removed the PIN. Mutating it would have produced a survivor that looked like a test gap and was not one |
+
+### 7.1 What RQ5 does not establish
+
+The kill rate is a floor on confidence, not a bound on it, and three
+limitations are worth stating plainly because they cut against the number:
+
+1. **The mutant set was chosen by whoever wrote the predicates.** A property
+   nobody thought to mutate cannot appear in the result. RQ5 bounds the
+   damage; it does not remove it.
+2. **Timing properties are invisible to this method.** See the R1 correction.
+   Any kill rate overstates confidence in defences that depend on *how* an
+   operation happens rather than on *what* it returns.
+3. **The suite sits on the near side of the Core/Plus boundary in most cases.**
+   A mutation only the integration suite can kill is a mutation the unit suite
+   was never pinning — which is a finding about the tests, not a pass.
+
+What RQ5 did establish, and what no other method in this document would have:
+three of the properties this project listed as resolved were, at the moment of
+the test, untested. The fixes were correct. Nothing had proved they were.
 | A completed step-up still releases on retry (R9) | New case in the same suite: pay-then-retry succeeds inside the session, so the persistence did not break the legitimate path |
 | Locking clears the step-up gate and verifies it (R9) | `handleLockVault` removes the key and re-reads it; it refuses to report a successful lock if the key survived |
 | A real approval was reported to the user as REFUSED (R9) | Plus's `sendSuccess` does not wrap its payload, so `body.success` read `undefined`. Fixed on both sides, and the stub now models both response shapes |

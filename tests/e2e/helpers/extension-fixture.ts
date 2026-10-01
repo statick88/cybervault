@@ -169,11 +169,9 @@ export const test = base.extend<ExtensionFixtures>({
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cybervault-e2e-"));
 
     const context = await chromium.launchPersistentContext(userDataDir, {
-      // Extensions do not load in Playwright's headless mode — the service
-      // worker never registers, so every case times out waiting for it. This
-      // launch needs a real display; on Linux CI the workflow supplies one with
-      // `xvfb-run`. Set E2E_HEADLESS=1 only to reproduce that failure.
-      headless: process.env.E2E_HEADLESS === "1",
+      // Headless works, once `--disable-extensions` is dropped below. Set
+      // E2E_HEADLESS=0 to run headed, which needs a display (xvfb on CI).
+      headless: process.env.E2E_HEADLESS !== "0",
       // `channel: "chrome"` resolves to a hardcoded `google-chrome-stable`
       // path and takes precedence over `executablePath`, so passing both made
       // Playwright look for a binary that `setup-chrome` never creates under
@@ -186,7 +184,12 @@ export const test = base.extend<ExtensionFixtures>({
         `--load-extension=${EXTENSION_DIST}`,
         "--disable-blink-features=AutomationControlled",
       ],
-      ignoreDefaultArgs: ["--enable-automation"],
+      // Playwright passes `--disable-extensions` by default, which silently
+      // defeats `--load-extension`. Chrome launches, the profile is created,
+      // and no service worker ever registers — so the symptom is a timeout
+      // waiting for a worker that was never allowed to exist. Dropping the
+      // default is what makes headless viable; no xvfb required.
+      ignoreDefaultArgs: ["--disable-extensions", "--enable-automation"],
     });
 
     try {
@@ -217,6 +220,32 @@ export const test = base.extend<ExtensionFixtures>({
       if (!CAN_LOAD_EXTENSIONS) {
         throw new Error("Chrome not available — cannot load extension");
       }
+      return openPopup(extensionContext);
+    };
+    await use(fn);
+  },
+
+  /**
+   * Open the popup with an AUTH_TOKEN already in `chrome.storage.local`.
+   *
+   * `checkAuthState()` branches on that token: present means the lock screen,
+   * absent means the login view. A fresh e2e profile always lacks it, so every
+   * assertion about the lock screen or the header chrome needs the token
+   * seeded first — those elements are hidden in the login view by design
+   * (`lockToggle.hidden = view === "login"`).
+   */
+  openPopupWithSession: async ({ extensionContext, serviceWorker }, use) => {
+    const fn = async (token = "e2e-session-token") => {
+      if (!CAN_LOAD_EXTENSIONS) {
+        throw new Error("Chrome not available — cannot load extension");
+      }
+      // Playwright's evaluate() passes exactly one argument, so the pair
+      // travels as an object rather than two positional values.
+      await serviceWorker.evaluate(
+        ({ key, value }: { key: string; value: string }) =>
+          chrome.storage.local.set({ [key]: value }),
+        { key: "cybervault_token", value: token },
+      );
       return openPopup(extensionContext);
     };
     await use(fn);

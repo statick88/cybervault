@@ -46,6 +46,13 @@ jobs:
         with:
           chrome-version: stable
       - run: npx playwright install --with-deps
+      # The Playwright fixture loads the real unpacked extension and throws
+      # "Extension not built. Run `npm run build:ext` first." when dist/
+      # lacks manifest.json. This job never built it, so every e2e case failed
+      # in setup while the unit jobs were the only ones reporting anything.
+      # `build:ext`, not `build:all`: the e2e specs load the extension bundle
+      # and no spec imports dist/src, so tsc output is not needed here.
+      - run: npm run build:ext
       - run: npx playwright test
       - name: Upload test results
         if: failure()

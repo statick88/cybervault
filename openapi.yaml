@@ -13,7 +13,10 @@ info:
     name: MIT
 
 servers:
-  - url: http://localhost:3000
+  # Host-facing: the port Compose publishes for the API (`${API_PORT:-3010}`),
+  # not the port the container listens on (3000). Swagger UI's "Try it out"
+  # builds requests from this URL, and it runs on the host.
+  - url: http://localhost:3010
     description: Local development server
 
 security:

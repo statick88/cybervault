@@ -66,7 +66,7 @@ docker stack services cybervault
 docker service logs cybervault_api -f
 
 # Access API
-curl http://localhost:3001/health
+curl http://localhost:3010/health
 
 # Remove stack
 docker stack rm cybervault

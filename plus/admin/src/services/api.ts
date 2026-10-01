@@ -3,7 +3,9 @@
  * Type-safe API client for Plus Admin UI
  */
 
-const API_BASE = process.env.REACT_APP_PLUS_API_URL || "http://localhost:3001";
+// Host-facing: the admin UI runs in a browser on the host, so this must be
+// the port Compose publishes for Plus (3003), not the container port (3001).
+const API_BASE = process.env.REACT_APP_PLUS_API_URL || "http://localhost:3003";
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, string | number | boolean>;

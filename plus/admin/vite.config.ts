@@ -13,7 +13,9 @@ export default defineConfig({
     port: 3002,
     proxy: {
       "/api": {
-        target: "http://localhost:3001",
+        // The Vite dev server runs on the host, so it proxies to the host
+        // port Compose publishes for Plus (3003) — not the container port.
+        target: "http://localhost:3003",
         changeOrigin: true,
       },
     },

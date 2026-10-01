@@ -109,10 +109,16 @@ type RiskEvaluation = import("../domain/services/risk-engine").RiskEvaluation;
 
 /** Plus service configuration from environment */
 const PLUS_CONFIG = {
-  baseUrl: process.env.PLUS_BASE_URL || "http://localhost:3001",
+  // Host-facing, so both defaults name the port Compose *publishes* (3003),
+  // not the port the container listens on (3001). `challengeBaseUrl` is the
+  // one that reaches a user: it becomes `${baseUrl}/challenge/${id}` in the
+  // step-up email, and nothing answers on a host port the stack does not
+  // publish. `npx tsx plus/api/main.ts` still listens on 3001 — set
+  // PLUS_BASE_URL / PLUS_CHALLENGE_BASE_URL when running outside Compose.
+  baseUrl: process.env.PLUS_BASE_URL || "http://localhost:3003",
   serviceSecret: process.env.PLUS_SERVICE_SECRET || "dev-secret-change-in-production",
   capabilityIssuerKey: process.env.PLUS_CAPABILITY_PRIVATE_KEY,
-  challengeBaseUrl: process.env.PLUS_CHALLENGE_BASE_URL || "http://localhost:3001",
+  challengeBaseUrl: process.env.PLUS_CHALLENGE_BASE_URL || "http://localhost:3003",
 };
 
 /**

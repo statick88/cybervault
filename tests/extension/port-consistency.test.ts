@@ -18,6 +18,35 @@
  * extension's fallbacks against what Compose and `.env` actually declare, so
  * a port bump on either side turns this red instead of producing a fresh clone
  * that silently cannot reach its own services.
+ *
+ * ## The same drift, one layer out
+ *
+ * Moving a published host port is only half a change: every URL a *host*
+ * consumer builds has to move with it. `17c7899` moved `API_PORT` to 3010 and
+ * `PLUS_PORT` to 3003 and left the host-facing defaults naming 3001 — the
+ * compose `PLUS_BASE_URL` / `PLUS_CHALLENGE_BASE_URL`, the fallbacks in
+ * `plus/api/server.ts`, the `plus/admin` client and its dev proxy, and the
+ * `openapi.yaml` server URL. The stack still started, so nothing failed
+ * loudly; the step-up email just linked to a port nothing served. The second
+ * `describe` reads those files and holds each host-facing URL to the port the
+ * same stack publishes.
+ *
+ * ## `.env` is not the contract
+ *
+ * `.env` is gitignored, so it is absent on a fresh clone and in CI. Reading it
+ * unconditionally made this suite throw ENOENT there, which is the mirror image
+ * of the bug it exists to catch: the failure was invisible locally because the
+ * developer's `.env` was present. `.env.example` is the committed contract, and
+ * `envPort` below already falls back to the compose defaults, so the committed
+ * file resolves every port without it.
+ *
+ * Note what that fallback hides: `.env.example` declares **neither `API_PORT`
+ * nor `PLUS_PORT`** — nor `PLUS_BASE_URL` / `PLUS_CHALLENGE_BASE_URL` — even
+ * though the compose comments used to say those keys live in `.env`, a file
+ * that exists on no clone. So for a fresh clone and in CI `envPort()` survives
+ * on the compose fallback alone, and `docker-compose.yml` is the whole
+ * contract. That is deliberate, and it is why the assertions below read the
+ * compose file rather than trusting the comment beside it.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -37,18 +66,67 @@ const envPath = existsSync(resolve(repoRoot, ".env")) ? ".env" : ".env.example";
 const env = read(envPath);
 const auditor = read("src/background/auditor.ts");
 const popup = read("src/ui/popup/popup.ts");
+const plusServer = read("plus/api/server.ts");
+const plusAdminApi = read("plus/admin/src/services/api.ts");
+const viteConfig = read("plus/admin/vite.config.ts");
+const openapi = read("openapi.yaml");
 
 /** `KEY=1234` in `.env`, or `KEY:-1234` as a compose default. */
 function envPort(key: string): string | undefined {
   const fromEnv = env.match(new RegExp(`^${key}=(\\d+)`, "m"));
   if (fromEnv) return fromEnv[1];
-  const fromCompose = compose.match(new RegExp(`\\$\\{${key}:-(\\d+)\\}`));
+  const fromCompose = compose.match(new RegExp(`\\$\\{${key}:-([^}]+)\\}`));
+  return fromCompose?.[1];
+}
+
+/**
+ * The same resolution as `envPort`, for values that are not a bare number —
+ * a URL, for instance. Compose is asked twice because the two answers matter
+ * independently: a local `.env` may override `PLUS_BASE_URL`, and when it does,
+ * that override *is* what the container is told and what the browser must be
+ * able to reach. `envPort` cannot carry it: its regex only matches digits.
+ *
+ * Falls through to the compose default on an empty value, which is what
+ * Compose's `:-` does.
+ */
+function envValue(key: string): string | undefined {
+  // `.+`, not `.*`: an empty `KEY=` in `.env` must fall through to the compose
+  // default, which is what Compose's `:-` does. Matching empty here would hand
+  // the assertions a URL that names no port at all.
+  const fromEnv = env.match(new RegExp(`^${key}=(.+)$`, "m"));
+  if (fromEnv) return fromEnv[1].trim().replace(/^["']|["']$/g, "");
+  const fromCompose = compose.match(new RegExp(`\\$\\{${key}:-([^}]+)\\}`));
   return fromCompose?.[1];
 }
 
 /** Every `http://localhost:PORT` literal in a source file. */
 function localhostPorts(source: string): number[] {
   return [...source.matchAll(/http:\/\/localhost:(\d+)/g)].map((m) => Number(m[1]));
+}
+
+/** The localhost port a single URL names, or `undefined` when it names none. */
+function localhostPort(url: string): number | undefined {
+  return localhostPorts(url)[0];
+}
+
+/** The `process.env.KEY || "http://localhost:PORT"` fallback in `server.ts`. */
+function serverFallback(key: string): string | undefined {
+  return plusServer.match(new RegExp(`process\\.env\\.${key} \\|\\| "([^"]+)"`))?.[1];
+}
+
+/** The `REACT_APP_PLUS_API_URL || "http://localhost:PORT"` admin fallback. */
+function adminApiFallback(): string | undefined {
+  return plusAdminApi.match(/REACT_APP_PLUS_API_URL \|\| "([^"]+)"/)?.[1];
+}
+
+/** The Vite dev proxy `target` — the dev server runs on the host. */
+function viteProxyTarget(): string | undefined {
+  return viteConfig.match(/target:\s*"([^"]+)"/)?.[1];
+}
+
+/** `servers[0].url`, the base every consumer of the spec builds on. */
+function openapiServerUrl(): string | undefined {
+  return openapi.match(/^\s*- url: (\S+)$/m)?.[1];
 }
 
 describe("R10 — extension defaults agree with the deployed ports", () => {
@@ -106,5 +184,99 @@ describe("R10 — extension defaults agree with the deployed ports", () => {
       // Either the storage lookup or the named fallback, in the lines above.
       expect(before).toMatch(/plus_base_url|DEFAULT_PLUS_BASE_URL/);
     }
+  });
+});
+
+/**
+ * The drift class above, seen from the other side of the boundary.
+ *
+ * The first `describe` asks "does the extension dial the port the stack
+ * publishes?". These ask the same question of everything *else* that builds a
+ * URL for a host: Compose's own env defaults, the Plus server's fallbacks, the
+ * admin client, and the OpenAPI contract. Each is a plain literal that only a
+ * human keeps in step, which is exactly the shape `17c7899` got wrong — it
+ * moved the published port and left every one of these naming the old one.
+ */
+describe("R10 — host-facing URLs name the ports the stack publishes", () => {
+  // Extraction is the precondition for every case below. If a regex stops
+  // matching, the comparisons would throw or compare `undefined` to
+  // `undefined` — a green that means nothing. A vacuous check is worse than
+  // none, so pin the inputs first.
+  it("extracts every host-facing URL it is about to compare", () => {
+    expect(envPort("API_PORT")).toBeDefined();
+    expect(envPort("PLUS_PORT")).toBeDefined();
+    expect(envValue("PLUS_BASE_URL")).toBeDefined();
+    expect(envValue("PLUS_CHALLENGE_BASE_URL")).toBeDefined();
+    expect(serverFallback("PLUS_BASE_URL")).toBeDefined();
+    expect(serverFallback("PLUS_CHALLENGE_BASE_URL")).toBeDefined();
+    expect(adminApiFallback()).toBeDefined();
+    expect(viteProxyTarget()).toBeDefined();
+    expect(openapiServerUrl()).toBeDefined();
+  });
+
+  it("Compose tells the browser and the challenge email the published Plus port", () => {
+    const published = Number(envPort("PLUS_PORT"));
+
+    // `challenge.ts` builds the emailed link as `${baseUrl}/challenge/${id}`,
+    // and the browser opens `PLUS_BASE_URL` directly. Both must be reachable
+    // *from the host*, so both name the published port — never the container
+    // port that only the docker network can see.
+    for (const key of ["PLUS_BASE_URL", "PLUS_CHALLENGE_BASE_URL"]) {
+      const url = envValue(key)!;
+      expect({ key, url, port: localhostPort(url), published }).toEqual({
+        key,
+        url,
+        port: published,
+        published,
+      });
+    }
+  });
+
+  it("plus/api/server.ts falls back to the published Plus port", () => {
+    const published = Number(envPort("PLUS_PORT"));
+
+    // The same two URLs, as the code's own fallback when the variable is
+    // unset — the value a run outside Compose ends up with.
+    for (const key of ["PLUS_BASE_URL", "PLUS_CHALLENGE_BASE_URL"]) {
+      const url = serverFallback(key)!;
+      expect({ key, url, port: localhostPort(url), published }).toEqual({
+        key,
+        url,
+        port: published,
+        published,
+      });
+    }
+  });
+
+  it("the plus/admin client and its dev proxy dial the published Plus port", () => {
+    const published = Number(envPort("PLUS_PORT"));
+
+    // Both run on the host: the browser loads the admin UI, and the Vite dev
+    // server proxies `/api` onward. Neither can use the container port.
+    const hostFacing: Array<[string, string]> = [
+      ["plus/admin/src/services/api.ts", adminApiFallback()!],
+      ["plus/admin/vite.config.ts", viteProxyTarget()!],
+    ];
+    for (const [source, url] of hostFacing) {
+      expect({ source, url, port: localhostPort(url), published }).toEqual({
+        source,
+        url,
+        port: published,
+        published,
+      });
+    }
+  });
+
+  it("openapi.yaml's server URL is the published API port", () => {
+    const published = Number(envPort("API_PORT"));
+    const url = openapiServerUrl()!;
+
+    // Swagger UI's "Try it out" and every generated client build their
+    // requests from this line, and both run on the host.
+    expect({ url, port: localhostPort(url), published }).toEqual({
+      url,
+      port: published,
+      published,
+    });
   });
 });

@@ -22,9 +22,11 @@ services:
       dockerfile: docker/Dockerfile.api
     container_name: cybervault-api
     ports:
-      # Host default 3010, matching `API_PORT` in `.env` and
-      # `DEFAULT_CORE_BASE_URL` in the extension. It was 3000, so a clone
-      # without `.env` served the API where nothing was looking for it.
+      # Host default 3010, matching `DEFAULT_CORE_BASE_URL` in the extension.
+      # It was 3000, so a clone without `.env` served the API where nothing was
+      # looking for it. `API_PORT` is only an *override*: `.env` is gitignored
+      # and `.env.example` declares no `API_PORT`, so no committed file carries
+      # the key and this default is the contract a fresh clone actually gets.
       - "${API_PORT:-3010}:3000"
     environment:
       # This compose file is a LOCAL development stack: it publishes the API on
@@ -98,12 +100,15 @@ services:
     ports:
       # Same convention as `api`: host port overridable, container port fixed.
       #
-      # The host default is 3003 to match `PLUS_PORT` in `.env` and
-      # `DEFAULT_PLUS_BASE_URL` in the extension. It used to be 3001, which no
-      # other component agreed with: a clone without `.env` started Plus on 3001
-      # while the extension dialled 3003, so the two never met. The container
-      # port stays 3001, which is what `startPlusServer()`,
-      # PLUS_BASE_URL and PLUS_CHALLENGE_BASE_URL assume.
+      # The host default is 3003 to match `DEFAULT_PLUS_BASE_URL` in the
+      # extension. It used to be 3001, which no other component agreed with: a
+      # clone without `.env` started Plus on 3001 while the extension dialled
+      # 3003, so the two never met. `PLUS_PORT` is only an *override*: `.env` is
+      # gitignored and `.env.example` declares no `PLUS_PORT`, so no committed
+      # file carries the key and this default is the contract a fresh clone
+      # gets. The container port stays 3001 — that is what `startPlusServer()`
+      # listens on; `PLUS_BASE_URL` / `PLUS_CHALLENGE_BASE_URL` below are
+      # host-facing and name the *published* port instead.
       #
       # `adminer` (profile `dev`) takes 3002 and `swagger` (profile `docs`) takes
       # 3001, so the default stack no longer collides with either.
@@ -121,9 +126,13 @@ services:
       - TLS_CERT_PATH=${TLS_CERT_PATH:-}
       - TLS_KEY_PATH=${TLS_KEY_PATH:-}
       # What the browser opens, and what the challenge email links to. Both
-      # must be reachable from the HOST, hence the published port above.
-      - PLUS_BASE_URL=${PLUS_BASE_URL:-http://localhost:3001}
-      - PLUS_CHALLENGE_BASE_URL=${PLUS_CHALLENGE_BASE_URL:-http://localhost:3001}
+      # must be reachable from the HOST, hence the published port above — and
+      # hence these defaults carry the *published* port (3003), never the
+      # container port (3001). `challenge.ts` builds the emailed link as
+      # `${PLUS_CHALLENGE_BASE_URL}/challenge/${id}`, so a default naming a
+      # port nothing publishes is a challenge link nobody can open.
+      - PLUS_BASE_URL=${PLUS_BASE_URL:-http://localhost:3003}
+      - PLUS_CHALLENGE_BASE_URL=${PLUS_CHALLENGE_BASE_URL:-http://localhost:3003}
       # R7: the 60/min limit R1 added is a per-process map, so behind N Plus
       # replicas the effective limit is N x 60. The service name deliberately
       # does not match the localhost sentinel the store treats as development.

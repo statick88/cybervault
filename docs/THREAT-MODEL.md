@@ -288,19 +288,71 @@ which means every holder can both mint and verify, and there is no
 server-to-server identity. A future Core→Plus caller would need a channel of
 its own rather than reusing the extension's secret.
 
-### R7 — Core CORS and rate limits are single-instance (Low)
+### R7 — RESOLVED — the rate limits were per-process (was Low)
 
-`src/infrastructure/api/middleware/cors.ts:3` reads `CORS_ORIGIN` once at module
-load (default `http://localhost:3000`). `checkRateLimit`
-(`src/infrastructure/api/middleware/rate-limiter.ts:14`) is an in-memory map, so
-it is per-process and resets on restart. Core does have real rate limiting
-(`src/infrastructure/api/server.ts:397`–`398`).
+Every rate limit was a `new Map()` inside a module or a class:
 
-This now also describes the **Plus** side: the rate limit R1 added is likewise
-an in-process map, so behind N Plus replicas the effective limit is N × 60/min
-rather than 60/min. Both limits belong to the "single instance" pattern, and
-both need a shared store — Redis is already a dependency, and R2 wires it for
-the JTI store, so the same mechanism applies here.
+| Where | Limit | Was |
+|---|---|---|
+| Core, `checkRateLimit` | 100 / 15 min | in-process `Map` |
+| Core, `checkValidateRateLimit` | 20 / 5 min | in-process `Map` |
+| Plus, `checkRateLimitOrError` (added by R1) | 60 / 1 min sliding | in-process `Map` |
+
+Correct for exactly one replica. Behind N Core replicas the effective limit
+was N × the configured one, the same applied to Plus, and a restart cleared
+every counter — so the cheapest bypass was a deploy.
+
+*Resolution* (`2406b1b`). All three now run off a shared Redis counter.
+`ioredis` was already a dependency and R2 proved the connection pattern,
+including the part that was originally missed: the deployment runs
+`redis-server --requirepass`, so a client with no credential fails outright,
+which is why `REDIS_URL` went unset for weeks and replay protection silently
+stayed in-process. `REDIS_URL` is now set on the Plus service as well —
+omitting it there is R2's omission repeated.
+
+**It fails open, deliberately.** A limiter that throws when its store is
+unreachable turns a Redis outage into an outage for every API client, which
+is strictly worse than the problem being fixed: the limit exists to bound
+load, and removing the service does not bound load. An unreachable Redis
+degrades to the in-process limit — today's behaviour — logs once, and
+`/health` reports which store each limit is using. That signal matters
+because the degradation is otherwise invisible: the service is healthy,
+requests are served, and the only difference is that three replicas each hand
+out a full budget.
+
+**Two silent bugs found while implementing:**
+
+- `checkRateLimit` became `async` and both call sites read
+  `if (!checkRateLimit(ip))`. A Promise is truthy, so the limit would have
+  been **disabled outright** and the code would still have compiled —
+  `tsc` does not flag `if (!promise)`. This is the sharpest version of the
+  pattern already recorded above: a type change that silently changes
+  behaviour rather than failing.
+- With `lazyConnect` plus `enableOfflineQueue: false`, the first `INCR` of a
+  process's life throws, the catch degrades, and the limiter stays in-process
+  for the rest of the run. R2's bug reproduced in new code, and it passed
+  every test until the suite ran against real Redis.
+
+*Preserved exactly:* Core's 100/15min and 20/5min, Plus's 60/min, and the
+`Retry-After` header.
+
+*Residual:*
+
+- A **fixed** window permits up to 2× the limit across a boundary. Core's
+  limits were already fixed-window, so this is not a change for them. **Plus's
+  was sliding** over a timestamp array, so moving it to a counter is a
+  narrowing — a deliberate trade, since a sliding window over a Redis list
+  costs a round trip per retained element and buys an edge case that is not
+  the risk here. The change is localised to one module.
+- The fallback path is per-process by definition, so a Redis outage
+  reintroduces the original weakness for the duration. That is visible in
+  `/health` rather than silent.
+
+*Verified:* `tests/integration/rate-limit-redis-shared.test.ts` runs against
+real Redis — two limiters, two clients, one budget, and the second refuses
+what the first spent. A single-instance test **cannot** see this defect: it
+would pass against the pre-fix code, which also enforces a limit, just a
+different one per process.
 
 ### R8 — TLS is the only transport control (Low, by design)
 
@@ -471,7 +523,7 @@ rather than assumed.
 
 | Claim | How |
 |---|---|
-| Test baseline: 1645 passed / 0 failing / 17 skipped, 91 passed + 3 skipped suites | Re-ran `npx jest --silent` this session; exit 0 |
+| Test baseline: 1709 passed / 0 failing / 17 skipped, 95 passed + 3 skipped suites | Re-ran `npx jest --silent` this session; exit 0 |
 | Type baseline: 0 errors | Re-ran `npx tsc --noEmit` this session; exit 0 |
 | Composition of the 17 skipped tests | Counted: 10 in `tests/integration/ipfs-adapter.test.ts` (gated on `IPFS_API_URL`), 2 + 2 + 3 in the three suites gated on `CYBERVAULT_TEST_DATABASE_URL` |
 | `ipfs-http-client` cannot be `require`d | Executed `require('ipfs-http-client')` → `ERR_PACKAGE_PATH_NOT_EXPORTED`; confirmed the emitted `dist/src/infrastructure/ipfs/ipfs-adapter.js:75` uses `require`; executed the compiled adapter → in-memory fallback, `isHealthy() === false` |
@@ -493,6 +545,10 @@ rather than assumed.
 | A proof minted for another release is refused (R11) | Same suite: a proof bound to a different release challenge |
 | WebAuthn verification is not a formality (R11) | `tests/unit/step-up-proof.test.ts` — 34 cases covering ceremony type, challenge match, origin, rpIdHash, **user presence**, counter regression, signature, and malformed COSE |
 | A platform authenticator is not treated as a clone (R11) | A counter of 0 against a stored 0 is accepted: Touch ID and Windows Hello report 0 on every assertion. Only a regression between two non-zero counters is evidence of a clone |
+| The rate limit is genuinely shared (R7) | `tests/integration/rate-limit-redis-shared.test.ts` against real Redis: two limiters, two clients, one budget, and the second refuses what the first spent. Skips cleanly without Redis rather than mocking the dependency under test |
+| A limiter degrades instead of throwing (R7) | `tests/unit/rate-limit-shared-store.test.ts` points the store at a dead port and asserts a decision still comes back, in `memory` mode |
+| The keyspace cannot grow without bound (R7) | 1200 distinct IPs on a 20ms window, then a sweep: the map shrinks. Without it, rotating source addresses grows an in-memory map for the process lifetime |
+| `/health` reports the limiter mode (R7) | `rateLimitMode()` is included in the health payload, so an operator sees a degraded limit instead of inferring it |
 | MV3 eviction **was** fail-open, and the suite still measures it (R9) | `tests/extension/worker-eviction.test.ts` restarts the module for fresh maps. Case 3 asserts the release is now REFUSED; reverting the fix turns it red, which is how the coverage was confirmed rather than assumed |
 | A completed step-up still releases on retry (R9) | New case in the same suite: pay-then-retry succeeds inside the session, so the persistence did not break the legitimate path |
 | Locking clears the step-up gate and verifies it (R9) | `handleLockVault` removes the key and re-reads it; it refuses to report a successful lock if the key survived |

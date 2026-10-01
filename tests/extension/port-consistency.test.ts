@@ -20,14 +20,21 @@
  * that silently cannot reach its own services.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const repoRoot = resolve(__dirname, "..", "..");
 const read = (rel: string): string => readFileSync(resolve(repoRoot, rel), "utf8");
 
 const compose = read("docker-compose.yml");
-const env = read(".env");
+// `.env` is gitignored, so it is absent on a fresh clone and in CI. Reading it
+// unconditionally made this suite throw ENOENT there, which is the mirror image
+// of the bug it exists to catch: the failure was invisible locally because the
+// developer's `.env` was present. `.env.example` is the committed contract, and
+// `envPort` below already falls back to the compose defaults, so the committed
+// file resolves every port without it.
+const envPath = existsSync(resolve(repoRoot, ".env")) ? ".env" : ".env.example";
+const env = read(envPath);
 const auditor = read("src/background/auditor.ts");
 const popup = read("src/ui/popup/popup.ts");
 

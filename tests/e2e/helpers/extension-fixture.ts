@@ -139,8 +139,14 @@ export const test = base.extend<ExtensionFixtures>({
 
     const context = await chromium.launchPersistentContext(userDataDir, {
       headless: true,
-      channel: "chrome",
-      executablePath: chromeBinary ?? undefined,
+      // `channel: "chrome"` resolves to a hardcoded `google-chrome-stable`
+      // path and takes precedence over `executablePath`, so passing both made
+      // Playwright look for a binary that `setup-chrome` never creates under
+      // that name — every case then failed with "executable doesn't exist".
+      // Setting one or the other: an explicit path wins when we found one.
+      ...(chromeBinary
+        ? { executablePath: chromeBinary }
+        : { channel: "chrome" as const }),
       args: [
         `--load-extension=${EXTENSION_DIST}`,
         "--disable-blink-features=AutomationControlled",

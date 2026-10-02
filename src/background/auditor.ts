@@ -50,6 +50,15 @@ import {
   type AuthorCredentialMessage,
   type GetPendingStepUpMessage,
 } from "./message-types";
+import {
+  initRQ2Pilot,
+  recordPromptVisible,
+  recordGestureStart,
+  recordApproveSent,
+  recordError,
+  advanceRQ2Trial,
+  getCurrentCondition,
+} from "./rq2-pilot";
 import { metrics } from "../shared/metrics";
 import { logger } from "../shared/logger";
 import type { TrustEntry } from "../domain/repositories";
@@ -1486,6 +1495,14 @@ async function handleStartStepUp(msg: StartStepUpMessage): Promise<BackgroundRes
 
     stepUpChallenges.set(triggered.challengeId, { binding, expiresAt: triggered.expiresAt });
 
+    // RQ2 Pilot: record prompt visible for the step-up challenge
+    await recordPromptVisible(
+      triggered.challengeId,
+      binding.operation,
+      binding.origin,
+      userId
+    );
+
     return {
       ok: true,
       data: {
@@ -1667,6 +1684,11 @@ async function handleApproveStepUp(msg: ApproveStepUpMessage): Promise<Backgroun
           attemptsRemaining: 0,
           completed: true,
         });
+
+        // RQ2 Pilot: record approval sent and advance trial
+        await recordApproveSent();
+        await advanceRQ2Trial();
+
         return { ok: true, data: { verified: true } };
       }
 
@@ -1817,5 +1839,8 @@ chrome.runtime.onInstalled.addListener(
         );
       }
     }
+
+    // Initialize RQ2 pilot if enabled
+    await initRQ2Pilot();
   },
 );

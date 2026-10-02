@@ -26,6 +26,9 @@ import {
   derivePassphraseProof,
 } from "../../infrastructure/crypto/step-up-proof";
 
+// RQ2 Pilot
+import { recordGestureStart } from "../../background/rq2-pilot";
+
 /*
  * The message contract above is IMPORTED, not redeclared. This file used to
  * send messages typed as `Record<string, unknown>`, which is why it could send
@@ -881,11 +884,16 @@ async function handleSubmitStepUp(): Promise<void> {
 
     // Phase 2: the worker forwards the proof verbatim — it never sees the
     // passphrase, and cannot forge a proof it does not build.
-    const verified = await sendMessage({
-      type: "APPROVE_STEP_UP",
-      challengeId: pendingChallengeId,
-      proof,
-    });
+    // Phase 2: the worker forwards the proof verbatim — it never sees the
+  // passphrase, and cannot forge a proof it does not build.
+  // RQ2 Pilot: record gesture start (user interaction with authenticator)
+  await recordGestureStart();
+
+  const verified = await sendMessage({
+    type: "APPROVE_STEP_UP",
+    challengeId: pendingChallengeId,
+    proof,
+  });
     if (!verified.ok) {
       showStepUpError(verified.error ?? "the approval was not accepted");
       // The approval challenge was burned by the failed attempt; the typed

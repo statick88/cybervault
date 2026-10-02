@@ -33,3 +33,10 @@ coverage/
 # Editor/agent scratch that is not part of the product
 paper-v2-corrected.docx.backup
 
+# Project-level agent skills. They encode conventions of THIS codebase, so they
+# are deliberately local: the universal delivery rules live in the global
+# OpenCode config, and these are the CyberVault-specific companion. Keeping them
+# out of version control means a fresh clone does not inherit a set of local
+# conventions that may have drifted from the code it ships with.
+.opencode/skills/
+

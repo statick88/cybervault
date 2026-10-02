@@ -128,8 +128,12 @@ function setLocalParticipantCount(count: number): void {
 
 /**
  * Generate a counterbalanced sequence: ABBA or BAAB
+ * Using Math.random() is acceptable here because this is for experimental
+ * counterbalancing (participant assignment), NOT cryptographic purposes.
+ * The sequence assignment does not require cryptographic randomness.
  */
 function generateCounterbalancedSequence(): ('baseline' | 'contextual')[] {
+  // NOSONAR - Math.random() used for experimental counterbalancing, not cryptography
   const isABBA = Math.random() < 0.5;
   return isABBA
     ? ['baseline', 'baseline', 'contextual', 'contextual']

@@ -15,7 +15,7 @@
     "build:ext": "node scripts/build-extension.mjs",
     "build:all": "npm run build && npm run build:ext",
     "build:docker": "docker build -t cyber-vault/api:latest -f docker/Dockerfile.api .",
-    "start": "node dist/src/infrastructure/api/server.js",
+    "start": "node --env-file-if-exists=.env dist/src/infrastructure/api/server.js",
     "db:migrate": "npx tsx src/infrastructure/db/cli.ts up",
     "db:migrate:status": "npx tsx src/infrastructure/db/cli.ts status",
     "docker:up": "docker-compose up -d",

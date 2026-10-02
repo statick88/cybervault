@@ -103,7 +103,7 @@ npx tsx benchmarks/domain-validation.bench.ts
 |----------|---------|-------------|
 | `PORT` | `3000` | API server port |
 | `NODE_ENV` | `development` | Environment |
-| `JWT_SECRET` | _(none)_ | JWT signing secret. Without it, auth is disabled (dev mode) |
+| `JWT_SECRET` | _(none)_ | **Required** JWT signing secret, minimum 32 characters; no dev bypass — missing or short values refuse to start in every `NODE_ENV` |
 | `USE_POSTGRES` | `false` | Use PostgreSQL instead of in-memory storage |
 | `DATABASE_URL` | — | PostgreSQL connection string |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection string |

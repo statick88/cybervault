@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RQ2 Pilot — Post-Task Questionnaire</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #f8f9fa;
+      color: #212529;
+      line-height: 1.6;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: #1a1a2e;
+    }
+    .subtitle {
+      color: #6c757d;
+      margin-bottom: 2rem;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 1.5rem;
+    }
+    .question {
+      margin-bottom: 1.5rem;
+    }
+    .question-label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 0.75rem;
+      font-size: 1rem;
+    }
+    .likert-scale {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .likert-option {
+      flex: 1;
+      min-width: 60px;
+    }
+    .likert-option input[type="radio"] {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .likert-option label {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px 8px;
+      border: 2px solid #e9ecef;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: #fafafa;
+    }
+    .likert-option input[type="radio"]:checked + label {
+      border-color: #4f46e5;
+      background: #eef2ff;
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+    }
+    .likert-option label:hover {
+      border-color: #cbd5e1;
+    }
+    .likert-value {
+      font-weight: 700;
+      font-size: 1.25rem;
+      color: #4f46e5;
+    }
+    .likert-label {
+      font-size: 0.75rem;
+      color: #6c757d;
+      margin-top: 4px;
+      text-align: center;
+    }
+    .text-area {
+      width: 100%;
+      min-height: 100px;
+      padding: 12px;
+      border: 2px solid #e9ecef;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 1rem;
+      resize: vertical;
+      transition: border-color 0.2s ease;
+    }
+    .text-area:focus {
+      outline: none;
+      border-color: #4f46e5;
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+    }
+    .submit-btn {
+      width: 100%;
+      padding: 14px 24px;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+    .submit-btn:hover {
+      background: #4338ca;
+    }
+    .submit-btn:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+    .progress-bar {
+      height: 6px;
+      background: #e9ecef;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4f46e5, #8b5cf6);
+      transition: width 0.3s ease;
+    }
+    .trial-info {
+      font-size: 0.875rem;
+      color: #6c757d;
+      margin-bottom: 1rem;
+    }
+    .condition-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .condition-baseline {
+      background: #fee2e2;
+      color: #dc2626;
+    }
+    .condition-contextual {
+      background: #dcfce7;
+      color: #16a34a;
+    }
+    .thank-you {
+      text-align: center;
+      padding: 3rem;
+    }
+    .thank-you h2 {
+      color: #16a34a;
+      margin-bottom: 1rem;
+    }
+    .hidden {
+      display: none !important;
+    }
+    .footer-note {
+      font-size: 0.75rem;
+      color: #9ca3af;
+      text-align: center;
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+    <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+  </div>
+
+  <div id="questionnaire" class="hidden">
+    <div class="trial-info">
+      Trial <span id="currentTrial">1</span> of <span id="totalTrials">4</span>
+      <span class="condition-badge condition-baseline" id="conditionBadge">Baseline</span>
+    </div>
+
+    <div class="card">
+      <div class="question">
+        <span class="question-label" id="q1Label">How conscious were you of <em>what</em> you were approving?</span>
+        <div class="likert-scale" role="radiogroup" aria-label="Consciousness rating">
+          <div class="likert-option">
+            <input type="radio" name="consciousness" id="c1" value="1" required>
+            <label for="c1"><span class="likert-value">1</span><span class="likert-label">Not at all</span></label>
+          </div>
+          <div class="likert-option">
+            <input type="radio" name="consciousness" id="c2" value="2">
+            <label for="c2"><span class="likert-value">2</span><span class="likert-label">Slightly</span></label>
+          </div>
+          <div class="likert-option">
+            <input type="radio" name="consciousness" id="c3" value="3">
+            <label for="c3"><span class="likert-value">3</span><span class="likert-label">Moderately</span></label>
+          </div>
+          <div class="likert-option">
+            <input type="radio" name="consciousness" id="c4" value="4">
+            <label for="c4"><span class="likert-value">4</span><span class="likert-label">Very</span></label>
+          </div>
+          <div class="likert-option">
+            <input type="radio" name="consciousness" id="c5" value="5">
+            <label for="c5"><span class="likert-value">5</span><span class="likert-label">Extremely</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="question">
+        <span class="question-label">What did you think you were approving? (In your own words)</span>
+        <textarea class="text-area" id="freeText" placeholder="Describe in your own words what you thought you were authorizing..."></textarea>
+      </div>
+    </div>
+
+    <button type="button" class="submit-btn" id="submitBtn" disabled>Continue</button>
+  </div>
+
+  <div id="thankYou" class="thank-you hidden">
+    <h2>Thank you!</h2>
+    <p>Your responses have been recorded. You may close this window.</p>
+    <p style="margin-top: 1rem; color: #6c757d;">Trial <span id="completedTrial">1</span> of <span id="totalCompleted">4</span> complete.</p>
+  </div>
+
+  <div class="footer-note">
+    RQ2 Pilot — Intention vs Attention in WebAuthn Step-Up<br>
+    Data stored locally in browser session storage. No personal identifiers collected.
+  </div>
+
+  <script>
+    (function() {
+      // Configuration
+      const TOTAL_TRIALS = 4;
+      const STORAGE_KEY = 'rq2_pilot_state';
+
+      // State
+      let currentTrial = 1;
+      let participantData = null;
+      let currentCondition = 'baseline';
+
+      // DOM elements
+      const progressFill = document.getElementById('progressFill');
+      const questionnaire = document.getElementById('questionnaire');
+      const thankYou = document.getElementById('thankYou');
+      const currentTrialEl = document.getElementById('currentTrial');
+      const totalTrialsEl = document.getElementById('totalTrials');
+      const conditionBadge = document.getElementById('conditionBadge');
+      const submitBtn = document.getElementById('submitBtn');
+      const completedTrialEl = document.getElementById('completedTrial');
+      const totalCompletedEl = document.getElementById('totalCompleted');
+      const freeTextArea = document.getElementById('freeText');
+      const consciousnessRadios = document.querySelectorAll('input[name="consciousness"]');
+      const freeTextArea = document.getElementById('freeText');
+      const submitBtn = document.getElementById('submitBtn');
+
+      // Load pilot state from storage
+      async function loadState() {
+        try {
+          const result = await chrome.storage.session.get('rq2_pilot_state');
+          return result.rq2_pilot_state || null;
+        } catch {
+          return null;
+        }
+      }
+
+      async function saveState(state) {
+        await chrome.storage.session.set({ rq2_pilot_state: state });
+      }
+
+      async function init() {
+        const state = await loadState();
+        if (!state || !state.enabled) {
+          // Pilot not running, show completion or redirect
+          showCompletion();
+          return;
+        }
+
+        participantData = state;
+        currentTrial = state.trial + 1; // 1-indexed for display
+        condition = state.condition;
+
+        // Update UI
+        updateUI();
+
+        // Show questionnaire
+        questionnaire.classList.remove('hidden');
+
+        // Add event listeners
+        setupEventListeners();
+      }
+
+      function updateUI() {
+        currentTrialEl.textContent = currentTrial;
+        totalTrialsEl.textContent = totalTrials;
+        conditionBadge.textContent = condition === 'baseline' ? 'Baseline' : 'Contextual';
+        conditionBadge.className = 'condition-badge ' + (condition === 'baseline' ? 'condition-baseline' : 'condition-contextual');
+        progressFill.style.width = `${((currentTrial - 1) / TOTAL_TRIALS) * 100}%`;
+        submitBtn.disabled = true;
+        clearForm();
+      }
+
+      function clearForm() {
+        document.querySelectorAll('input[name="consciousness"]').forEach(r => r.checked = false);
+        freeText.value = '';
+        submitBtn.disabled = true;
+      }
+
+      function setupEventListeners() {
+        consciousnessRadios.forEach(radio => {
+          radio.addEventListener('change', () => {
+            submitBtn.disabled = false;
+          });
+        });
+
+        freeTextArea.addEventListener('input', () => {
+          submitBtn.disabled = false;
+        });
+
+        submitBtn.addEventListener('click', async () => {
+          const selectedConsciousness = document.querySelector('input[name="consciousness"]:checked');
+          const freeText = freeTextArea.value.trim();
+
+          if (!selectedConsciousness) {
+            alert('Please select a consciousness rating.');
+            return;
+          }
+
+          const rating = parseInt(selectedConsciousness.value, 10);
+          const freeTextValue = freeText;
+
+          // Save to storage
+          await saveTrialData({
+            consciousness: rating,
+            freeText: freeTextValue
+          });
+
+          // Advance to next trial
+          await nextTrial();
+        });
+      }
+
+      async function saveTrialData(response) {
+        try {
+          const result = await chrome.storage.session.get('rq2_pilot_state');
+          const state = result.rq2_pilot_state;
+          if (!state) return;
+
+          // Update the last trial data
+          if (state.trialData && state.trialData.length > 0) {
+            const lastTrial = state.trialData[state.trialData.length - 1];
+            lastTrial.selfReportConsciousness = response.consciousness;
+            lastTrial.freeText = response.freeText;
+            await chrome.storage.session.set({ rq2_pilot_state: state });
+          }
+        } catch (e) {
+          console.error('Failed to save trial data:', e);
+        }
+      }
+
+      async function nextTrial() {
+        // Advance trial in storage
+        try {
+          const result = await chrome.storage.session.get('rq2_pilot_state');
+          const state = result.rq2_pilot_state;
+          if (!state || !state.enabled) {
+            showCompletion();
+            return;
+          }
+
+          state.trial += 1;
+
+          if (state.trial >= state.sequence.length) {
+            // Pilot complete
+            state.enabled = false;
+            await chrome.storage.session.set({ rq2_pilot_state: state });
+            showCompletion();
+            return;
+          }
+
+          state.condition = state.sequence[state.trial];
+          await chrome.storage.session.set({ rq2_pilot_state: state });
+
+          // Update for next trial
+          currentTrial = state.trial + 1;
+          condition = state.condition;
+          updateUI();
+        } catch (e) {
+          console.error('Failed to advance trial:', e);
+        }
+      }
+
+      function showCompletion() {
+        questionnaire.classList.add('hidden');
+        thankYou.classList.remove('hidden');
+
+        // Show completion stats
+        completedTrialEl.textContent = TOTAL_TRIALS;
+        totalCompletedEl.textContent = TOTAL_TRIALS;
+      }
+
+      // Initialize
+      init();
+    })();
+  </script>
+</body>
+</html>

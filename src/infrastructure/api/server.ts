@@ -102,19 +102,8 @@ const SECURITY_CONFIG = {
   TLS_KEY_PATH: process.env.TLS_KEY_PATH || "./certs/server.key",
 };
 
-// Configuración JWT — fail-fast en cualquier entorno que no sea development
+// Configuración JWT — validada en config.ts (requerido + ≥32 chars en todos los entornos)
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET && process.env.NODE_ENV !== "development") {
-  throw new Error(
-    "JWT_SECRET is required in staging/production — refusing to start with authentication disabled",
-  );
-}
-if (!JWT_SECRET) {
-  logger.warn(
-    "⚠️  JWT_SECRET not set - authentication will be disabled (development mode only)",
-    "ApiServer",
-  );
-}
 
 // Timeout de petición: 30 segundos → 504 Gateway Timeout
 const REQUEST_TIMEOUT_MS = 30_000;

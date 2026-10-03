@@ -16,32 +16,8 @@
  * repository's port-consistency suite catches between the extension and
  * Compose, one layer out.
  *
- * ## What counts as a path
- *
- * Only whitespace-separated tokens containing `/` are treated as repo paths,
- * and tokens carrying `:` (URLs, image tags like `cyber-vault/api:latest`,
- * other script names like `build:ext`) are skipped. Bare words — `jest`,
- * `tsc`, `eslint`, `src` — are commands or arguments, not paths, and are out
- * of scope: guessing which bare word is a directory would trade a precise
- * check for a noisy one. `npm run <name>` targets are resolved against the
- * scripts map so a dangling *script reference* is caught too.
- *
- * ## `dist/` is exempt on purpose
- *
- * `start` legitimately names `dist/src/infrastructure/api/server.js`, which
- * exists only after `npm run build` — a fresh clone has no `dist/`. Generated
- * roots are skipped for that reason; skipping them is safe because the build
- * command that produces them is itself a script this test resolves.
- *
- * ## The one known-broken entry
- *
- * `infra:scan` still points at `./infra/scripts/security-scan.sh`. The only
- * candidate, `scripts/security-audit.sh`, was proven a *different tool* (a
- * pass/fail checklist vs a Trivy/npm-audit scanner with docker|kubernetes
- * modes), so it was deliberately not mapped there. The expectation below pins
- * exactly that name: a new dangling script turns this red, and so does fixing
- * `infra:scan` — which is the signal to delete the exemption rather than let
- * it rot.
+ * All six have been removed or fixed. The expectation below pins an empty
+ * set: a new dangling script turns this red.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -98,10 +74,8 @@ describe("package.json scripts resolve to files that exist", () => {
     expect(Object.keys(scripts).length).toBeGreaterThan(10);
   });
 
-  it("resolves every path a script names, except the pinned infra:scan exemption", () => {
-    // The full detail is in the array so a red names the script and the path;
-    // the expected set is exact, so a *new* dangling entry fails here too.
-    expect(danglingPaths()).toEqual([{ script: "infra:scan", missing: "./infra/scripts/security-scan.sh" }]);
+  it("resolves every path a script names — no dangling entries allowed", () => {
+    expect(danglingPaths()).toEqual([]);
   });
 
   it("every `npm run <name>` target is declared", () => {

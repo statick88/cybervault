@@ -37,6 +37,7 @@ const buildDefines = {
   "process.env.NODE_ENV": '"production"',
   "process.env.LOG_LEVEL": '"info"',
   "process.env.LOG_FORMAT": '"json"',
+  "process.env.RQ2_PILOT": process.env.RQ2_PILOT === 'true' ? '"true"' : '"false"',
 };
 
 // 1. Build background script with esbuild (bundle into single file)

@@ -25,7 +25,6 @@
     "docker:clean": "docker-compose down -v --rmi local",
     "lint": "eslint src tests --ext .ts",
     "format": "prettier --write src tests",
-    "infra:scan": "./infra/scripts/security-scan.sh",
     "security:audit": "./scripts/security-audit.sh",
     "bench": "tsx benchmarks/domain-validation.bench.ts",
     "bench:quick": "tsx benchmarks/domain-validation.bench.ts --iterations 10000 --similarity-iterations 1000",

@@ -21,9 +21,9 @@ PASSED=0
 FAILED=0
 WARNINGS=0
 
-log_pass() { echo -e "${GREEN}✅ PASS:${NC} $1"; ((PASSED++)); }
-log_fail() { echo -e "${RED}❌ FAIL:${NC} $1"; ((FAILED++)); }
-log_warn() { echo -e "${YELLOW}⚠️  WARN:${NC} $1"; ((WARNINGS++)); }
+log_pass() { echo -e "${GREEN}✅ PASS:${NC} $1"; PASSED=$((PASSED + 1)); }
+log_fail() { echo -e "${RED}❌ FAIL:${NC} $1"; FAILED=$((FAILED + 1)); }
+log_warn() { echo -e "${YELLOW}⚠️  WARN:${NC} $1"; WARNINGS=$((WARNINGS + 1)); }
 log_info() { echo -e "${BLUE}ℹ️  INFO:${NC} $1"; }
 
 # 1. Dependencies
@@ -44,7 +44,8 @@ npx tsc --noEmit --skipLibCheck > /dev/null 2>&1 && log_pass "TypeScript compile
 echo -e "${BLUE}4. Crypto${NC}"
 grep -q "@noble/curves" package.json && log_pass "Using @noble/curves" || log_warn "Check crypto libs"
 ! grep -r "createHash.*md5" src/ > /dev/null 2>&1 && log_pass "No MD5" || log_fail "MD5 found"
-! grep -r "createHash.*sha1" src/ > /dev/null 2>&1 && log_pass "No SHA1" || log_fail "SHA1 found"
+# SHA1 is intentionally used in hibp-service.ts for HIBP k-anonymity protocol (standard)
+! grep -r "createHash.*sha1" src/ | grep -v "hibp-service.ts" > /dev/null 2>&1 && log_pass "No SHA1 (except HIBP k-anonymity)" || log_fail "SHA1 found outside HIBP"
 
 # 5. Manifest
 echo -e "${BLUE}5. Manifest${NC}"
@@ -53,7 +54,7 @@ grep -q '"content_security_policy"' dist/manifest.json && log_pass "CSP defined"
 
 # 6. CI/CD
 echo -e "${BLUE}6. CI/CD${NC}"
-[ -f ".github/workflows/ci.yml" ] && log_pass "CI/CD exists" || log_fail "No CI/CD"
+[ -f ".github/workflows/test.yml" ] && log_pass "CI/CD exists (test.yml: unit-integration, e2e, benchmarks)" || log_fail "No CI/CD"
 
 # 7. Security docs
 echo -e "${BLUE}7. Security Documentation${NC}"

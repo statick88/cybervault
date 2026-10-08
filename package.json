@@ -33,7 +33,7 @@
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.0.1",
-    "@noble/hashes": "^2.0.1",
+    "@noble/hashes": "^2.4.0",
     "@noble/post-quantum": "^0.5.4",
     "@types/ioredis": "^4.28.10",
     "@types/pako": "^2.0.4",
